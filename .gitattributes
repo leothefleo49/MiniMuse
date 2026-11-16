@@ -1,0 +1,45 @@
+# Shell scripts are run from a checkout on Windows too (Git Bash, WSL, the desktop's build);
+# a CRLF checkout breaks them, so they keep LF whatever core.autocrlf says. Nothing else is
+# normalised: android/ is an upstream subtree and carries a few vendored files as they came.
+*.sh text eol=lf
+gradlew text eol=lf
+scripts/rootfs/inside/** text eol=lf
+android-classic/gradlew text eol=lf
+android-classic/native/** text eol=lf
+
+# The desktop (harness/) is built and tested on Windows runners, whose checkout turns LF into
+# CRLF under core.autocrlf; its tests read their own sources and look for `\n` in them (the
+# v1.0.3 tag's Windows installer build failed on exactly that), so the tree's text files keep
+# LF on every platform. Git tells text from binary itself; the clips and pictures are named
+# so that the detection can never touch them.
+harness/** text=auto eol=lf
+harness/**/*.mp4 binary
+harness/**/*.png binary
+harness/**/*.webp binary
+harness/**/*.icns binary
+harness/**/*.ico binary
+# The phones' copies of the desktop's catalogues and Ideas lists: the desktop's tests compare
+# them with its own byte for byte (tests/fences.test.mjs), so they keep LF the same way.
+android/src/android/app/src/main/assets/nanomuse/*.json text eol=lf
+android/src/ios/NanoMuse/Resources/*.json text eol=lf
+# The shared authoring guide is also checked byte for byte against the desktop copy.
+nanomuse/skills/builtin/skill-creator/SKILL.md text eol=lf
+android/src/android/app/src/main/assets/nanomuse/skill-creator.md text eol=lf
+
+# The web app is built on Windows too (`cd web && npm run build` writes the console into
+# nanomuse/server/static), and Vite carries the source's line endings into what it writes: with
+# a CRLF checkout, a build that changed nothing still rewrote index.html with CRLF and one
+# `\r\r\n`, 32 lines of diff that are not a change. The sources keep LF, so a Windows build
+# produces the same bundle byte for byte; the clips, pictures and fonts are named so that the
+# text detection can never touch them.
+web/** text=auto eol=lf
+web/**/*.png binary
+web/**/*.webp binary
+web/**/*.mp4 binary
+web/**/*.woff2 binary
+web/**/*.ico binary
+# The cloud console is built on Windows too (`cd cloud/console && npm run build` writes the
+# admin pages into cloud/nanomuse_cloud/console/admin), and Vite carries the source's line
+# endings into the HTML it writes, same as web/: the console's sources keep LF, so a Windows
+# build produces the same pages byte for byte.
+cloud/console/** text=auto eol=lf

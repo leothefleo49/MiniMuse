@@ -1,0 +1,3 @@
+-keepattributes Signature,InnerClasses,EnclosingMethod
+-dontwarn okhttp3.**
+-dontwarn okio.**

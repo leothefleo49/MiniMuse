@@ -1,0 +1,79 @@
+name: Release APK
+
+# A signed release APK for MiniMuse, built in CI and published as a GitHub release.
+# The signing key is kept in the repository secrets (RELEASE_KEYSTORE, base64 of the .jks;
+# RELEASE_KEY_ALIAS, RELEASE_STORE_PASSWORD, RELEASE_KEY_PASSWORD), never in the tree.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version tag, e.g. v1.0.9
+        required: true
+        default: v1.0.9
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          cache-dependency-path: android/deps/rclone-mobile/go.sum
+
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          packages: platforms;android-36 build-tools;35.0.0 cmake;3.22.1 ndk;27.2.12479018
+
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Native artifacts (proot, Alpine rootfs, rclone.aar)
+        env:
+          GOTOOLCHAIN: auto
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          export GOROOT="$(go env GOROOT)" GOPATH="$(go env GOPATH)"
+          export PATH="$GOPATH/bin:$PATH"
+          bash scripts/android/build-natives.sh
+
+      - name: Write the signing key
+        env:
+          KEYSTORE: ${{ secrets.RELEASE_KEYSTORE }}
+          STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          printf '%s' "$KEYSTORE" | base64 -d > android/release.keystore
+          printf 'storeFile=%s/android/release.keystore\n' "$GITHUB_WORKSPACE" > android/keystore.properties
+          printf 'storePassword=%s\n' "$STORE_PASSWORD" >> android/keystore.properties
+          printf 'keyAlias=%s\n' "$KEY_ALIAS" >> android/keystore.properties
+          printf 'keyPassword=%s\n' "$KEY_PASSWORD" >> android/keystore.properties
+
+      - name: assembleRelease
+        working-directory: android/src/android
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          ./gradlew :app:assembleRelease --console=plain --no-daemon
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ github.event.inputs.version }}"
+          gh release create "$V" android/src/android/app/build/outputs/apk/release/app-release.apk \
+            --repo "${{ github.repository }}" \
+            --title "MiniMuse $V" \
+            --generate-notes
