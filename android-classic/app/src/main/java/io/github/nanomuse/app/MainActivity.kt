@@ -5,6 +5,9 @@ import android.app.Activity
 import android.app.DownloadManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.graphics.Color as AndroidColor
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -33,6 +36,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import io.github.nanomuse.app.browser.TakeOverSheet
 import io.github.nanomuse.app.databinding.ActivityMainBinding
@@ -947,6 +951,9 @@ class MainActivity : AppCompatActivity() {
         Thread { AppUpdate.checkAndAutoPrepare(this) { available -> notifyAppUpdateAvailable(available) } }.start()
         if (::ui.isInitialized) {
             ui.web.onResume()
+            ui.web.removeCallbacks(barSync)
+            ui.web.post(barSync)
+            relayoutWeb()
             if (prefs.isLocal && ui.offline.visibility == View.VISIBLE && RuntimeService.state != RuntimeService.State.FAILED) {
                 load(pendingThread)
             }
@@ -957,8 +964,75 @@ class MainActivity : AppCompatActivity() {
         if (AppUpdate.activeActivity?.get() === this) {
             AppUpdate.activeActivity = null
         }
-        if (::ui.isInitialized) ui.web.onPause()
+        if (::ui.isInitialized) {
+            ui.web.removeCallbacks(barSync)
+            // In split-screen / pop-up windows this activity is "paused" the moment the
+            // other app takes focus while it is still fully on screen. Pausing the WebView
+            // then freezes its renderer and leaves a black surface, so only pause it when
+            // the window is really going away.
+            if (!isInMultiWindowMode) ui.web.onPause()
+        }
         super.onPause()
+    }
+
+    /** The window was resized (split-screen, pop-up, fold/unfold): re-lay the page out. */
+    private fun relayoutWeb() {
+        if (!::ui.isInitialized) return
+        ui.web.post {
+            ui.web.onResume()
+            ui.web.requestLayout()
+            ui.web.invalidate()
+            ui.web.evaluateJavascript("window.dispatchEvent(new Event('resize'))", null)
+            ui.root.requestApplyInsets()
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        relayoutWeb()
+    }
+
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: Configuration) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
+        relayoutWeb()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) relayoutWeb()
+    }
+
+    /**
+     * The area behind the system bars shows the root view, not the page. Without this it
+     * showed the night-mode window colour (near black) around a light page: the black bars
+     * at the top and bottom. The page's real background colour is read back every so often
+     * and painted behind the bars, with the bar icons set to stay readable.
+     */
+    private val barSync = object : Runnable {
+        override fun run() {
+            if (!::ui.isInitialized) return
+            ui.web.evaluateJavascript(PAGE_BG_JS) { raw -> applyPageColor(raw) }
+            ui.web.postDelayed(this, 1500)
+        }
+    }
+
+    private fun applyPageColor(raw: String?) {
+        if (!::ui.isInitialized) return
+        val m = RGB_RE.find(raw ?: return) ?: return
+        val alpha = m.groupValues[4].toDoubleOrNull() ?: 1.0
+        if (alpha < 0.5) return
+        val r = m.groupValues[1].toInt().coerceIn(0, 255)
+        val g = m.groupValues[2].toInt().coerceIn(0, 255)
+        val b = m.groupValues[3].toInt().coerceIn(0, 255)
+        val color = AndroidColor.rgb(r, g, b)
+        ui.root.setBackgroundColor(color)
+        ui.web.setBackgroundColor(color)
+        window.setBackgroundDrawable(ColorDrawable(color))
+        val light = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0 > 0.5
+        WindowInsetsControllerCompat(window, ui.root).apply {
+            isAppearanceLightStatusBars = light
+            isAppearanceLightNavigationBars = light
+        }
     }
 
     override fun onDestroy() {
@@ -970,6 +1044,14 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_THREAD = "thread"
+
+        /** The page's own background colour, as `rgb(r, g, b)`: what the bars should match. */
+        private const val PAGE_BG_JS =
+            "(function(){function c(e){return e?getComputedStyle(e).backgroundColor:''}" +
+                "var x=c(document.body);" +
+                "if(!x||x==='rgba(0, 0, 0, 0)'||x==='transparent')x=c(document.documentElement);" +
+                "return x})()"
+        private val RGB_RE = Regex("""rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?\s*\)""")
 
         /** A home-screen shortcut's workspace file: the app opens it alone, fullscreen. */
         const val EXTRA_SHORTCUT_PATH = "io.github.nanomuse.shortcut_path"
