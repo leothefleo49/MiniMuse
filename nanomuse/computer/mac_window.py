@@ -141,6 +141,10 @@ class WindowInfo:
             "bundle_id": self.bundle_id,
             "title": self.title,
             "bounds": [self.x, self.y, self.width, self.height],
+            # the web console's window picker reads these names
+            "window_id": self.id,
+            "owner": self.owner,
+            "app_id": self.app_id,
         }
 
 

@@ -41,7 +41,10 @@ export function ChatsDrawer() {
     if (!open) {
       setQuery("");
       setSheet(null);
+      return;
     }
+    // warm the Devices chunk while the drawer is open, so its row opens instantly
+    void import("../screens/DevicesScreen").catch(() => undefined);
   }, [open]);
 
   const name = state.profile?.name || "MiniMuse";
@@ -59,13 +62,16 @@ export function ChatsDrawer() {
   const chatHere = state.tab === "chat";
 
   const pick = (thread: string) => {
+    setDrawer(false);
     openThread(thread);
-    setTab("chat");
-    setDrawer(false);
+    setTab("chat", { animate: false });
   };
+  // Close the drawer first, then switch screens without a view transition: a transition
+  // that starts while the drawer is still on screen could leave the old picture showing
+  // (the phone then needed a second tap on the menu button before Devices appeared).
   const go = (tab: Parameters<typeof setTab>[0]) => {
-    setTab(tab);
     setDrawer(false);
+    setTab(tab, { animate: false });
   };
   // New opens a page-only chat: nothing is a record on the runtime until the first
   // message goes out, so an emptied takeaway leaves nothing behind in the list.

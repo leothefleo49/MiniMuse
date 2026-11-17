@@ -109,6 +109,36 @@ class MainActivity : AppCompatActivity() {
         if (granted) req.grant(req.resources) else req.deny()
     }
 
+    /** Camera and/or microphone for the page (getUserMedia), asked in one Android dialog. */
+    private val askMediaPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        val req = pendingPermission ?: return@registerForActivityResult
+        pendingPermission = null
+        val allowed = mutableListOf<String>()
+        for (res in req.resources) {
+            when (res) {
+                PermissionRequest.RESOURCE_VIDEO_CAPTURE -> if (granted(Manifest.permission.CAMERA)) allowed.add(res)
+                PermissionRequest.RESOURCE_AUDIO_CAPTURE -> if (granted(Manifest.permission.RECORD_AUDIO)) allowed.add(res)
+            }
+        }
+        if (allowed.isEmpty()) req.deny() else req.grant(allowed.toTypedArray())
+        emitPermissionsChanged()
+        if (result.isEmpty()) Unit
+    }
+
+    /** The page's location request waiting on Android's location dialog. */
+    private var pendingGeo: Pair<String, android.webkit.GeolocationPermissions.Callback>? = null
+
+    private val askLocation = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        val (origin, cb) = pendingGeo ?: return@registerForActivityResult
+        pendingGeo = null
+        val ok = granted(Manifest.permission.ACCESS_FINE_LOCATION) || granted(Manifest.permission.ACCESS_COARSE_LOCATION)
+        cb.invoke(origin, ok, false)
+        emitPermissionsChanged()
+    }
+
+    internal fun granted(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+
     private val askMultiplePermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         NotifyService.sync(this)
         emitPermissionsChanged()
@@ -267,17 +297,44 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPermissionRequest(request: PermissionRequest) {
-                // the page asks for the camera (attachments); microphone is not used by the web app
-                if (request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) {
-                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        request.grant(request.resources)
-                    } else {
-                        pendingPermission = request
-                        askCamera.launch(Manifest.permission.CAMERA)
-                    }
-                } else {
+                // the page asks for the camera (attachments, QR) or the microphone (dictation, calls):
+                // each is granted only when Android has granted the matching app permission, and
+                // Android's own dialog is shown first when it has not
+                val wantsVideo = request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                val wantsAudio = request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                if (!wantsVideo && !wantsAudio) {
                     request.deny()
+                    return
                 }
+                val need = mutableListOf<String>()
+                if (wantsVideo && !granted(Manifest.permission.CAMERA)) need.add(Manifest.permission.CAMERA)
+                if (wantsAudio && !granted(Manifest.permission.RECORD_AUDIO)) need.add(Manifest.permission.RECORD_AUDIO)
+                if (need.isEmpty()) {
+                    request.grant(request.resources)
+                } else {
+                    pendingPermission?.deny()
+                    pendingPermission = request
+                    askMediaPermissions.launch(need.toTypedArray())
+                }
+            }
+
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String,
+                callback: android.webkit.GeolocationPermissions.Callback,
+            ) {
+                // Without this override a WebView answers every location request with
+                // "User denied Geolocation" and never asks. Ask Android first, then answer the page.
+                if (granted(Manifest.permission.ACCESS_FINE_LOCATION) || granted(Manifest.permission.ACCESS_COARSE_LOCATION)) {
+                    callback.invoke(origin, true, false)
+                    return
+                }
+                pendingGeo?.let { (o, cb) -> cb.invoke(o, false, false) }
+                pendingGeo = origin to callback
+                askLocation.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+            }
+
+            override fun onGeolocationPermissionsHidePrompt() {
+                pendingGeo = null
             }
         }
 

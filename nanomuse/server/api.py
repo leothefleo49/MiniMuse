@@ -95,7 +95,7 @@ from nanomuse.fences import MAX_NAME
 from nanomuse.hub.client import HubError
 from nanomuse.llm.chatgpt import ChatGPTError
 from nanomuse.logger import logger
-from nanomuse.server import data_export, data_import, log_export, tickets
+from nanomuse.server import data_export, data_import, log_export, tickets, watch_discovery
 from nanomuse.server.channels_api import install_channels
 from nanomuse.server.chrome_bridge import build_extension_zip
 from nanomuse.server.events import MAIN_THREAD
@@ -818,6 +818,8 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     update_check = UpdateCheck(svc.settings.server.update_check, repo=svc.settings.server.update_repo)
     personal_cloud = PersonalCloudManager(port=svc.settings.server.port)
     watch_codes: dict[str, float] = {}
+    # what the background watch finder last saw (shown in the Devices screen)
+    watch_auto: dict[str, Any] = {"last_check": 0.0, "last_result": "not checked yet", "watch_online": False}
     self_update = SelfUpdate(update_check, svc.settings.server.update_repo)
     if not os.environ.get("PYTEST_CURRENT_TEST"):
         swap_err = consume_swap_error()
@@ -843,8 +845,6 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("NANOMUSE_NO_UPDATE_CHECK"):
             return
         await asyncio.sleep(12.0)
-        if svc.auto_update_enabled() and (svc.data_dir / "watch_target.json").is_file():
-            asyncio.create_task(_maybe_auto_push_watch_update(), name="watch-auto-push")
         if self_update.last_error:
             svc.bus.publish(
                 {
@@ -946,6 +946,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         starting = asyncio.create_task(svc.start(), name="services-start")
         await asyncio.wait({starting}, timeout=settings.server.start_grace)
         updater_task = asyncio.create_task(_auto_update_loop(), name="auto-update-loop")
+        watch_task = asyncio.create_task(_watch_autodetect_loop(), name="watch-autodetect")
         on_ready = getattr(app.state, "on_ready", None)
         if callable(on_ready):
             on_ready()
@@ -953,8 +954,11 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             yield
         finally:
             updater_task.cancel()
+            watch_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await updater_task
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await watch_task
             if not starting.done():
                 starting.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -972,6 +976,8 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     app.state.service = svc
     app.state.update_check = update_check
     app.state.self_update = self_update
+    app.state.watch_autodetect_once = lambda: _autodetect_once()
+    app.state.watch_auto_status = watch_auto
 
     if settings.server.cors_origins:
         app.add_middleware(
@@ -3583,6 +3589,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         chars = ""
         model = ""
         has_watch_feat = ""
+        serial = ""
         try:
             proc = subprocess.run(
                 [
@@ -3590,11 +3597,11 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                     "-s",
                     dev_id,
                     "shell",
-                    "getprop ro.build.characteristics; echo '|'; getprop ro.product.model; echo '|'; pm has-feature android.hardware.type.watch",
+                    "getprop ro.build.characteristics; echo '|'; getprop ro.product.model; echo '|'; pm has-feature android.hardware.type.watch; echo '|'; getprop ro.serialno",
                 ],
                 capture_output=True,
                 text=True,
-                timeout=4,
+                timeout=6,
                 check=False,
                 **hidden_subprocess_kwargs(),
             )
@@ -3606,6 +3613,8 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                 model = parts[1].strip()
             if len(parts) >= 3:
                 has_watch_feat = parts[2].strip().lower()
+            if len(parts) >= 4:
+                serial = parts[3].strip()
         except (OSError, subprocess.SubprocessError):
             pass
 
@@ -3621,20 +3630,20 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         )
         is_phone_signal = (bool(chars) and "watch" not in low_chars and has_watch_feat != "true")
         is_watch: bool | None = True if is_watch_signal else (False if is_phone_signal else None)
-        return {"characteristics": chars, "model": model, "is_watch": is_watch}
+        return {"characteristics": chars, "model": model, "is_watch": is_watch, "serial": serial}
 
     def _browse_mdns_watch_adb(adb: str | None = None, timeout_s: float = 1.4) -> dict[str, list[dict[str, Any]]]:
-        """Discover Wireless Debugging watch/ADB endpoints via `adb mdns` and raw UDP mDNS."""
-        import socket
-        import struct
+        """Wireless-debugging endpoints on the LAN, from `adb mdns services` and our own query.
+
+        Our own query asks on every network interface and requests unicast replies (see
+        watch_discovery): a single interface-less query is lost on computers that also have a
+        Tailscale, WSL or VPN adapter.
+        """
         import subprocess
-        import time
 
         from nanomuse.win_proc import hidden_subprocess_kwargs
 
-        connect_map: dict[str, dict[str, Any]] = {}
-        pairing_map: dict[str, dict[str, Any]] = {}
-
+        from_adb: dict[str, list[dict[str, Any]]] = {"connect": [], "pairing": []}
         if adb:
             with contextlib.suppress(OSError, subprocess.SubprocessError):
                 proc = subprocess.run(
@@ -3645,112 +3654,9 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                     check=False,
                     **hidden_subprocess_kwargs(),
                 )
-                for ln in (proc.stdout or "").splitlines():
-                    parts = ln.strip().split()
-                    if len(parts) >= 3 and ":" in parts[-1]:
-                        svc_name, svc_type, hp = parts[0], parts[1], parts[-1]
-                        host, _, port_s = hp.rpartition(":")
-                        if host and port_s.isdigit():
-                            item = {"name": svc_name, "host": host, "port": int(port_s), "host_port": hp}
-                            if "pairing" in svc_type:
-                                pairing_map[hp] = item
-                            elif "connect" in svc_type:
-                                connect_map[hp] = item
-
-        # Pure-Python UDP mDNS fallback (essential inside Alpine PRoot where `adb mdns` is stubbed)
-        def _encode_qname(name: str) -> bytes:
-            out = bytearray()
-            for label in name.strip(".").split("."):
-                b = label.encode("utf-8")
-                out.append(len(b))
-                out.extend(b)
-            out.append(0)
-            return bytes(out)
-
-        def _read_name(pkt: bytes, offset: int) -> tuple[str, int]:
-            labels: list[str] = []
-            seen: set[int] = set()
-            orig_next = -1
-            cur = offset
-            while cur < len(pkt):
-                if cur in seen:
-                    break
-                seen.add(cur)
-                length = pkt[cur]
-                if length == 0:
-                    if orig_next < 0:
-                        orig_next = cur + 1
-                    break
-                if (length & 0xC0) == 0xC0 and cur + 1 < len(pkt):
-                    if orig_next < 0:
-                        orig_next = cur + 2
-                    cur = ((length & 0x3F) << 8) | pkt[cur + 1]
-                    continue
-                cur += 1
-                labels.append(pkt[cur : cur + length].decode("utf-8", errors="replace"))
-                cur += length
-            return ".".join(labels), (orig_next if orig_next >= 0 else cur + 1)
-
-        with contextlib.suppress(OSError):
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-            try:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.settimeout(0.25)
-                for qname in ("_adb-tls-connect._tcp.local", "_adb-tls-pairing._tcp.local"):
-                    hdr = struct.pack("!HHHHHH", 0, 0, 1, 0, 0, 0)
-                    q = _encode_qname(qname) + struct.pack("!HH", 12, 1)
-                    with contextlib.suppress(OSError):
-                        sock.sendto(hdr + q, ("224.0.0.251", 5353))
-                srvs: dict[str, tuple[str, int]] = {}
-                hosts: dict[str, str] = {}
-                deadline = time.monotonic() + timeout_s
-                while time.monotonic() < deadline:
-                    try:
-                        pkt, _ = sock.recvfrom(4096)
-                    except TimeoutError:
-                        continue
-                    except OSError:
-                        break
-                    if len(pkt) < 12:
-                        continue
-                    qdcount, ancount, nscount, arcount = struct.unpack("!HHHH", pkt[4:12])
-                    pos = 12
-                    for _ in range(qdcount):
-                        _, pos = _read_name(pkt, pos)
-                        pos += 4
-                    for _ in range(ancount + nscount + arcount):
-                        if pos >= len(pkt):
-                            break
-                        rname, pos = _read_name(pkt, pos)
-                        if pos + 10 > len(pkt):
-                            break
-                        rtype, _, _, rdlen = struct.unpack("!HHIH", pkt[pos : pos + 10])
-                        pos += 10
-                        rdata_end = pos + rdlen
-                        if rdata_end > len(pkt):
-                            break
-                        if rtype == 33 and rdlen >= 6:  # SRV
-                            _, _, port = struct.unpack("!HHH", pkt[pos : pos + 6])
-                            target, _ = _read_name(pkt, pos + 6)
-                            srvs[rname.lower()] = (target.lower(), port)
-                        elif rtype == 1 and rdlen == 4:  # A
-                            hosts[rname.lower()] = socket.inet_ntoa(pkt[pos : pos + 4])
-                        pos = rdata_end
-                for svc_fqdn, (target, port) in srvs.items():
-                    ip = hosts.get(target)
-                    if not ip or port <= 0:
-                        continue
-                    hp = f"{ip}:{port}"
-                    short_name = svc_fqdn.split(".")[0]
-                    item = {"name": short_name, "host": ip, "port": port, "host_port": hp}
-                    if "_adb-tls-pairing." in svc_fqdn:
-                        pairing_map.setdefault(hp, item)
-                    elif "_adb-tls-connect." in svc_fqdn:
-                        connect_map.setdefault(hp, item)
-            finally:
-                sock.close()
-
-        return {"connect": list(connect_map.values()), "pairing": list(pairing_map.values())}
+                from_adb = watch_discovery.parse_adb_mdns_services(proc.stdout or "")
+        own = watch_discovery.browse_mdns(timeout_s=timeout_s)
+        return watch_discovery.merge_endpoints(from_adb, own)
 
     def _list_adb_devices(adb: str, probe_watch: bool = False) -> list[dict[str, Any]]:
         import subprocess
@@ -3784,6 +3690,8 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                     info = _probe_adb_device(adb, entry["id"])
                     entry["is_watch"] = info["is_watch"]
                     entry["characteristics"] = info["characteristics"]
+                    # a stable identity: unlike ip:port it survives wireless debugging being toggled
+                    entry["serial"] = info["serial"] or watch_discovery.service_serial(entry["id"]) or ""
                     if info["model"] and not entry.get("model"):
                         entry["model"] = info["model"]
                 devices.append(entry)
@@ -3802,6 +3710,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             "devices": devices,
             "mdns_connect": mdns["connect"],
             "mdns_pairing": mdns["pairing"],
+            "auto": {**watch_auto, "saved": _load_saved_watch()},
             "apk_path": str(apk) if apk else None,
             "apk_ready": True,
             "apk_cached": apk is not None,
@@ -3827,12 +3736,14 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         if not adb:
             return {
                 "ok": False,
+                "code": "adb_missing",
                 "error": "Could not locate or auto-install ADB on this host. Tap 'Download Watch APK to Phone' below or enter Watch Wi-Fi Debugging details.",
                 "download_url": release_url,
             }
         if apk is None or not apk.is_file():
             return {
                 "ok": False,
+                "code": "apk_missing",
                 "error": "Could not download MiniMuse-wear.apk automatically. Check your internet connection and try again.",
                 "download_url": release_url,
             }
@@ -3850,121 +3761,207 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         grant_perms = True if body is None else bool(body.grant_permissions)
         auto_pair = True if body is None else bool(body.auto_pair_watch)
 
+        def _fail(code: str, error: str, devs: list[dict[str, Any]] | None = None, **extra: Any) -> dict[str, Any]:
+            out: dict[str, Any] = {"ok": False, "code": code, "error": error, "download_url": release_url}
+            if devs is not None:
+                out["devices"] = devs
+            out.update(extra)
+            return out
+
         def _install() -> dict[str, Any]:
+            import time as _time
+
             steps_log: list[str] = []
-            # 1. Optional Wireless Debugging pair
-            if pair_hp and pair_code:
-                with contextlib.suppress(OSError, subprocess.SubprocessError):
-                    p_proc = subprocess.run(
-                        [adb, "pair", pair_hp, pair_code],
+
+            def run_adb(*args: str, timeout: int = 20) -> str:
+                try:
+                    proc = subprocess.run(
+                        [adb, *args],
                         capture_output=True,
                         text=True,
-                        timeout=25,
+                        timeout=timeout,
                         check=False,
                         **hidden_subprocess_kwargs(),
                     )
-                    p_out = (p_proc.stdout or p_proc.stderr or "").strip()
-                    if p_out:
-                        steps_log.append(f"pair: {p_out}")
+                except (OSError, subprocess.SubprocessError) as exc:
+                    return str(exc)
+                return (proc.stdout or proc.stderr or "").strip()
 
-            # 2. Optional Wireless Debugging connect
-            connect_candidate = conn_hp or (req_target if ":" in req_target else "")
-            if not connect_candidate and pair_hp and ":" in pair_hp:
-                # If user only typed the IP:Port in pair_host_port without a code, or after pairing
-                if not pair_code:
-                    connect_candidate = pair_hp
-            if connect_candidate:
-                with contextlib.suppress(OSError, subprocess.SubprocessError):
-                    c_proc = subprocess.run(
-                        [adb, "connect", connect_candidate],
-                        capture_output=True,
-                        text=True,
-                        timeout=20,
-                        check=False,
-                        **hidden_subprocess_kwargs(),
-                    )
-                    c_out = (c_proc.stdout or c_proc.stderr or "").strip()
-                    if c_out:
-                        steps_log.append(f"connect: {c_out}")
+            def host_of(dev_id: str) -> str:
+                return "" if dev_id.startswith("adb-") or ":" not in dev_id else dev_id.rpartition(":")[0]
 
-            # 3. Auto-connect any mDNS-discovered Wireless Debugging targets if no watch is attached yet
+            def phone_hosts_of(devs_now: list[dict[str, Any]], endpoints: list[dict[str, Any]]) -> set[str]:
+                """Addresses of devices already known to be phones, so we never poke them again."""
+                hosts = {host_of(d["id"]) for d in devs_now if d.get("is_watch") is False}
+                serials = {d.get("serial") for d in devs_now if d.get("is_watch") is False and d.get("serial")}
+                hosts.update(ep["host"] for ep in endpoints if ep.get("serial") and ep["serial"] in serials)
+                hosts.discard("")
+                return hosts
+
+            def is_attached(ep: dict[str, Any], devs_now: list[dict[str, Any]]) -> bool:
+                return any(
+                    d["id"] == ep["host_port"] or (ep.get("serial") and ep["serial"] == watch_discovery.service_serial(d["id"]))
+                    for d in devs_now
+                )
+
+            # 1. Look around first: what is already attached, and what does the network offer?
             devs = _list_adb_devices(adb, probe_watch=True)
-            if not any(d.get("state") == "device" and d.get("is_watch") is True for d in devs) and not connect_candidate:
-                mdns = _browse_mdns_watch_adb(adb, timeout_s=1.2)
-                for ep in mdns["connect"]:
-                    hp = ep["host_port"]
-                    with contextlib.suppress(OSError, subprocess.SubprocessError):
-                        c_proc = subprocess.run(
-                            [adb, "connect", hp],
-                            capture_output=True,
-                            text=True,
-                            timeout=10,
-                            check=False,
-                            **hidden_subprocess_kwargs(),
+            found = _browse_mdns_watch_adb(adb, timeout_s=1.4)
+            skip_hosts = phone_hosts_of(devs, found["connect"] + found["pairing"])
+            pairing_eps = [ep for ep in found["pairing"] if ep["host"] not in skip_hosts]
+
+            # 2. Pair. When a watch shows its pairing screen the user types only the 6-digit code:
+            #    where to send it comes from discovery, not from typing an IP and a port.
+            paired_host = ""
+            if pair_code:
+                target_hp = pair_hp
+                if not target_hp:
+                    if len(pairing_eps) == 1:
+                        target_hp = pairing_eps[0]["host_port"]
+                    elif len(pairing_eps) > 1:
+                        return _fail(
+                            "choose_pairing",
+                            "More than one device is showing a pairing code. Pick the watch from the list.",
+                            devs,
+                            pairing=pairing_eps,
                         )
-                        c_out = (c_proc.stdout or c_proc.stderr or "").strip()
-                        if c_out:
-                            steps_log.append(f"mdns connect {hp}: {c_out}")
+                    else:
+                        return _fail(
+                            "no_pairing_service",
+                            "No device is showing a pairing screen. On the watch open Settings -> Developer options -> "
+                            "Wireless debugging -> Pair new device with pairing code, then enter the code here before it expires.",
+                            devs,
+                        )
+                p_out = run_adb("pair", target_hp, pair_code, timeout=25)
+                steps_log.append(f"pair {target_hp}: {p_out}")
+                if "successfully paired" not in p_out.lower():
+                    return _fail(
+                        "pair_failed",
+                        f"The watch did not accept that code ({p_out or 'no answer'}). A pairing code expires within a minute: "
+                        "tap Pair new device with pairing code again and use the new 6 digits.",
+                        devs,
+                    )
+                paired_host = target_hp.rpartition(":")[0]
+
+            # 3. Connect. Ordered from most to least specific; every discovered watch is tried.
+            explicit_connect = conn_hp or (req_target if ":" in req_target and not req_target.startswith("adb-") else "")
+            if not explicit_connect and pair_hp and not pair_code and ":" in pair_hp:
+                explicit_connect = pair_hp  # the user typed only IP:port (legacy "Debug over Wi-Fi")
+            attempted_failures: list[str] = []
+            if explicit_connect:
+                c_out = run_adb("connect", explicit_connect, timeout=20)
+                steps_log.append(f"connect {explicit_connect}: {c_out}")
+                if "connected" not in c_out.lower() or "failed" in c_out.lower():
+                    attempted_failures.append(explicit_connect)
+            else:
+                # right after pairing the watch publishes its connect service a moment later
+                deadline = _time.monotonic() + (9.0 if paired_host else 0.0)
+                tried: set[str] = set()
+                while True:
+                    eps = [
+                        ep
+                        for ep in found["connect"]
+                        if ep["host"] not in skip_hosts
+                        and ep["host_port"] not in tried
+                        and not is_attached(ep, devs)
+                        and (not paired_host or ep["host"] == paired_host)
+                    ]
+                    for ep in eps:
+                        tried.add(ep["host_port"])
+                        c_out = run_adb("connect", ep["host_port"], timeout=15)
+                        steps_log.append(f"mdns connect {ep['host_port']}: {c_out}")
+                        if "connected" not in c_out.lower() or "failed" in c_out.lower():
+                            attempted_failures.append(ep["host_port"])
+                    devs = _list_adb_devices(adb, probe_watch=True)
+                    if any(d.get("state") == "device" and d.get("is_watch") is True for d in devs):
+                        break
+                    if _time.monotonic() >= deadline:
+                        break
+                    _time.sleep(1.0)
+                    found = _browse_mdns_watch_adb(adb, timeout_s=1.0)
+
+            devs = _list_adb_devices(adb, probe_watch=True)
+
+            # 3b. Old-style "Debug over Wi-Fi" watches listen on port 5555 with no mDNS service at all.
+            if not any(d.get("state") in ("device", "unauthorized") and d.get("is_watch") is not False for d in devs) and not explicit_connect:
+                known = phone_hosts_of(devs, found["connect"]) | {host_of(d["id"]) for d in devs}
+                own = set(watch_discovery.local_ipv4_addresses())
+                candidates = [h for h in watch_discovery.lan_neighbors(own=own) if h not in known]
+                for host in watch_discovery.probe_tcp_open(candidates, port=5555, timeout_s=0.6):
+                    c_out = run_adb("connect", f"{host}:5555", timeout=15)
+                    steps_log.append(f"legacy connect {host}:5555: {c_out}")
                 devs = _list_adb_devices(adb, probe_watch=True)
 
-            # 4. Resolve target device — NEVER allow installing the Wear APK onto a phone
+            # 4. Resolve the target device. NEVER allow installing the Wear APK onto a phone.
             ready_devs = [d for d in devs if d.get("state") == "device"]
             chosen_target = req_target
-            if not chosen_target and connect_candidate:
+            if not chosen_target and explicit_connect:
                 for d in ready_devs:
-                    if d["id"] == connect_candidate or d["id"].startswith(connect_candidate.split(":")[0]):
+                    if d["id"] == explicit_connect or d["id"].startswith(explicit_connect.split(":")[0]):
                         chosen_target = d["id"]
                         break
             if chosen_target:
                 matched = next((d for d in ready_devs if d["id"] == chosen_target), None)
                 if matched and matched.get("is_watch") is False:
                     dev_label = matched.get("model") or matched["id"]
-                    return {
-                        "ok": False,
-                        "error": (
-                            f"Refused to install onto '{dev_label}' ({matched['id']}) because it is a phone, "
-                            "not a Wear OS watch. Enable Settings -> Developer options -> Wireless debugging on your "
-                            "smartwatch and select the watch device or enter the watch's IP:Port."
-                        ),
-                        "download_url": release_url,
-                        "devices": devs,
-                    }
+                    return _fail(
+                        "phone_only",
+                        f"Refused to install onto '{dev_label}' ({matched['id']}) because it is a phone, "
+                        "not a Wear OS watch. Enable Settings -> Developer options -> Wireless debugging on your "
+                        "smartwatch and select the watch device or enter the watch's IP:Port.",
+                        devs,
+                    )
             if not chosen_target and ready_devs:
                 watch_devs = [d for d in ready_devs if d.get("is_watch") is True]
                 if watch_devs:
                     chosen_target = watch_devs[0]["id"]
                 else:
-                    # Only confirmed phone(s) attached — do not fall back to installing on the phone!
+                    # Only confirmed phone(s) attached: do not fall back to installing on the phone!
                     if all(d.get("is_watch") is False for d in ready_devs):
                         phone_names = ", ".join(d.get("model") or d["id"] for d in ready_devs)
-                        return {
-                            "ok": False,
-                            "error": (
-                                f"Only phone ADB target(s) found ({phone_names}); no Wear OS smartwatch is connected yet. "
-                                "Turn on Developer Options -> Wireless debugging on your watch, pair it once if needed, "
-                                "and enter your watch's Wi-Fi IP:Port above."
-                            ),
-                            "download_url": release_url,
-                            "devices": devs,
-                        }
+                        return _fail(
+                            "phone_only",
+                            f"Only phone ADB target(s) found ({phone_names}); no Wear OS smartwatch is connected yet. "
+                            "Turn on Developer Options -> Wireless debugging on your watch, pair it once if needed, "
+                            "and enter your watch's Wi-Fi IP:Port above.",
+                            devs,
+                            pairing=pairing_eps,
+                        )
                     # Unknown characteristics fallback (not explicitly a phone)
                     chosen_target = ready_devs[0]["id"]
 
             if not chosen_target and not ready_devs:
                 unauth = [d for d in devs if d.get("state") == "unauthorized"]
                 if unauth:
-                    return {
-                        "ok": False,
-                        "error": "Your watch is connected but waiting for authorization. Check your watch screen and tap 'Always allow from this computer/phone', then click Auto-Install again.",
-                        "download_url": release_url,
-                        "devices": devs,
-                    }
-                return {
-                    "ok": False,
-                    "error": "No watch detected yet. On your watch, open Settings -> Developer options -> Wireless debugging (or plug in USB), enter the Watch IP:Port above, and click Auto-Install.",
-                    "download_url": release_url,
-                    "devices": devs,
-                }
+                    return _fail(
+                        "unauthorized",
+                        "Your watch is connected but waiting for authorization. Check your watch screen and tap "
+                        "'Always allow from this computer/phone', then click Auto-Install again.",
+                        devs,
+                    )
+                if pairing_eps:
+                    return _fail(
+                        "need_pairing_code",
+                        "Your watch is showing its pairing screen. Type the 6-digit pairing code from the watch.",
+                        devs,
+                        pairing=pairing_eps,
+                    )
+                if attempted_failures:
+                    return _fail(
+                        "needs_pairing",
+                        "A watch is on the network with Wireless debugging on but this computer is not paired with it yet. "
+                        "On the watch open Wireless debugging -> Pair new device with pairing code; MiniMuse will see it and "
+                        "ask only for the 6 digits.",
+                        devs,
+                        connect_failed=attempted_failures,
+                    )
+                return _fail(
+                    "no_watch",
+                    "No watch detected on this network. On the watch: Settings -> About watch -> Software info, tap Build "
+                    "number 7 times, then Settings -> Developer options -> turn on ADB debugging and Wireless debugging, "
+                    "and make sure the watch is on the same Wi-Fi as this computer.",
+                    devs,
+                )
 
             cmd = [adb]
             if chosen_target:
@@ -3980,7 +3977,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                     **hidden_subprocess_kwargs(),
                 )
             except (OSError, subprocess.SubprocessError) as exc:
-                return {"ok": False, "error": str(exc), "download_url": release_url}
+                return _fail("install_failed", str(exc))
             out = (proc.stdout or proc.stderr or "").strip()
             if proc.returncode != 0:
                 # Retry without -g in case older Wear OS rejects -g flag
@@ -3996,18 +3993,23 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                     )
                     out = (proc.stdout or proc.stderr or "").strip()
             if proc.returncode != 0:
-                return {
-                    "ok": False,
-                    "error": out or f"adb exited with status {proc.returncode}",
-                    "download_url": release_url,
-                }
+                return _fail("install_failed", out or f"adb exited with status {proc.returncode}")
 
             base_adb = [adb, "-s", chosen_target] if chosen_target else [adb]
             # Persist watch target for future background self-updates when connected
+            installed_on = next((d for d in devs if d["id"] == chosen_target), {})
             if chosen_target:
                 with contextlib.suppress(OSError):
                     (svc.data_dir / "watch_target.json").write_text(
-                        json.dumps({"target": chosen_target}),
+                        json.dumps(
+                            {
+                                "target": chosen_target,
+                                "serial": installed_on.get("serial") or watch_discovery.service_serial(chosen_target) or "",
+                                "model": installed_on.get("model") or "",
+                                "host": host_of(chosen_target),
+                                "saved_at": _time.time(),
+                            }
+                        ),
                         encoding="utf-8",
                     )
             # 4. Grant runtime permissions on the watch automatically
@@ -4087,70 +4089,162 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             parts.append(int(digits) if digits else 0)
         return tuple(parts)
 
-    async def _maybe_auto_push_watch_update() -> None:
-        """Silently update a previously paired watch over ADB if online and behind current version."""
-        from nanomuse import __version__
+    def _load_saved_watch() -> dict[str, Any]:
+        with contextlib.suppress(OSError, ValueError):
+            data = json.loads((svc.data_dir / "watch_target.json").read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("target"):
+                return data
+        return {}
 
-        target_file = svc.data_dir / "watch_target.json"
-        if not target_file.is_file():
-            return
-        try:
-            saved = json.loads(target_file.read_text(encoding="utf-8"))
-            saved_target = str(saved.get("target") or "").strip()
-        except Exception:  # noqa: BLE001
-            return
-        if not saved_target:
-            return
+    def _is_saved_watch(dev: dict[str, Any], saved: dict[str, Any]) -> bool:
+        """Is this attached device the watch we installed on before? Matched by serial first:
+        ip:port changes whenever Wireless debugging restarts, the serial does not."""
+        if dev.get("state") != "device" or dev.get("is_watch") is not True:
+            return False
+        serial = str(saved.get("serial") or "")
+        if serial and dev.get("serial") == serial:
+            return True
+        if dev["id"] == saved.get("target"):
+            return True
+        host = str(saved.get("host") or "")
+        return bool(host and dev["id"].startswith(host + ":"))
+
+    def _find_saved_watch_sync() -> tuple[str, str] | None:
+        """Look for the watch on this network and connect to it. Returns (adb, target) when it is up."""
+        import subprocess
+
+        from nanomuse.win_proc import hidden_subprocess_kwargs
+
+        saved = _load_saved_watch()
         adb = _find_adb()
-        if not adb:
-            return
+        if not saved or not adb:
+            return None
 
-        def _check_online() -> bool:
-            devs = _list_adb_devices(adb, probe_watch=True)
-            return any(
-                d.get("id") == saved_target and d.get("state") == "device" and d.get("is_watch") is True
-                for d in devs
-            )
-
-        if not await asyncio.to_thread(_check_online):
-            return
-        apk = await _ensure_watch_apk()
-        if apk is None or not apk.is_file():
-            return
-
-        def _push_if_needed() -> None:
-            import re as _re
-            import subprocess
-
-            from nanomuse.win_proc import hidden_subprocess_kwargs
-
-            try:
-                proc = subprocess.run(
-                    [adb, "-s", saved_target, "shell", "dumpsys", "package", "io.github.nanomuse.wear"],
+        def connect(hp: str) -> None:
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(
+                    [adb, "connect", hp],
                     capture_output=True,
                     text=True,
                     timeout=12,
                     check=False,
                     **hidden_subprocess_kwargs(),
                 )
-                m = _re.search(r"versionName=([^\s]+)", proc.stdout or "")
-                installed_ver = m.group(1) if m else ""
-                if installed_ver and _parse_ver_tuple(installed_ver) >= _parse_ver_tuple(__version__):
-                    return
-                res = subprocess.run(
-                    [adb, "-s", saved_target, "install", "-r", "-g", str(apk)],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                    check=False,
-                    **hidden_subprocess_kwargs(),
-                )
-                if res.returncode == 0:
-                    logger.info("Auto-updated paired watch {} to {}", saved_target, __version__)
-            except (OSError, subprocess.SubprocessError) as exc:
-                logger.debug("watch auto-push skipped: {}", exc)
 
-        await asyncio.to_thread(_push_if_needed)
+        devs = _list_adb_devices(adb, probe_watch=True)
+        hit = next((d for d in devs if _is_saved_watch(d, saved)), None)
+        if hit is None:
+            serial = str(saved.get("serial") or "")
+            host = str(saved.get("host") or "")
+            for ep in _browse_mdns_watch_adb(adb, timeout_s=1.2)["connect"]:
+                if serial and ep.get("serial") != serial:
+                    continue
+                if not serial and ep["host"] != host:
+                    continue
+                if any(d["id"] == ep["host_port"] for d in devs):
+                    continue
+                connect(ep["host_port"])
+            devs = _list_adb_devices(adb, probe_watch=True)
+            hit = next((d for d in devs if _is_saved_watch(d, saved)), None)
+            if hit is None and host and watch_discovery.probe_tcp_open([host], port=5555, timeout_s=0.6):
+                connect(f"{host}:5555")
+                devs = _list_adb_devices(adb, probe_watch=True)
+                hit = next((d for d in devs if _is_saved_watch(d, saved)), None)
+        if hit is None:
+            return None
+        # keep the remembered identity current: the port and even the address move over time
+        fresh = {
+            "target": hit["id"],
+            "serial": hit.get("serial") or saved.get("serial") or "",
+            "model": hit.get("model") or saved.get("model") or "",
+            "host": hit["id"].rpartition(":")[0] if ":" in hit["id"] and not hit["id"].startswith("adb-") else saved.get("host", ""),
+            "saved_at": saved.get("saved_at", 0),
+        }
+        if fresh != {k: saved.get(k) for k in fresh}:
+            with contextlib.suppress(OSError):
+                (svc.data_dir / "watch_target.json").write_text(json.dumps(fresh), encoding="utf-8")
+        return adb, hit["id"]
+
+    def _push_update_sync(adb: str, target: str, apk: Path) -> str:
+        import re as _re
+        import subprocess
+
+        from nanomuse import __version__
+        from nanomuse.win_proc import hidden_subprocess_kwargs
+
+        try:
+            proc = subprocess.run(
+                [adb, "-s", target, "shell", "dumpsys", "package", "io.github.nanomuse.wear"],
+                capture_output=True,
+                text=True,
+                timeout=12,
+                check=False,
+                **hidden_subprocess_kwargs(),
+            )
+            m = _re.search(r"versionName=([^\s]+)", proc.stdout or "")
+            installed_ver = m.group(1) if m else ""
+            if installed_ver and _parse_ver_tuple(installed_ver) >= _parse_ver_tuple(__version__):
+                return f"watch is up to date ({installed_ver})"
+            res = subprocess.run(
+                [adb, "-s", target, "install", "-r", "-g", str(apk)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+                **hidden_subprocess_kwargs(),
+            )
+            if res.returncode == 0:
+                logger.info("Auto-updated paired watch {} to {}", target, __version__)
+                return f"updated the watch to {__version__}"
+            return f"update failed: {(res.stdout or res.stderr or '').strip()[:160]}"
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.debug("watch auto-push skipped: {}", exc)
+            return f"update skipped: {exc}"
+
+    async def _autodetect_once() -> None:
+        import time as _time
+
+        watch_auto["last_check"] = _time.time()
+        if not _load_saved_watch():
+            watch_auto.update(last_result="no watch installed yet", watch_online=False)
+            return
+        found = await asyncio.to_thread(_find_saved_watch_sync)
+        if not found:
+            watch_auto.update(last_result="watch not reachable on this network right now", watch_online=False)
+            return
+        adb, target = found
+        watch_auto.update(watch_online=True, last_result="watch found")
+        apk = await _ensure_watch_apk()
+        if apk is None or not apk.is_file():
+            watch_auto["last_result"] = "watch found, but the Wear APK could not be fetched"
+            return
+        watch_auto["last_result"] = await asyncio.to_thread(_push_update_sync, adb, target, apk)
+
+    async def _maybe_auto_push_watch_update() -> None:
+        """Kept for callers that ask for a single look; the loop below does it continuously."""
+        await _autodetect_once()
+
+    async def _watch_autodetect_loop() -> None:
+        """Keep looking for the watch once it has been installed on, so updates need no tapping.
+
+        Every couple of minutes while the watch is around (every five when it is not): find it by
+        its serial, reconnect, and update it when this server is newer. Wireless-debugging ports
+        and addresses change; the loop does not care.
+        """
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("NANOMUSE_NO_WATCH_AUTODETECT"):
+            return
+        await asyncio.sleep(float(os.environ.get("NANOMUSE_WATCH_FIRST_CHECK_S") or 20.0))
+        while True:
+            delay = 300.0
+            try:
+                if svc.auto_update_enabled() and _load_saved_watch():
+                    await _autodetect_once()
+                    delay = 120.0 if watch_auto["watch_online"] else 300.0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("watch autodetect tick failed: {}", exc)
+            await asyncio.sleep(delay)
 
     # ------------------------------------------------------------------ the CLI bridge
     # Not behind the app token: a command the agent runs holds a call token instead, minted

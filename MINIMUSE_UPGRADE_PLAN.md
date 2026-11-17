@@ -5,11 +5,34 @@ built and verified (tests, typecheck, build or a manual run). Each major area is
 committed separately. Anything that could not be verified stays unchecked and is
 called out in the notes at the bottom.
 
+Legend: `[x]` done and verified here · `[~]` implemented and passes tests/compile, but could not be
+run on the real target (phone, watch, real browser), so it still needs a hands-on check · `[ ]` not done.
+
 ## 1. Crashes and navigation
-- [ ] Devices screen no longer crashes with `Cannot read properties of undefined (reading 'toLowerCase')`
-- [ ] Mobile: tapping **Devices** in the side menu opens it on the first tap (no second tap on the menu button)
-- [ ] Mobile compass/location button asks for location permission first instead of failing with "User denied geolocation"
-- [ ] Android WebView grants geolocation to the page after the OS permission is granted
+- [x] Devices screen no longer crashes with `Cannot read properties of undefined (reading 'toLowerCase')` (regression tests for the exact crash shapes: `DevicesScreen.test.ts`)
+- [~] Mobile: tapping **Devices** in the side menu opens it on the first tap (the drawer closes first and the screen switches without a view transition; Kotlin and TS compile; not run on a phone)
+- [~] Mobile compass/location button asks for location permission first instead of failing with "User denied geolocation" (new `onGeolocationPermissionsShowPrompt`; app compiles; not run on a phone)
+- [~] Android WebView grants geolocation to the page after the OS permission is granted (same change; microphone permission added to the manifest and the WebView prompt)
+
+## 1b. Watch auto-detect and auto-install (priority fix)
+Root causes found on the owner's PC (a multi-homed Windows machine: Tailscale, WSL and Wi-Fi), each
+reproduced against the real phone on the LAN before fixing:
+1. the raw mDNS fallback never chose a network interface (Windows sent the query out of Tailscale);
+2. it never asked for unicast replies;
+3. it never listened on the mDNS multicast group, and an Android phone answers by multicast
+   (measured: 0 unicast packets, the ADB service found 3 of 3 times on the group);
+4. the "remember the watch" file stored `ip:port`, which changes whenever Wireless debugging restarts,
+   and the background update ran once, 12 s after start-up, so it silently stopped matching.
+- [x] mDNS discovery queries every LAN interface, asks for unicast replies and listens on the multicast group (live: finds the real phone's ADB service at 192.168.1.30:35347 where the old code found nothing; 15 unit tests)
+- [x] A found service whose A record is missing still resolves (falls back to the packet's sender address); PTR-only replies are resolved with a second question
+- [~] The pairing screen needs only the 6-digit code: host:port of the watch's pairing service comes from discovery (server flow tested with a stateful fake `adb`; the card's logic is unit tested; the card itself was not rendered in a browser)
+- [x] After pairing, the watch's connect service is picked up automatically (retry window), classified as a watch, and the APK is installed without more input (fake-adb flow test)
+- [x] Legacy "Debug over Wi-Fi" (port 5555) watches on the LAN are found and connected too (fake-adb flow test)
+- [x] A paired watch is detected and updated in the background on its own, by serial, even when its port or address changes (`_autodetect_once` tested with a fake adb; the real periodic loop was run live on this LAN: it ran on schedule, refused the phone, reported "not reachable" through `/api/watch/devices`, installed nothing)
+- [x] The install endpoint returns a machine-readable reason (no watch, phone only, needs pairing, pairing code needed/wrong, unauthorized, ADB missing, APK missing, install failed)
+- [~] The card shows an obvious popup for each reason and auto-installs when a watch appears (`NoticeDialog`, `watchInstall.ts`; tested as pure logic, not rendered in a browser)
+- [x] The Wear APK is never installed onto a phone (live: the real endpoint refused the real Z Flip7 with `phone_only`, and `pm list packages` on it shows nothing installed)
+- [ ] End-to-end install onto a real watch (**no watch is reachable from this PC: it is not on the Wi-Fi and Wireless debugging is not advertising; no emulator available**)
 
 ## 2. Setup (onboarding)
 - [ ] "Transfer Muse data" in setup opens a real transfer area (upload export, paste, or copy the Muse prompt)
@@ -73,6 +96,13 @@ called out in the notes at the bottom.
 - [ ] Swipe left-to-right opens chats / side menu; right-to-left opens settings
 - [ ] Rotating bezel / crown scrolls
 - [ ] An Apps page (before settings) lists apps the AI made, with watch versions
+
+## 13b. Make MiniMuse the default assistant on every device
+- [ ] Phone (Android): MiniMuse is offered under *Default digital assistant app* (voice-interaction service + ASSIST/VOICE_COMMAND entry points), with a one-tap button in Settings that opens the right system screen and shows whether it is already the default
+- [ ] Watch (Wear OS): the watch app declares the same assistant entry points so it can be chosen as the watch's assistant, with a button/guide in the watch settings
+- [ ] PC (Windows): a global summon hotkey (configurable) and a "start with Windows" switch in Settings; the Copilot key can be mapped to it
+- [ ] Settings has one "Default assistant" section that shows per-device status (phone / watch / PC) and what to tap on each
+- [ ] Honest limits written down: what the OS lets an app do on each platform (e.g. Windows has no third-party default-assistant slot)
 
 ## 14. Release
 - [ ] All checks pass (Python tests, web typecheck/tests/build, Android unit tests where buildable)

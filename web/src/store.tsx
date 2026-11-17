@@ -731,7 +731,10 @@ interface StoreValue {
   refreshGoals: () => Promise<void>;
   refreshSettings: () => Promise<void>;
   refreshHub: () => Promise<void>;
-  setTab: (tab: Tab) => void;
+  /** Switch screens. `animate: false` skips the view transition (the drawer uses it: a
+   *  transition started while the drawer closes could leave the old picture on screen
+   *  in the Android WebView until the next tap). */
+  setTab: (tab: Tab, opts?: { animate?: boolean }) => void;
   /** Open or close the chats drawer (the phone's hamburger). */
   setDrawer: (open: boolean) => void;
   openThread: (thread: string) => void;
@@ -1152,10 +1155,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       refreshGoals,
       refreshSettings,
       refreshHub,
-      setTab: (tab) => {
+      setTab: (tab, opts) => {
         // one cross-fade (and a hair of rise) between screens, on the browsers that support
-        // the view transition: the switch feels connected instead of a hard cut
+        // the view transition: the switch feels connected instead of a hard cut. The Android
+        // app's WebView skips it: there a transition racing a drawer or a lazy screen could
+        // keep showing the old screen until the next tap.
+        const inAndroidApp = typeof window !== "undefined" && !!(window as unknown as { NanoMuseAndroid?: unknown }).NanoMuseAndroid;
         const animate =
+          opts?.animate !== false &&
+          !inAndroidApp &&
           typeof document !== "undefined" &&
           typeof document.startViewTransition === "function" &&
           !matchMedia("(prefers-reduced-motion: reduce)").matches;

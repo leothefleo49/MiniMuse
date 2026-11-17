@@ -2,6 +2,7 @@ import { Check, ChevronDown, ChevronUp, Download, Globe, Hand, Laptop, Loader2, 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { androidApp, androidPermissionsStatus, discoverWatchAdbFromPhone, type WatchAdbDiscoveryResult } from "../android";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { NoticeDialog } from "../components/NoticeDialog";
 import { SyncControls } from "../components/DataControls";
 import { api, chromeExtensionZipUrl } from "../api";
 import { PageBar } from "../components/BackBar";
@@ -13,6 +14,7 @@ import { kindTitle, kindWord } from "../device";
 import { useStore } from "../store";
 import type { ChromeBridgeStatus, ComputerWindowInfo, HandsStatus, HubDevice, HubView, LocalDevice, WatchCodeInfo, WatchDevicesInfo } from "../types";
 import { cx, relativeTime } from "../util";
+import { cleanPairCode, isCompletePairCode, watchFailureNotice, watchPhase, type WatchNotice } from "../watchInstall";
 
 /**
  * Devices — the account's devices as a settings page (docs/every-device.md): a line on what
@@ -24,6 +26,16 @@ import { cx, relativeTime } from "../util";
  * own hands follows, as before. There is no "cloud computer" section — we have none.
  */
 const DOWNLOAD_URL = "https://github.com/leothefleo49/MiniMuse/releases/latest";
+
+/** Names compare case-insensitively; a device that never reported a name must not crash the screen. */
+export function sameDeviceName(a?: string | null, b?: string | null): boolean {
+  return String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
+}
+
+/** The directly-connected phones that are not already shown as one of the signed-in devices. */
+export function onlyUnlistedPhones<P extends { name?: string | null }>(phones: P[], listed: Array<{ name?: string | null }>): P[] {
+  return phones.filter((p) => !listed.some((d) => sameDeviceName(d.name, p.name)));
+}
 
 export function DevicesScreen() {
   const { state, dispatch, openThread, setTab, toast } = useStore();
@@ -70,9 +82,7 @@ export function DevicesScreen() {
 
   const hubOthers = (hub?.devices ?? []).filter((d) => !d.this && d.kind !== "web");
   // the phones talking to this MiniMuse directly (no account) sit with the signed-in ones
-  const localPhones = (local?.phones ?? []).filter(
-    (p) => !hubOthers.some((d) => d.name.toLowerCase() === p.name.toLowerCase()),
-  );
+  const localPhones = onlyUnlistedPhones(local?.phones ?? [], hubOthers);
   const localIds = new Set(localPhones.map((p) => p.id));
   const others = [...hubOthers, ...localPhones];
   const signedIn = !!hub?.account.signed_in;
@@ -837,6 +847,11 @@ export function WatchPairingCard() {
   const [pairCode, setPairCode] = useState("");
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [perms, setPerms] = useState(() => androidPermissionsStatus());
+  const [notice, setNotice] = useState<WatchNotice | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const installingRef = useRef(false);
+  const autoTried = useRef<Set<string>>(new Set());
+  const codeRef = useRef<HTMLInputElement>(null);
 
   const mint = async () => {
     setBusy(true);
@@ -874,15 +889,18 @@ export function WatchPairingCard() {
     }
   };
 
-  const pushToWatch = async (target?: string) => {
+  const pushToWatch = async (target?: string, opts: { code?: string } = {}) => {
+    if (installingRef.current) return;
+    installingRef.current = true;
     setInstalling(true);
-    setStatusMsg(t("Downloading MiniMuse-wear.apk and installing onto your watch…"));
+    setStatusMsg(t("Installing on your watch…"));
     try {
+      const code = cleanPairCode(opts.code ?? pairCode);
       const res = await api.watchInstall({
         target: target || watchIpPort.trim() || undefined,
         connect_host_port: watchIpPort.trim() || undefined,
         pair_host_port: pairIpPort.trim() || undefined,
-        pair_code: pairCode.trim() || undefined,
+        pair_code: isCompletePairCode(code) ? code : undefined,
         auto_pair_watch: true,
         grant_permissions: true,
       });
@@ -891,17 +909,21 @@ export function WatchPairingCard() {
           ? t("Watch app automatically downloaded, installed, granted permissions, and paired with {url}!", { url: res.best_url || "MiniMuse" })
           : t("Wear app automatically downloaded and installed onto {dev}!", { dev: res.target || "watch" });
         setStatusMsg(msg);
+        setNotice(null);
+        setPairCode("");
         toast(msg);
-        void scanAdb();
       } else {
         setStatusMsg(res.error || t("Could not install watch APK"));
-        toast(res.error || t("Could not install watch APK"));
+        setNotice(watchFailureNotice(res, t));
+        if (res.code === "pair_failed") setPairCode("");
       }
+      void scanAdb();
     } catch (e) {
       const err = (e as Error).message;
       setStatusMsg(err);
-      toast(err);
+      setNotice({ tone: "error", title: t("The install did not finish"), body: err, steps: [], action: "retry" });
     } finally {
+      installingRef.current = false;
       setInstalling(false);
     }
   };
@@ -914,8 +936,60 @@ export function WatchPairingCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // keep looking while the card is on screen, so a watch is noticed the moment it appears
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (document.hidden || installingRef.current) return;
+      void api.watchDevices().then(setAdbInfo).catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const phase = watchPhase(adbInfo);
+
+  // a watch is connected and nothing was ever installed on it: do it now, no tap needed
+  useEffect(() => {
+    if (phase.phase !== "ready" || !phase.watchId) return;
+    const dev = adbInfo?.devices.find((d) => d.id === phase.watchId);
+    const known = !!dev?.serial && dev.serial === adbInfo?.auto?.saved?.serial;
+    if (known || autoTried.current.has(phase.watchId)) return;
+    autoTried.current.add(phase.watchId);
+    void pushToWatch(phase.watchId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase.phase, phase.watchId]);
+
+  const onCodeChange = (raw: string) => {
+    const code = cleanPairCode(raw);
+    setPairCode(code);
+    // six digits typed: pair, connect and install straight away
+    if (code.length === 6 && phase.phase === "pairing") void pushToWatch(undefined, { code });
+  };
+
+  const phaseText = (() => {
+    switch (phase.phase) {
+      case "ready":
+        return t("Watch found: {dev}", { dev: phase.watchName ?? "" });
+      case "pairing":
+        return t("Your watch is showing its pairing screen. Type the 6-digit code it shows.");
+      case "phone_only":
+        return t("Only a phone is connected. Turn on Wireless debugging on your watch.");
+      case "none":
+        return t("No watch found yet. MiniMuse keeps looking.");
+      default:
+        return t("Looking for your watch…");
+    }
+  })();
+
+  const noticeAction = () => {
+    const n = notice;
+    setNotice(null);
+    if (!n) return;
+    if (n.action === "download") window.location.href = "/api/watch/apk";
+    else if (n.action === "code") window.setTimeout(() => codeRef.current?.focus(), 50);
+    else void pushToWatch(phase.watchId);
+  };
+
   const readyDevices = adbInfo?.devices.filter((d) => d.state === "device") ?? [];
-  const readyWatches = readyDevices.filter((d) => d.is_watch === true);
   const discoveredConnect = Array.from(
     new Map(
       [...(adbInfo?.mdns_connect ?? []), ...(phoneMdns?.connect ?? [])].map((ep) => [ep.host_port, ep]),
@@ -926,7 +1000,6 @@ export function WatchPairingCard() {
       [...(adbInfo?.mdns_pairing ?? []), ...(phoneMdns?.pairing ?? [])].map((ep) => [ep.host_port, ep]),
     ).values(),
   );
-  const primaryWatchTarget = readyWatches[0]?.id;
 
   return (
     <DeviceShell className="space-y-3">
@@ -952,80 +1025,48 @@ export function WatchPairingCard() {
         </button>
       </div>
 
-      {/* Primary One-Click Auto-Download & Install Box */}
+      {/* Auto-detect and install: it finds the watch itself; the only thing a person may type is the 6 digits */}
       <div className="rounded-2xl border border-accent/30 bg-accent/5 p-3.5 space-y-2.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-[13px] font-semibold text-fg">
-            {t("One-Click Watch Auto-Download & Install")}
-          </div>
-          {readyWatches.length > 0 ? (
+          <div className="text-[13px] font-semibold text-fg">{t("One-Click Watch Auto-Download & Install")}</div>
+          {phase.phase === "ready" ? (
             <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-              {t("Watch Ready: {dev}", { dev: readyWatches[0].model || readyWatches[0].id })}
+              {t("Watch Ready: {dev}", { dev: phase.watchName ?? "" })}
             </span>
-          ) : readyDevices.length > 0 ? (
+          ) : phase.phase === "pairing" ? (
+            <span className="rounded-full bg-accent/15 px-2.5 py-0.5 text-[11px] font-semibold text-accent">{t("Waiting for the code")}</span>
+          ) : phase.phase === "phone_only" ? (
             <span className="rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
               {t("Only phone ADB connected (enable Wi-Fi debugging on watch)")}
             </span>
           ) : null}
         </div>
-        <p className="text-[12px] text-muted leading-relaxed">
-          {t("Downloads MiniMuse-wear.apk automatically in the background, grants watch microphone & notification permissions, installs onto your watch, and opens it already paired.")}
+        <p className="flex items-center gap-2 text-[12.5px] leading-relaxed text-fg" aria-live="polite">
+          {(scanning || installing || phase.phase === "searching") && <Loader2 size={13} className="shrink-0 animate-spin text-muted" />}
+          <span>{installing ? t("Installing on your watch…") : phaseText}</span>
         </p>
 
-        {(discoveredConnect.length > 0 || discoveredPairing.length > 0) && (
-          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-            {discoveredConnect.map((ep) => (
-              <button
-                key={`c-${ep.host_port}`}
-                type="button"
-                onClick={() => setWatchIpPort(ep.host_port)}
-                className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-bg px-2.5 py-1 text-[11.5px] font-medium text-accent hover:bg-accent/10"
-              >
-                <Wifi size={11} /> {t("Use Wi-Fi ADB: {hp}", { hp: ep.host_port })}
-              </button>
-            ))}
-            {discoveredPairing.map((ep) => (
-              <button
-                key={`p-${ep.host_port}`}
-                type="button"
-                onClick={() => setPairIpPort(ep.host_port)}
-                className="inline-flex items-center gap-1 rounded-full border border-border bg-bg px-2.5 py-1 text-[11.5px] font-medium text-fg hover:bg-surface-2"
-              >
-                <Wifi size={11} /> {t("Use Pair IP: {hp}", { hp: ep.host_port })}
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 pt-0.5">
+        {phase.phase === "pairing" && (
           <input
+            ref={codeRef}
             type="text"
-            value={watchIpPort}
-            onChange={(e) => setWatchIpPort(e.target.value)}
-            placeholder={t("Watch IP:Port (optional if USB/connected)")}
-            className="rounded-xl border border-border/80 bg-bg px-3 py-1.5 text-[12.5px] outline-none focus:border-accent"
-          />
-          <input
-            type="text"
-            value={pairIpPort}
-            onChange={(e) => setPairIpPort(e.target.value)}
-            placeholder={t("Pair IP:Port (first-time Wi-Fi)")}
-            className="rounded-xl border border-border/80 bg-bg px-3 py-1.5 text-[12.5px] outline-none focus:border-accent"
-          />
-          <input
-            type="text"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            maxLength={7}
             value={pairCode}
-            onChange={(e) => setPairCode(e.target.value)}
-            placeholder={t("Wi-Fi 6-digit Pair Code (optional)")}
-            className="rounded-xl border border-border/80 bg-bg px-3 py-1.5 text-[12.5px] outline-none focus:border-accent"
+            onChange={(e) => onCodeChange(e.target.value)}
+            disabled={installing}
+            placeholder={t("6-digit code from the watch")}
+            aria-label={t("6-digit code from the watch")}
+            className="w-full rounded-xl border border-accent/60 bg-bg px-3 py-2.5 text-center font-mono text-[20px] tracking-[0.35em] outline-none focus:border-accent disabled:opacity-60"
           />
-        </div>
+        )}
 
         <div className="flex flex-wrap items-center gap-2 pt-1">
           <button
             type="button"
             disabled={installing}
-            onClick={() => void pushToWatch(primaryWatchTarget)}
+            onClick={() => void pushToWatch(phase.watchId)}
             className="inline-flex items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-[13px] font-semibold text-accent-fg shadow-sm hover:opacity-95 disabled:opacity-60"
           >
             {installing ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
@@ -1084,12 +1125,85 @@ export function WatchPairingCard() {
           </div>
         )}
 
+        <button
+          type="button"
+          onClick={() => setAdvancedOpen(!advancedOpen)}
+          className="inline-flex items-center gap-1 text-[11.5px] font-medium text-muted hover:text-fg"
+        >
+          {advancedOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          {t("Advanced: type the address yourself")}
+        </button>
+        {advancedOpen && (
+          <div className="space-y-2">
+            {(discoveredConnect.length > 0 || discoveredPairing.length > 0) && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {discoveredConnect.map((ep) => (
+                  <button
+                    key={`c-${ep.host_port}`}
+                    type="button"
+                    onClick={() => setWatchIpPort(ep.host_port)}
+                    className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-bg px-2.5 py-1 text-[11.5px] font-medium text-accent hover:bg-accent/10"
+                  >
+                    <Wifi size={11} /> {t("Use Wi-Fi ADB: {hp}", { hp: ep.host_port })}
+                  </button>
+                ))}
+                {discoveredPairing.map((ep) => (
+                  <button
+                    key={`p-${ep.host_port}`}
+                    type="button"
+                    onClick={() => setPairIpPort(ep.host_port)}
+                    className="inline-flex items-center gap-1 rounded-full border border-border bg-bg px-2.5 py-1 text-[11.5px] font-medium text-fg hover:bg-surface-2"
+                  >
+                    <Wifi size={11} /> {t("Use Pair IP: {hp}", { hp: ep.host_port })}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <input
+                type="text"
+                value={watchIpPort}
+                onChange={(e) => setWatchIpPort(e.target.value)}
+                placeholder={t("Watch IP:Port (optional if USB/connected)")}
+                className="rounded-xl border border-border/80 bg-bg px-3 py-1.5 text-[12.5px] outline-none focus:border-accent"
+              />
+              <input
+                type="text"
+                value={pairIpPort}
+                onChange={(e) => setPairIpPort(e.target.value)}
+                placeholder={t("Pair IP:Port (first-time Wi-Fi)")}
+                className="rounded-xl border border-border/80 bg-bg px-3 py-1.5 text-[12.5px] outline-none focus:border-accent"
+              />
+              <input
+                type="text"
+                value={pairCode}
+                onChange={(e) => setPairCode(cleanPairCode(e.target.value))}
+                placeholder={t("Wi-Fi 6-digit Pair Code (optional)")}
+                className="rounded-xl border border-border/80 bg-bg px-3 py-1.5 text-[12.5px] outline-none focus:border-accent"
+              />
+            </div>
+          </div>
+        )}
+
         {statusMsg && (
           <div className="rounded-xl bg-bg/90 px-3 py-2 text-[12px] text-fg border border-border/60">
             {statusMsg}
           </div>
         )}
       </div>
+
+      <NoticeDialog
+        open={!!notice}
+        tone={notice?.tone ?? "warning"}
+        title={notice?.title ?? ""}
+        body={notice?.body}
+        steps={notice?.steps}
+        primaryLabel={
+          notice?.action === "download" ? t("Download the watch app") : notice?.action === "code" ? t("Enter code") : t("Try again")
+        }
+        onPrimary={noticeAction}
+        onClose={() => setNotice(null)}
+      />
 
       {info && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/70 bg-bg px-3.5 py-2.5">
@@ -1146,6 +1260,30 @@ export function WatchPairingCard() {
   );
 }
 
+/**
+ * The runtime's window list comes in two shapes: the macOS/Windows adapters write
+ * `{ id, app, bundle_id, title }`, older builds wrote `{ window_id, owner, app_id, title }`.
+ * Normalise both so a missing field can never crash the Devices screen.
+ */
+export function normalizeWindows(raw: unknown): ComputerWindowInfo[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ComputerWindowInfo[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const w = item as Record<string, unknown>;
+    const str = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : String(v));
+    const owner = str(w.owner) || str(w.app) || str(w.app_name) || str(w.bundle_id);
+    if (!owner) continue;
+    out.push({
+      window_id: Number(w.window_id ?? w.id ?? 0) || 0,
+      owner,
+      app_id: str(w.app_id) || str(w.bundle_id) || owner,
+      title: str(w.title),
+    });
+  }
+  return out;
+}
+
 function BackgroundWindowPicker({ currentApp, onPicked }: { currentApp: string; onPicked: () => void }) {
   const t = useT();
   const { toast } = useStore();
@@ -1156,7 +1294,7 @@ function BackgroundWindowPicker({ currentApp, onPicked }: { currentApp: string; 
     setLoading(true);
     try {
       const res = await api.computerWindows();
-      setWindows(res.windows ?? []);
+      setWindows(normalizeWindows(res.windows));
     } catch {
       /* ignore */
     } finally {
@@ -1197,11 +1335,11 @@ function BackgroundWindowPicker({ currentApp, onPicked }: { currentApp: string; 
       </div>
       {windows.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
-          {windows.slice(0, 12).map((w) => {
-            const active = currentApp.toLowerCase() === w.owner.toLowerCase();
+          {windows.slice(0, 12).map((w, i) => {
+            const active = sameDeviceName(currentApp, w.owner);
             return (
               <button
-                key={w.window_id}
+                key={`${w.window_id}-${i}`}
                 type="button"
                 onClick={() => void pick(w.owner, w.title)}
                 className={cx(

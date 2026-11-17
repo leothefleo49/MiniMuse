@@ -1706,12 +1706,30 @@ export interface GoogleStatus {
   };
 }
 
+/** A wireless-debugging service found on the network (a watch's pairing screen or connect port). */
+export interface WatchEndpoint {
+  name: string;
+  host: string;
+  port: number;
+  host_port: string;
+  kind?: "connect" | "pairing";
+  /** the device serial inside the service name: stable, unlike the port */
+  serial?: string | null;
+}
+
 export interface WatchDevicesInfo {
   adb_available: boolean;
   adb_installed?: boolean;
-  devices: Array<{ id: string; state: string; model?: string; product?: string; device?: string; is_watch?: boolean | null; characteristics?: string }>;
-  mdns_connect?: Array<{ name: string; host: string; port: number; host_port: string }>;
-  mdns_pairing?: Array<{ name: string; host: string; port: number; host_port: string }>;
+  devices: Array<{ id: string; state: string; model?: string; product?: string; device?: string; is_watch?: boolean | null; characteristics?: string; serial?: string }>;
+  mdns_connect?: WatchEndpoint[];
+  mdns_pairing?: WatchEndpoint[];
+  /** what the background finder last saw, and the watch it remembers */
+  auto?: {
+    last_check: number;
+    last_result: string;
+    watch_online: boolean;
+    saved?: { target?: string; serial?: string; model?: string; host?: string };
+  };
   apk_path: string | null;
   apk_ready: boolean;
   apk_cached?: boolean;
@@ -1727,8 +1745,26 @@ export interface WatchInstallOptions {
   grant_permissions?: boolean;
 }
 
+/** Why an install did not happen: the screen shows a different popup for each. */
+export type WatchInstallCode =
+  | "adb_missing"
+  | "apk_missing"
+  | "no_watch"
+  | "phone_only"
+  | "needs_pairing"
+  | "need_pairing_code"
+  | "choose_pairing"
+  | "no_pairing_service"
+  | "pair_failed"
+  | "unauthorized"
+  | "install_failed";
+
 export interface WatchInstallResult {
   ok: boolean;
+  /** set when `ok` is false */
+  code?: WatchInstallCode;
+  pairing?: WatchEndpoint[];
+  connect_failed?: string[];
   target?: string;
   apk?: string;
   output?: string;
