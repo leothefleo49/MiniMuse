@@ -49,6 +49,7 @@ import { UsageScreen } from "./UsageScreen";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DefaultAssistantCard } from "../components/DefaultAssistantCard";
 import { DevicePermissions } from "../components/DevicePermissions";
+import { ActiveModelList } from "../components/ActiveModelList";
 import { PhoneControlGuide } from "../components/PhoneControlGuide";
 import { SwitchModeConfirm } from "../components/SwitchModeConfirm";
 import { EmergencyStop, RelatedSafety } from "../components/SafetyControls";
@@ -670,6 +671,7 @@ export function SettingsScreen() {
         {show("model") && (
         <Section title={t("Model")} id="model" plain={!wide}>
           <SettingBlock id="model-main" highlightedId={highlightedId} className="space-y-3">
+            <ActiveModelList />
             {s && (
               <button
                 type="button"

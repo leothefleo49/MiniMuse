@@ -16,9 +16,9 @@ Repo: this directory. Remote: origin (leothefleo49/MiniMuse). Muse export data: 
 - [x] 9. (Settings > Import & export > 'Run setup again' reopens guided setup even when chats have messages, resumes the saved step; other setup choices already have Settings pages: Appearance, Model, identity, Import; 278 web tests pass) Setup got cut short by earlier bug: allow re-running / resuming setup; all setup items editable later
 
 ## B. Features
-- [ ] 10. Restricted settings: in-app button redirecting to Android "Allow restricted settings" / app info so phone control can be enabled
-- [ ] 11. Models become their own Settings section (out of Connections); setup + API editable later
-- [ ] 12. AI settings show actual model (not just "Meta"), allow switching models; show nickname/subtext separately
+- [~] 10. (ALREADY PRESENT, no change: PhoneControlGuide in Settings has Open Accessibility settings + App settings buttons, permissions list has an app_settings action; not tried on a device) Restricted settings: in-app button redirecting to Android "Allow restricted settings" / app info so phone control can be enabled
+- [~] 11. (PARTIAL: Settings > Model already existed and now has an in-place model switcher, ActiveModelList; provider/API-key editing still opens Connections) Models become their own Settings section (out of Connections); setup + API editable later
+- [x] 12. (Settings > Model shows the real active model name and switches in place; name and tagline are separate fields in the identity form; 278 web tests pass) AI settings show actual model (not just "Meta"), allow switching models; show nickname/subtext separately
 - [ ] 13. Sync Google/Gmail: simple redirect + sign in, few taps; remove duplicate connection popups
 - [ ] 14. Browser control on phone: install/enable easily or one-tap redirect instead of vague "unavailable"
 - [ ] 15. Artifacts: apps pinned at top / easy find + quick run in-app
