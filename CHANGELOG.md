@@ -4,6 +4,27 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-17
+### Fixed
+- Muse import: the real Muse export (`[date time] You: ...` lines) is now read into proper back-and-forth messages with the right sides and times, instead of giant overlapping text; titles drop the file extension and trailing date, voice calls are titled by day so they stay separate chats, flattened `**Tyler:** ... **Muse:** ...` voice-call text is split into messages, and imported chats are dated by their messages instead of the import time.
+- Muse import has no size limit and streams large archives to disk; loose notes and files no longer become a chat each.
+- Phone: split-screen no longer freezes the app black, and the system bars match the page instead of leaving black bars.
+- The back arrow goes back one screen instead of always to the home chat.
+- Scanning a pairing QR now pairs from any screen and confirms on both devices (it only worked while one settings panel was open).
+- The AI icon in the chat header has room above it and the name tag no longer covers it.
+
+### Added
+- Import runs in the background with a progress bar shown on every screen (setup too).
+- Settings > Import & export > Run setup again, and setup reopens even when chats already have messages.
+- Settings > Model shows the real active model and switches it in place.
+- One-tap Install browser control in Connections > Browser.
+- Library > Artifacts pins your apps at the top with a Run button.
+- Watch: the rotating bezel scrolls and sets call volume, haptic feedback, and pairing tries every server found on Wi-Fi with the one code.
+
+### Not done in this release
+- Watch UI overhaul to match the original Muse watch app, and the watch still needs checking on a real watch.
+- Simple Google/Gmail sign-in (needs a Google OAuth client id), and a measured fix for per-tap lag. None of the phone or watch changes were tried on a physical device.
+
 ## [1.2.0] - 2026-11-16
 ### Added
 - Interactive map tab (Leaflet + OpenStreetMap): saved places, tap-to-add, most-visited places, common routes, trip statistics.

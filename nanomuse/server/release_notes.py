@@ -17,6 +17,28 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.1": {
+        "title": "Muse imports that read properly, in the background, plus fixes from your first run",
+        "added": [
+            "Importing your Muse data now runs in the background with a progress bar you can see anywhere, setup included",
+            "Settings, Import & export, Run setup again: pick up a setup that was cut short",
+            "Settings, Model: see which model is answering and switch it right there",
+            "One tap to install browser control on the computer",
+            "Your apps are pinned at the top of Artifacts with a Run button",
+            "Watch: the rotating bezel scrolls and sets call volume, with haptic feedback",
+        ],
+        "improved": [
+            "The back arrow goes back one screen instead of always to the chat",
+            "Watch pairing tries every server found on Wi-Fi with your one code",
+        ],
+        "fixed": [
+            "Muse imports show real back-and-forth messages with the right sides and times, clean titles, and one chat per voice call",
+            "Imports have no size limit and no longer turn every loose file into a chat",
+            "Split-screen no longer freezes the phone app black, and the black bars are gone",
+            "Scanning a pairing QR pairs from any screen and confirms on both devices",
+            "The AI icon has room above it and the name tag no longer covers it",
+        ],
+    },
     "1.2.0": {
         "title": "Watch auto-install that finds the watch, a real map, safer rules and Auto proactivity",
         "added": [
