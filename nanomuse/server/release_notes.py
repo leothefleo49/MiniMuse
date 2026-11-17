@@ -17,6 +17,28 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.0": {
+        "title": "Watch auto-install that finds the watch, a real map, safer rules and Auto proactivity",
+        "added": [
+            "An interactive map in Location (OpenStreetMap, no key): saved places, tap to add one, most-visited places, common routes and trip stats",
+            "Auto proactivity: MiniMuse reaches out more when you answer its check-ins and backs off when you do not",
+            "MiniMuse can be chosen as the default assistant on a phone or watch (Settings, Default assistant); not yet checked on real devices",
+            "Transfer your Muse data in setup, and a permissions step that asks for what each device needs up front",
+            "An Emergency stop and a real Permissions list under Safety",
+        ],
+        "improved": [
+            "Watch auto-install finds the watch on any network interface, stays correct when the watch's address changes, and says plainly what to do when none is found",
+            "Switch mode on the phone now asks first and says what will happen",
+            "Setup uses the width of a wide screen; Calendar and Map are reachable from the phone drawer",
+            "Approval rules moved under Safety",
+        ],
+        "fixed": [
+            "The Devices screen no longer crashes",
+            "A saved 'Never' approval rule is enforced again after a restart, and editing one rule no longer drops shell from 'always ask'",
+            "GPS pings are no longer counted as trips",
+            "The first chat no longer asks for your name twice",
+        ],
+    },
     "1.0.25": {
         "title": "Settings Redesign, Usage Restoration, Wear OS Polish & Privacy Hardening",
         "added": [

@@ -7,7 +7,7 @@ authors:
 repository-code: "https://github.com/nano-muse/nanoMuse"
 url: "https://nanomuse.cn/"
 license: GPL-3.0-or-later
-version: 1.1.0
+version: 1.2.0
 date-released: 2026-11-16
 keywords:
   - personal agent

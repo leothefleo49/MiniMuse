@@ -4,6 +4,26 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-16
+### Added
+- Interactive map tab (Leaflet + OpenStreetMap): saved places, tap-to-add, most-visited places, common routes, trip statistics.
+- Auto (adaptive) proactivity level.
+- Default-assistant entry points (ASSIST activity + voice-interaction service) for the phone and watch apps; Settings > Default assistant.
+- "From Muse" transfer in setup, a setup permissions step, shared device-permissions list, Emergency stop.
+- Watch discovery module with reason-coded install results and code-only pairing; periodic serial-based auto-detect.
+
+### Changed
+- Approval rules moved to Safety with 8 new categories mapped to real tools.
+- "Switch mode" asks for confirmation. Setup uses wide screens. Calendar and Map are in the phone drawer.
+
+### Fixed
+- Devices screen crash (`toLowerCase` on a missing value).
+- mDNS watch discovery: wrong interface, missing unicast bit, not listening on the multicast group, stale remembered address.
+- A saved "Never" approval rule was not enforced after a restart; changing one rule removed `shell` from "always ask".
+- GPS pings were stored as manual trips.
+
+### Not included in this release
+Rebuilt Android APKs and Windows/Linux installers; the real-watch install was not verified on a physical watch. See `MINIMUSE_UPGRADE_PLAN.md`.
 ## [1.0.25] - 2026-11-16
 ### Added
 - Restored the dedicated **Usage** tab inside **Settings** (with `#usage` routing directly to it).

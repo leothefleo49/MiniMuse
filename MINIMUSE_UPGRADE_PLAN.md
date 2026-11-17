@@ -105,9 +105,30 @@ reproduced against the real phone on the LAN before fixing:
 - [x] Limits written down: the card says Windows does not let an app replace its built-in assistant, and that each device lets you choose only in its own settings.
 
 ## 14. Release
-- [ ] All checks pass (Python tests, web typecheck/tests/build, Android unit tests where buildable)
-- [ ] Version bumped, CHANGELOG and release notes written
-- [ ] Artifacts built (Windows, APK, Wear APK, wheel, Linux where possible)
-- [ ] Pushed to GitHub and release published
+- [~] Checks: web typecheck, eslint, 273 tests and the production build pass; Python full suite 1628 pass, 54 fail, and all 54 also fail on the untouched v1.1.0 (no new failures). Android: compile only.
+- [x] Version bumped to 1.2.0 (Python, web, extension, citation, rebrand script), CHANGELOG and in-app release notes written. Android versionCode/versionName were NOT bumped: the Android apps were not rebuilt.
+- [~] Built: wheel and sdist only. **Not built:** Windows installer, Linux build, phone APK, watch APK (need PyInstaller/WSL and the release signing key, which are not available here).
+- [x] Pushed to GitHub; v1.2.0 published as a PRE-release (not "Latest") so installed apps do not auto-update to an unverified build.
 
-## Notes (filled in as work progresses)
+## Notes
+
+**Legend:** `[x]` verified here, `[~]` implemented and tested but not run on the real target (a phone, a watch), `[ ]` not done.
+
+### The watch
+- The watch address, port and pairing code are not in any chat. The one pairing code anywhere (Nov 8) was for the phone and has expired. The `192.168.1.50:41234` style values in tests are fixtures.
+- No watch is reachable from this PC. The only device on the network is the phone. So an install onto a real watch was **not** done. What was proven live: the real endpoint refused the real phone (`phone_only`), nothing was installed on it.
+- Why auto-detection failed, four causes, each reproduced: the mDNS query left through the wrong network interface (Tailscale); it did not ask for unicast replies; it never listened on the multicast group, where Android answers; and the remembered `ip:port` goes stale, with the background update running once.
+
+### Bugs found on the way (not on the original list)
+- A saved "Never" approval rule stopped being enforced after a restart (reproduced on the untouched v1.1.0).
+- Changing any approval rule removed `shell` from "always ask".
+- GPS pings were stored as manual trips, inflating trip counts and inventing a "GPS Snapshot" route.
+- On a phone there was no way to reach Calendar or Location.
+
+### Tests
+- Web: 40 files / 273 tests, tsc and eslint clean.
+- Python: 55 tests fail in the full suite; all 55 also fail on the untouched v1.1.0 (checked in a separate worktree), so they are not regressions from this work. They were not fixed.
+- Android: phone and watch modules compile; merged manifests checked. No Android unit/instrumented tests were run on a device.
+
+### Not done
+Local+cloud at the same time and a free self-hosted MiniMuse Cloud (4); the pairing "keep / keep other / merge" dialog and merge backend (5); simple API-linking redesign (8); a global popup system beyond the watch popups (9); recurring Muse transfer, dedupe and merge styles (12); the whole watch-app redesign (13); the PC summon shortcut (13b); most-driven roads (6, no data); a real-watch install (1b); rebuilt APKs, Windows and Linux installers (14).
