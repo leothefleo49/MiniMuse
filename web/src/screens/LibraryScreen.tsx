@@ -1,4 +1,4 @@
-import { CalendarDays, Code2, FileImage, FileSpreadsheet, FileText, Globe, LibraryBig, Loader2, Search } from "lucide-react";
+import { CalendarDays, Code2, FileImage, FileSpreadsheet, FileText, Globe, LibraryBig, Loader2, Play, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, fileUrl } from "../api";
 import { TabHeader } from "../components/TabHeader";
@@ -11,6 +11,10 @@ import { cx, fileKind } from "../util";
 
 /** Media are what the eye takes in; everything else is an artifact — Muse's two-way split. */
 const MEDIA_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "heic", "mp3", "wav", "m4a", "ogg", "flac", "mp4", "mov", "webm", "mkv"]);
+/** An app Muse built: a page it saved as HTML. These are pinned above the other artifacts and run in place. */
+function isApp(f: FileInfo): boolean {
+  return fileKind(f.name) === "html";
+}
 function isMedia(name: string): boolean {
   return MEDIA_EXT.has(name.toLowerCase().split(".").pop() ?? "");
 }
@@ -50,6 +54,9 @@ export function LibraryScreen() {
     return (files ?? []).filter((f) => isMedia(f.name) === (segment === 1) && (!q || f.path.toLowerCase().includes(q)));
   }, [files, segment, query]);
 
+  const apps = useMemo(() => (segment === 0 ? shown.filter(isApp) : []), [shown, segment]);
+  const others = useMemo(() => (segment === 0 ? shown.filter((f) => !isApp(f)) : shown), [shown, segment]);
+
   return (
     <div className="flex h-full flex-col">
       <TabHeader title={t("Library")} />
@@ -83,8 +90,23 @@ export function LibraryScreen() {
             )}
           </div>
         )}
+        {apps.length > 0 && (
+          <section aria-label={t("Apps")} data-testid="library-apps">
+            <h2 className="px-4 pb-1 pt-2 text-[12px] font-semibold uppercase tracking-wide text-muted">{t("Apps")}</h2>
+            <ul>
+              {apps.map((f) => (
+                <li key={f.path}>
+                  <FileRow file={f} app onOpen={() => openFile(f.path)} />
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {apps.length > 0 && others.length > 0 && (
+          <h2 className="px-4 pb-1 pt-3 text-[12px] font-semibold uppercase tracking-wide text-muted">{t("Files")}</h2>
+        )}
         <ul>
-          {shown.map((f) => (
+          {others.map((f) => (
             <li key={f.path}>
               <FileRow file={f} onOpen={() => openFile(f.path)} />
             </li>
@@ -116,7 +138,8 @@ export function Segmented({ labels, selected, onSelect }: { labels: string[]; se
 }
 
 /** One file the way Muse lists it: a tile (the picture itself for images, a glyph otherwise), the name, when · size · folder. */
-function FileRow({ file, onOpen }: { file: FileInfo; onOpen: () => void }) {
+function FileRow({ file, onOpen, app = false }: { file: FileInfo; onOpen: () => void; app?: boolean }) {
+  const t = useT();
   const kind = fileKind(file.name);
   const icon =
     kind === "html" ? (
@@ -142,6 +165,11 @@ function FileRow({ file, onOpen }: { file: FileInfo; onOpen: () => void }) {
         <span className="block truncate text-[15px] font-medium">{file.name}</span>
         <span className="block truncate text-[12px] text-muted">{[relativeDay(file.modified), formatSize(file.size), dir].filter(Boolean).join(" · ")}</span>
       </span>
+      {app && (
+        <span className="flex shrink-0 items-center gap-1 rounded-full bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-accent-fg">
+          <Play size={12} fill="currentColor" /> {t("Run")}
+        </span>
+      )}
     </button>
   );
 }

@@ -21,7 +21,7 @@ Repo: this directory. Remote: origin (leothefleo49/MiniMuse). Muse export data: 
 - [x] 12. (Settings > Model shows the real active model name and switches in place; name and tagline are separate fields in the identity form; 278 web tests pass) AI settings show actual model (not just "Meta"), allow switching models; show nickname/subtext separately
 - [ ] 13. Sync Google/Gmail: simple redirect + sign in, few taps; remove duplicate connection popups
 - [ ] 14. Browser control on phone: install/enable easily or one-tap redirect instead of vague "unavailable"
-- [ ] 15. Artifacts: apps pinned at top / easy find + quick run in-app
+- [x] 15. (Library > Artifacts now pins HTML apps in an 'Apps' group on top, each with a Run button that opens it in the in-app viewer; 278 web tests pass; not seen on a phone) Artifacts: apps pinned at top / easy find + quick run in-app
 - [x] 16. (header: more top padding, avatar button padded, name tag no longer pulled up over the face; code-only, not seen on a phone) AI icon: add padding so name doesn't cover bottom and top isn't clipped (room for animation)
 - [x] 17. (root cause: the nanomuse:sync-qr event had a listener only inside DataControls, so a scan from anywhere else did nothing; now app-wide PairQrListener pairs + toasts on the phone, PC gets a 'paired' event + toast; 278 web tests + 2 new pytest + 46 sync tests pass; NOT tried with a real phone and PC) QR pairing phone -> PC: scan result actually pairs and shows confirmation on both sides
 

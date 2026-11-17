@@ -2369,6 +2369,8 @@ const zhCN: Record<string, string> = {
   "Not set yet": "尚未设置",
   "Pairing...": "正在配对...",
   "Could not pair: {error}": "无法配对：{error}",
+  "Apps": "应用",
+  "Run": "运行",
   "Importing...": "正在导入...",
   "Import a file": "导入文件",
   "Import {name}": "导入 {name}",
