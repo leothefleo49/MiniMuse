@@ -204,6 +204,24 @@ class WatchClient(private val config: WatchConfig) {
         }
     }
 
+    /**
+     * Pair with the first server that accepts the code: the address typed (if any), the one
+     * saved, then every server found on Wi-Fi. Typing a long address on a watch is the hard
+     * part, so a blank address is fine as long as something was found.
+     */
+    suspend fun claimFirst(candidates: List<String>, rawCode: String): Result<String> {
+        if (candidates.isEmpty()) {
+            return Result.failure(IllegalArgumentException("No server yet: tap Scan Wi-Fi, or type its address"))
+        }
+        var last: Throwable? = null
+        for (url in candidates) {
+            val res = claimCode(url, rawCode)
+            if (res.isSuccess) return res
+            last = res.exceptionOrNull()
+        }
+        val tried = if (candidates.size == 1) "" else " (tried ${candidates.size} addresses)"
+        return Result.failure(IllegalStateException((last?.message ?: "Pairing failed") + tried))
+    }
     suspend fun fetchState(): Result<WatchState> = withContext(Dispatchers.IO) {
         val baseUrl = config.serverUrl
         val token = config.token
@@ -434,6 +452,22 @@ class WatchClient(private val config: WatchConfig) {
     companion object {
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
+        /** Addresses to try for a pairing, best first, no duplicates; a bare host also tries the default port. */
+        fun pairingCandidates(typed: String, saved: String, discovered: List<String>): List<String> {
+            val out = LinkedHashSet<String>()
+            fun add(raw: String) {
+                val clean = raw.trim()
+                if (clean.isEmpty()) return
+                val url = WatchConfig.normalizeUrl(clean)
+                val hostPart = url.substringAfter("://")
+                if (!hostPart.contains(":") && !hostPart.contains("/")) out.add("$url:8787")
+                out.add(url)
+            }
+            add(typed)
+            add(saved)
+            discovered.forEach { add(it) }
+            return out.toList()
+        }
         fun toCallWsUrl(serverUrl: String, patienceMs: Long): String {
             val base = WatchConfig.normalizeUrl(serverUrl)
             val wsBase = when {

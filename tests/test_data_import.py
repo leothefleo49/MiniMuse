@@ -770,3 +770,27 @@ def test_api_background_import_reports_progress_and_finishes(api_server: Any, tm
     assert client.get("/api/data/import/jobs/nope").status_code == 404
     # nothing is left in staging once the job is done
     assert not list((_service.data_dir / "imports" / "staging").glob("*.upload"))
+
+
+def test_voice_call_files_get_clean_distinct_titles_and_dates() -> None:
+    text = "# Voice Call Chat Transcript\n\n**Tyler:** hi **Muse:** hello **Tyler:** ok **Muse:** bye"
+    one = "voice call transcript 2026 10 31.md"
+    two = "voice call transcript 2026 11 02.md"
+    assert data_import.title_from_text(text, one) == "Voice call - Oct 31"
+    assert data_import.title_from_text(text, two) == "Voice call - Nov 2"
+    assert data_import.title_from_name("zai next model 2026 11 07.md") == "zai next model"
+    turns = data_import.parse_transcript(text, one)
+    assert [t.role for t in turns] == ["user", "assistant", "user", "assistant"]
+    assert turns[0].ts.startswith("2026-10-31")
+
+
+def test_imported_chats_are_dated_by_their_messages(api_server: Any, tmp_path: Path) -> None:
+    client, _service = api_server
+    zip_path = make_zip(
+        tmp_path,
+        {"workspace/your_files/apps_and_data/chat-transcripts/dated.md": TRANSCRIPT},
+    )
+    assert client.post("/api/data/import?name=e.zip", content=zip_path.read_bytes()).status_code == 200
+    made = [t for t in client.get("/api/threads").json() if t["title"] == "dated"][0]
+    assert made["updated_at"].startswith("2026-10-17T19:30")
+    assert made["created_at"].startswith("2026-10-17T19:18")

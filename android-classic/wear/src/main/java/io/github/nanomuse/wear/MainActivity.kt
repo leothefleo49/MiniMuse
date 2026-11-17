@@ -11,7 +11,16 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioManager
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.view.HapticFeedbackConstants
+import android.view.InputDevice
+import android.view.MotionEvent
+import android.view.ViewConfiguration
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
@@ -645,10 +654,58 @@ class MainActivity : AppCompatActivity() {
 
     // ---- Live Call Mode (/ws/call) ----
 
+    private var volumeCarry = 0f
+
+    /** The rotating bezel: scrolls the page, and during a live call turns the call volume up and down. */
+    override fun onGenericMotionEvent(ev: MotionEvent): Boolean {
+        if (ev.action == MotionEvent.ACTION_SCROLL && ev.isFromSource(InputDevice.SOURCE_ROTARY_ENCODER)) {
+            val axis = ev.getAxisValue(MotionEvent.AXIS_SCROLL)
+            if (callPhase != CallPhase.OFF) {
+                val (steps, carry) = Bezel.volumeSteps(axis, volumeCarry)
+                volumeCarry = carry
+                if (steps != 0) {
+                    val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    val stream = if (callMode == "realtime") AudioManager.STREAM_VOICE_CALL else AudioManager.STREAM_MUSIC
+                    val dir = if (steps > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
+                    repeat(kotlin.math.abs(steps)) { audio.adjustStreamVolume(stream, dir, 0) }
+                    buzz(Buzz.TICK)
+                }
+            } else {
+                val factor = ViewConfiguration.get(this).getScaledVerticalScrollFactor()
+                rootScroll?.smoothScrollBy(0, Bezel.scrollPixels(axis, factor))
+                rootScroll?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            }
+            return true
+        }
+        return super.onGenericMotionEvent(ev)
+    }
+
+    private enum class Buzz { TICK, CLICK, HEAVY }
+
+    /** A short vibration for what just happened: a tick for a notch, a click for a send, a heavy one for an end. */
+    private fun buzz(kind: Buzz) {
+        try {
+            val vibrator: Vibrator? = if (android.os.Build.VERSION.SDK_INT >= 31) {
+                (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
+            val effect = when (kind) {
+                Buzz.TICK -> VibrationEffect.EFFECT_TICK
+                Buzz.CLICK -> VibrationEffect.EFFECT_CLICK
+                Buzz.HEAVY -> VibrationEffect.EFFECT_HEAVY_CLICK
+            }
+            vibrator?.vibrate(VibrationEffect.createPredefined(effect))
+        } catch (_: Exception) {
+        }
+    }
+
     private fun startLiveCall() {
         ensureMicPermission {
             cancelVoiceAsk()
             endLiveCall()
+            buzz(Buzz.CLICK)
             callPhase = CallPhase.CONNECTING
             callMuted = false
             callSpeakerOff = false
@@ -864,6 +921,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun endLiveCall() {
         if (callPhase == CallPhase.OFF && callSocket == null) return
+        buzz(Buzz.HEAVY)
         callPhase = CallPhase.OFF
         cancelVoiceAutoSend()
         destroySpeechRecognizer()
@@ -984,7 +1042,7 @@ class MainActivity : AppCompatActivity() {
                 statusNotice = "Pairing..."
                 render()
                 lifecycleScope.launch {
-                    val res = client.claimCode(u, c)
+                    val res = client.claimFirst(WatchClient.pairingCandidates(u, config.serverUrl, discoveredServers.map { it.url }), c)
                     res.onSuccess {
                         statusNotice = ""
                         refreshState()

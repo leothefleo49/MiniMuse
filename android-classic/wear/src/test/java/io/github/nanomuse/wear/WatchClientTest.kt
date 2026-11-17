@@ -94,4 +94,30 @@ class WatchClientTest {
         assertNull(WatchClient.parseLatestWearRelease(json, "1.0.17"))
         assertFalse(WatchClient.isNewerVersion("1.0.16", "1.0.16"))
     }
-}
+
+    @Test
+    fun `bezel turns scroll the page and add up to volume steps`() {
+        assertEquals(40, Bezel.scrollPixels(-1f, 40f))
+        assertEquals(-40, Bezel.scrollPixels(1f, 40f))
+        assertEquals(1 to 0f, Bezel.volumeSteps(-1f, 0f))
+        assertEquals(-2 to 0f, Bezel.volumeSteps(2f, 0f))
+        val (s1, c1) = Bezel.volumeSteps(-0.4f, 0f)
+        assertEquals(0, s1)
+        val (s2, _) = Bezel.volumeSteps(-0.7f, c1)
+        assertEquals(1, s2)
+    }
+
+    @Test
+    fun `pairingCandidates tries typed then saved then discovered without duplicates`() {
+        val out = WatchClient.pairingCandidates(
+            typed = "192.168.1.5",
+            saved = "http://192.168.1.5:8787/",
+            discovered = listOf("http://192.168.1.9:8787", "http://192.168.1.5:8787"),
+        )
+        assertEquals(
+            listOf("http://192.168.1.5:8787", "http://192.168.1.5", "http://192.168.1.9:8787"),
+            out,
+        )
+        assertEquals(emptyList<String>(), WatchClient.pairingCandidates("", "", emptyList()))
+        assertEquals(listOf("http://10.0.0.2:9000"), WatchClient.pairingCandidates("10.0.0.2:9000", "", emptyList()))
+    }}

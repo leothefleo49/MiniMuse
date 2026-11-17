@@ -163,7 +163,7 @@ def _parse_bracket_transcript(text: str) -> list[dict[str, str]]:
     return kept if len(kept) >= 2 else []
 
 
-DATE_IN_NAME = re.compile(r"(20\d{2})[-_](\d{2})[-_](\d{2})")
+DATE_IN_NAME = re.compile(r"(?<!\d)(20\d{2})[-_ ](\d{2})[-_ ](\d{2})(?!\d)")
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_. -]+")
 
@@ -511,7 +511,22 @@ def _clean_heading(heading: str) -> str:
 
 
 def title_from_text(text: str, name: str) -> str:
-    """A chat's title: the name inside its transcript when it has one, else the file's."""
+    """A chat's title: the name inside its transcript when it has one, else the file's. A
+    voice call gets its day, so two calls are never the same chat."""
+    title = _title_from_text(text, name)
+    if re.fullmatch(r"voice call( chat)?( transcript)?", title.strip().lower()):
+        stamp = DATE_IN_NAME.search(name or "")
+        if stamp is not None:
+            try:
+                day = datetime(int(stamp.group(1)), int(stamp.group(2)), int(stamp.group(3)))
+                return f"Voice call - {day:%b} {day.day}"
+            except ValueError:
+                pass
+        return "Voice call"
+    return title
+
+
+def _title_from_text(text: str, name: str) -> str:
     head = text[:4000]
     first = head.lstrip().split("\n", 1)[0].strip()
     named = re.match(r"^Conversation with\s+(.{1,60})$", first, re.IGNORECASE)
@@ -543,10 +558,10 @@ def title_from_name(name: str) -> str:
     stem = name.replace("\\", "/").rsplit("/", 1)[-1]
     while _FILE_EXT.search(stem):
         stem = _FILE_EXT.sub("", stem)
-    stem = re.sub(r"^\d{4}[-_]\d{2}[-_]\d{2}[-_ ]+", "", stem)
+    stem = DATE_IN_NAME.sub(" ", stem)
     stem = re.sub(r"[-_ ]chat[-_]?transcript", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"[-_ ]transcript$", "", stem, flags=re.IGNORECASE)
-    stem = stem.replace("-", " ").replace("_", " ").strip()
+    stem = re.sub(r"\s+", " ", stem.replace("-", " ").replace("_", " ")).strip()
     return stem[:80] or Path(name).name
 
 
@@ -1559,6 +1574,7 @@ def _apply_conversation(
     turns = [t for t in conv.turns if t.role in ("user", "assistant") and t.text.strip()][
         :MAX_EVENTS_PER_CONVERSATION
     ]
+    threads_before = set(svc.threads)
     if conv.kind == "muse_main" and options.main_chat == "replace":
         made = svc.create_thread("Main chat")
         stats["threads_created"] += 1
@@ -1614,6 +1630,11 @@ def _apply_conversation(
         events.append({"type": turn.role, "text": turn.text, "ts": turn.ts, "imported": True})
     if events:
         stats["events_added"] += thread.timeline.merge_sorted(events)
+    if tid not in threads_before and tid != "main":
+        # a chat made by this import is as old as its messages, not as new as the import
+        stamps = sorted(t.ts for t in turns if t.ts and t.ts != FLOOR_TS)
+        if stamps:
+            thread.created_at, thread.updated_at = stamps[0], stamps[-1]
     if turns:
         _insert_agent_messages(thread, turns)
     svc._save_index()
