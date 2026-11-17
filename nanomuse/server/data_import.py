@@ -42,7 +42,10 @@ import hashlib
 import json
 import re
 import sqlite3
+import time
+import uuid
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -838,7 +841,64 @@ def _store_app_entry(
 
 
 # ------------------------------------------------------------------ archive reading
-def ingest_path(svc: MuseService, path: Path, name: str, options: ImportOptions) -> ImportPlan:
+@dataclass
+class ImportJob:
+    """One import running in the background: what it is doing and how far along it is."""
+
+    id: str
+    name: str
+    phase: str = "queued"  # queued, reading, applying, done, error
+    done: int = 0
+    total: int = 0
+    result: dict[str, Any] | None = None
+    error: str = ""
+    started: float = field(default_factory=time.time)
+    finished: float = 0.0
+
+    def view(self) -> dict[str, Any]:
+        end = self.finished or time.time()
+        return {
+            "id": self.id,
+            "name": self.name,
+            "phase": self.phase,
+            "done": self.done,
+            "total": self.total,
+            "percent": (
+                100
+                if self.phase == "done"
+                else min(99, int(self.done * 100 / self.total))
+                if self.total
+                else 0
+            ),
+            "elapsed_s": round(end - self.started, 1),
+            "result": self.result,
+            "error": self.error,
+        }
+
+    def progress(self, done: int, total: int) -> None:
+        self.done, self.total = done, total
+
+
+IMPORT_JOBS: dict[str, ImportJob] = {}
+MAX_KEPT_JOBS = 20
+
+
+def new_job(name: str) -> ImportJob:
+    job = ImportJob(id=uuid.uuid4().hex[:12], name=name)
+    IMPORT_JOBS[job.id] = job
+    finished = [j for j in IMPORT_JOBS.values() if j.finished]
+    for old in sorted(finished, key=lambda j: j.finished)[: max(0, len(finished) - MAX_KEPT_JOBS)]:
+        IMPORT_JOBS.pop(old.id, None)
+    return job
+
+
+def ingest_path(
+    svc: MuseService,
+    path: Path,
+    name: str,
+    options: ImportOptions,
+    progress: Callable[[int, int], None] | None = None,
+) -> ImportPlan:
     """Read and stage one uploaded file (a zip or a single text file) in a worker thread.
 
     Conversations are held in memory; app and memory files are written straight to the
@@ -846,7 +906,7 @@ def ingest_path(svc: MuseService, path: Path, name: str, options: ImportOptions)
     or duplicates. Threads are not touched here: :func:`apply_plan` does that on the loop."""
     plan = ImportPlan(option_key=options.key())
     if zipfile.is_zipfile(path):
-        _ingest_zip(svc, path, name, options, plan)
+        _ingest_zip(svc, path, name, options, plan, progress)
     else:
         _ingest_single(path, name, options, plan, svc.data_dir)
     return plan
@@ -981,7 +1041,12 @@ def _accept_text(
 
 
 def _ingest_zip(
-    svc: MuseService, path: Path, name: str, options: ImportOptions, plan: ImportPlan
+    svc: MuseService,
+    path: Path,
+    name: str,
+    options: ImportOptions,
+    plan: ImportPlan,
+    progress: Callable[[int, int], None] | None = None,
 ) -> None:
     data_dir = svc.data_dir
     with zipfile.ZipFile(path) as archive:
@@ -992,7 +1057,10 @@ def _ingest_zip(
         if MAX_ZIP_TOTAL_BYTES and total > MAX_ZIP_TOTAL_BYTES:
             raise ValueError("the archive expands to more than the import limit; split it first")
         apps: dict[str, dict[str, Any]] = {}
-        for info in archive.infolist():
+        entry_total = len(names)
+        for entry_no, info in enumerate(archive.infolist(), start=1):
+            if progress is not None and (entry_no % 100 == 0 or entry_no == entry_total):
+                progress(entry_no, entry_total)
             member = info.filename
             if member.endswith("/") or info.is_dir():
                 continue

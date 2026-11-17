@@ -4393,6 +4393,8 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             },
         )
 
+    background_tasks: set[asyncio.Task[None]] = set()
+
     @app.post("/api/data/import", dependencies=dep)
     async def import_data(
         request: Request,
@@ -4401,6 +4403,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         background_memory: bool = Query(True),
         apps: str = Query("both"),
         main_chat: str = Query("side"),
+        background: bool = Query(False),
     ) -> dict[str, Any]:
         """Import one file (a Muse export zip, a nanoMuse export zip, or a transcript):
         the bytes as the request body (no multipart), the file name in ``name``. The four
@@ -4434,6 +4437,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                     f"({int(declared) // (1024 * 1024)} MB needed; free some space and try again)",
                 )
         staging = staging_dir / f"{uuid.uuid4().hex}.upload"
+        staging_kept = False
         try:
             total = 0
             with staging.open("wb") as out:
@@ -4446,6 +4450,31 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                     out.write(chunk)
             if total == 0:
                 raise HTTPException(400, "empty file")
+            if background:
+                job = data_import.new_job(name)
+
+                async def run_job() -> None:
+                    try:
+                        job.phase = "reading"
+                        plan = await asyncio.to_thread(
+                            data_import.ingest_path, svc, staging, name, options, job.progress
+                        )
+                        job.phase = "applying"
+                        job.result = data_import.apply_plan(svc, plan, options)
+                        job.phase = "done"
+                    except Exception as exc:  # the job reports it; the server keeps running
+                        logger.warning("background import failed: %s", exc)
+                        job.error = str(exc) or exc.__class__.__name__
+                        job.phase = "error"
+                    finally:
+                        job.finished = time.time()
+                        staging.unlink(missing_ok=True)
+
+                task = asyncio.create_task(run_job())
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
+                staging_kept = True
+                return {"ok": True, "background": True, "job": job.view()}
             # reading and staging happen in a worker thread; the service's threads are
             # only touched back on the event loop (apply_plan), where the runtime expects it
             plan = await asyncio.to_thread(
@@ -4453,7 +4482,21 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             )
             return data_import.apply_plan(svc, plan, options)
         finally:
-            staging.unlink(missing_ok=True)
+            if not staging_kept:
+                staging.unlink(missing_ok=True)
+
+    @app.get("/api/data/import/jobs", dependencies=dep)
+    async def import_jobs() -> dict[str, Any]:
+        """Every import running or recently finished, newest first, for the progress bar."""
+        jobs = sorted(data_import.IMPORT_JOBS.values(), key=lambda j: j.started, reverse=True)
+        return {"jobs": [j.view() for j in jobs]}
+
+    @app.get("/api/data/import/jobs/{job_id}", dependencies=dep)
+    async def import_job(job_id: str) -> dict[str, Any]:
+        job = data_import.IMPORT_JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(404, "no such import")
+        return job.view()
 
     @app.post("/api/data/import/text", dependencies=dep)
     async def import_text(

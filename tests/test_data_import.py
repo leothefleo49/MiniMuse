@@ -741,3 +741,32 @@ def test_muse_bracket_export_parses_into_back_and_forth_messages() -> None:
     assert turns[0].ts == "2026-10-03T20:07:47+00:00"
     assert data_import.looks_like_transcript(text)
     assert data_import.title_from_text(text, "x.txt") == "Chat with Muse AI"
+
+
+def test_api_background_import_reports_progress_and_finishes(api_server: Any, tmp_path: Path) -> None:
+    import time
+
+    client, _service = api_server
+    zip_path = make_zip(
+        tmp_path,
+        {"workspace/your_files/apps_and_data/chat-transcripts/one.md": TRANSCRIPT},
+    )
+    started = client.post(
+        "/api/data/import?name=export.zip&main_chat=side&background=true",
+        content=zip_path.read_bytes(),
+    )
+    assert started.status_code == 200, started.text
+    job_id = started.json()["job"]["id"]
+    job: dict[str, Any] = {}
+    for _ in range(100):
+        job = client.get(f"/api/data/import/jobs/{job_id}").json()
+        if job["phase"] in ("done", "error"):
+            break
+        time.sleep(0.1)
+    assert job["phase"] == "done", job
+    assert job["percent"] == 100
+    assert job["result"]["events_added"] == 3
+    assert any(j["id"] == job_id for j in client.get("/api/data/import/jobs").json()["jobs"])
+    assert client.get("/api/data/import/jobs/nope").status_code == 404
+    # nothing is left in staging once the job is done
+    assert not list((_service.data_dir / "imports" / "staging").glob("*.upload"))
