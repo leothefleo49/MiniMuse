@@ -1174,7 +1174,7 @@ export const UserBubble = memo(function UserBubble({
       {...gesture.handlers}
       data-msg={event.id}
       className="rise relative flex flex-col items-end pl-12"
-      style={{ transform: `translateX(${gesture.dx}px)`, transition: gesture.dx === 0 ? "transform 180ms ease-out" : "none" }}
+      style={{ contentVisibility: "auto", containIntrinsicSize: "auto 60px", transform: `translateX(${gesture.dx}px)`, transition: gesture.dx === 0 ? "transform 180ms ease-out" : "none" }}
     >
       {gesture.dx !== 0 && <SwipeHints dx={gesture.dx} />}
       {gesture.showTime && (
@@ -1388,7 +1388,7 @@ const AssistantBubble = memo(function AssistantBubble({
       {...gesture.handlers}
       data-msg={eventId}
       className={cx("rise relative flex items-end gap-2 pr-10", continued && "-mt-1")}
-      style={{ transform: `translateX(${gesture.dx}px)`, transition: gesture.dx === 0 ? "transform 180ms ease-out" : "none" }}
+      style={{ contentVisibility: "auto", containIntrinsicSize: "auto 80px", transform: `translateX(${gesture.dx}px)`, transition: gesture.dx === 0 ? "transform 180ms ease-out" : "none" }}
     >
       {gesture.dx !== 0 && <SwipeHints dx={gesture.dx} />}
       {gesture.showTime && ts && (
