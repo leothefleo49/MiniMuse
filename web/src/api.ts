@@ -222,6 +222,19 @@ export type ImportResult = {
   note: string;
 };
 
+/** One import running (or lately finished) in the background. */
+export type ImportJobView = {
+  id: string;
+  name: string;
+  phase: "queued" | "reading" | "applying" | "done" | "error";
+  done: number;
+  total: number;
+  percent: number;
+  elapsed_s: number;
+  result: ImportResult | null;
+  error: string;
+};
+
 /** One call to the runtime: the bearer token, JSON in and out, 401 as `AuthError`, the
  *  server's `detail` as the error's text. `channels-api.ts` shares it. */
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -519,6 +532,26 @@ export const api = {
     if (!res.ok) throw new Error(failureDetail(res.status, await res.json().catch(() => undefined)));
     return (await res.json()) as ImportResult;
   },
+  /** Same upload, but the runtime reads and applies it in the background and answers at once
+   *  with a job to follow (`importJobs`); the app stays usable meanwhile. */
+  importDataBackground: async (file: Blob, name: string, options: ImportOptions): Promise<ImportJobView> => {
+    const params = new URLSearchParams({
+      name,
+      restore_chats: String(options.restore_chats),
+      background_memory: String(options.background_memory),
+      apps: options.apps,
+      main_chat: options.main_chat,
+      background: "true",
+    });
+    const headers: Record<string, string> = {};
+    const token = getToken();
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`/api/data/import?${params.toString()}`, { method: "POST", headers, body: file });
+    if (res.status === 401) throw new AuthError();
+    if (!res.ok) throw new Error(failureDetail(res.status, await res.json().catch(() => undefined)));
+    return ((await res.json()) as { job: ImportJobView }).job;
+  },
+  importJobs: () => request<{ jobs: ImportJobView[] }>("/api/data/import/jobs", { cache: "no-store" }),
   /** Paste text straight into the import (transcripts, notes, anything readable). */
   importText: async (text: string, name: string, options: ImportOptions): Promise<ImportResult> => {
     const params = new URLSearchParams({

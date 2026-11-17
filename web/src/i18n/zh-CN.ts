@@ -2356,6 +2356,13 @@ const zhCN: Record<string, string> = {
   "Merges into the main chat": "合并进主聊天",
   "A side chat is the safe pick. Becomes the main chat sets the current main chat aside as a side chat, untouched. Merges into the main chat interleaves both histories by message time.":
     "作为侧聊是最稳妥的选择。成为主聊天会把当前主聊天原封不动地放到一边变成侧聊。合并进主聊天会按消息时间把两段历史交错排在一起。",
+  "Adding to your chats...": "正在添加到你的聊天...",
+  "Import failed": "导入失败",
+  "Import failed: {error}": "导入失败：{error}",
+  "Import finished": "导入完成",
+  "Import finished: {summary}": "导入完成：{summary}",
+  "Import started. It runs in the background: keep using the app.": "导入已开始，将在后台运行，你可以继续使用应用。",
+  "Importing {name}": "正在导入 {name}",
   "Importing...": "正在导入...",
   "Import a file": "导入文件",
   "Import {name}": "导入 {name}",

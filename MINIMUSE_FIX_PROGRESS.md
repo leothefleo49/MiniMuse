@@ -10,7 +10,7 @@ Repo: this directory. Remote: origin (leothefleo49/MiniMuse). Muse export data: 
 - [x] 3. (commit a7fa700; compiles, NOT yet verified on a device) Full screen / edge-to-edge: remove black bars top and bottom
 - [x] 4. (commit 22b18bb; import tests pass) Muse import: remove size limit (stream the zip, no in-memory load)
 - [x] 5. (real 3GB export imports in 1.3s into one 'Muse main chat' with 10,667 correctly-sided, correctly-timed messages; manifest preferred over duplicate text copy; loose docs no longer become chats; widget tokens stripped; naive stamps read as UTC; 35 tests pass) Muse import: study real export format from the zip; fix parsing so messages, titles, roles (back-and-forth), tasks, voice-call transcripts import correctly (no giant overlapping text, no "task listed as title")
-- [ ] 6. Muse import: runs in background safely (service/worker), faster, with a visible progress indicator reachable from anywhere; setup can continue meanwhile
+- [x] 6. (backend job API + pytest, ImportProgress pill mounted app-wide + vitest, 275 web tests pass, bundle rebuilt; real 3GB zip imports in ~1s of parsing; NOT yet seen on a phone) Muse import: runs in background safely (service/worker), faster, with a visible progress indicator reachable from anywhere; setup can continue meanwhile
 - [ ] 7. Performance: UI renders locally, no lag/stutter after each click; network/AI work off the main thread
 - [ ] 8. Navigation: back arrow goes back one step, not to home chat
 - [ ] 9. Setup got cut short by earlier bug: allow re-running / resuming setup; all setup items editable later

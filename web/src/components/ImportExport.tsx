@@ -95,7 +95,7 @@ function ChoiceRow<T extends string>({
   );
 }
 
-function summaryOf(result: ImportResult, t: (key: string, vars?: Record<string, string | number>) => string) {
+export function summaryOf(result: ImportResult, t: (key: string, vars?: Record<string, string | number>) => string) {
   const bits: string[] = [];
   if (result.profile_updated) bits.push(t("AI profile & user details linked"));
   if (result.avatar_files) bits.push(t("{n} avatar icons & animations", { n: String(result.avatar_files) }));
@@ -149,6 +149,22 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
         await refreshSettings().catch(() => undefined);
       }
       toast(t("Imported."));
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  // A file is uploaded here, then read and applied by the runtime in the background: the
+  // progress pill (ImportProgress, mounted app-wide) follows it, and the screen stays free.
+  const startBackground = async (file: File) => {
+    setBusy("file");
+    setResult(null);
+    try {
+      await api.importDataBackground(file, file.name, options());
+      window.dispatchEvent(new Event("nanomuse:import-started"));
+      toast(t("Import started. It runs in the background: keep using the app."));
     } catch (e) {
       toast((e as Error).message);
     } finally {
@@ -294,7 +310,7 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
               e.currentTarget.value = "";
               if (!file) return;
               setFileName(file.name);
-              void run(() => api.importData(file, file.name, options()), "file");
+              void startBackground(file);
             }}
           />
           <p className="pt-2 text-center text-[12px] text-muted">{t("A Muse export zip, a MiniMuse export zip, or any transcript or text file, of any size.")}</p>
