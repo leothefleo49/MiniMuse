@@ -17,6 +17,14 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.3": {
+        "title": "Google sign-in simplified",
+        "added": [],
+        "improved": [
+            "Google sign-in works out of the box; the client id and secret are behind an Advanced toggle",
+        ],
+        "fixed": [],
+    },
     "1.2.2": {
         "title": "Google sign-in out of the box, faster chats, and watch polish",
         "added": [

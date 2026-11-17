@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MiniMuse Companion",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Use MiniMuse in Chrome Side Panel and share a background tab safely via chrome.debugger without other extensions breaking it or stealing focus.",
   "permissions": [
     "sidePanel",

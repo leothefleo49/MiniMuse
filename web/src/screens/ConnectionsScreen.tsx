@@ -3171,6 +3171,7 @@ export function EmailCard({
   const [callbackUrl, setCallbackUrl] = useState("");
   const [googleTip, setGoogleTip] = useState(false);
   const [showServerSettings, setShowServerSettings] = useState(false);
+  const [showAdvancedGoogle, setShowAdvancedGoogle] = useState(false);
   const hasPhoneSync = !!androidApp()?.syncPhoneCalendarAndContacts;
 
   useEffect(() => {
@@ -3593,7 +3594,7 @@ export function EmailCard({
                     ? t("Google OAuth Client ID is ready ({id}). Click Sign in with Google Popup to auto-sync Gmail, Calendar, Contacts, Drive & Tasks.", { id: g.client_id_preview || "vault" })
                     : t("For full Google OAuth + 1-click Calendar, Contacts, Gmail, Drive & Tasks API sync, create a Desktop OAuth Client ID once:")}
                 </p>
-                {!g?.has_client_id && (
+                {showAdvancedGoogle && !g?.has_client_id && (
                   <a
                     href="https://console.cloud.google.com/apis/credentials"
                     target="_blank"
@@ -3604,12 +3605,12 @@ export function EmailCard({
                   </a>
                 )}
               </div>
-              {!g?.has_client_id && (
+              {showAdvancedGoogle && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                   <input
                     value={clientId}
                     onChange={(ev) => setClientId(ev.target.value)}
-                    placeholder={t("Google OAuth Client ID")}
+                    placeholder={t("Google OAuth Client ID (optional override)")}
                     className={cx(inputCls, "py-1.5 text-[12px]")}
                     autoCapitalize="off"
                   />
@@ -3623,6 +3624,13 @@ export function EmailCard({
                   />
                 </div>
               )}
+              <button
+                type="button"
+                onClick={() => setShowAdvancedGoogle((v) => !v)}
+                className="text-[11.5px] text-muted hover:text-fg underline"
+              >
+                {showAdvancedGoogle ? t("Hide advanced") : t("Advanced: use your own Google Cloud project")}
+              </button>
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"

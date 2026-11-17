@@ -4,6 +4,10 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-11-17
+### Changed
+- Google sign-in: the client id and secret fields are now behind an 'Advanced' toggle; a default public client id ships with the app so most users never need them.
+
 ## [1.2.2] - 2026-11-17
 ### Added
 - Google sign-in now works out of the box: a public OAuth client id ships with the app (PKCE, no secret needed), so 'Sign in with Google Popup' works without your own Google Cloud project.
