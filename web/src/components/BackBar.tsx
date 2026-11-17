@@ -25,9 +25,9 @@ export function PageBar({
   onBack?: () => void;
   backLabel?: string;
 }) {
-  const { setTab } = useStore();
+  const { goBack: stepBack } = useStore();
   const t = useT();
-  const goBack = onBack ?? (() => setTab("chat"));
+  const goBack = onBack ?? stepBack;
   useClosable(
     "page-bar",
     () => {
@@ -54,19 +54,19 @@ export function PageBar({
 
 /** "Back to chat" on its own, for a screen that draws its own title. */
 export function BackBar({ label = "Chat" }: { label?: string }) {
-  const { setTab } = useStore();
+  const { goBack } = useStore();
   const t = useT();
   useClosable(
     "back-bar",
     () => {
-      setTab("chat");
+      goBack();
       return true;
     },
     true,
   );
   return (
     <div className="mb-1 flex h-12 items-center">
-      <MuseRoundButton small onClick={() => setTab("chat")} label={t(label)}>
+      <MuseRoundButton small onClick={goBack} label={t(label)}>
         <ArrowLeft size={20} />
       </MuseRoundButton>
     </div>

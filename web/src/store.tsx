@@ -172,6 +172,8 @@ export interface AppState {
   /** The sign-in door stepped past for a key of one's own (kept in storage): the sign-in stays an invitation under Connections. */
   signInSkipped: boolean;
   tab: Tab;
+  /** The screens left behind, newest last: the back arrow returns to the one before, not to the chat. */
+  tabHistory: Tab[];
   toast: string | null;
   /** The chats drawer (the phone's hamburger) is open. */
   drawer: boolean;
@@ -232,6 +234,7 @@ type Action =
   | { type: "goals"; goals: Goal[] }
   | { type: "settings"; settings: SettingsView }
   | { type: "tab"; tab: Tab }
+  | { type: "tabBack" }
   | { type: "drawer"; open: boolean }
   | { type: "feedSeen"; at: string }
   | { type: "viewer"; path: string | null }
@@ -300,6 +303,7 @@ export const initial: AppState = {
   onboardingDismissed: false,
   signInSkipped: readStorage(SIGN_IN_SKIPPED_KEY) === "1",
   tab: "chat",
+  tabHistory: [],
   toast: null,
   drawer: false,
   finishedAt: 0,
@@ -478,7 +482,21 @@ export function reducer(state: AppState, action: Action): AppState {
     case "settings":
       return { ...state, settings: action.settings, profile: action.settings.profile };
     case "tab":
-      return { ...state, tab: action.tab };
+      if (action.tab === state.tab) return state;
+      return { ...state, tab: action.tab, tabHistory: [...state.tabHistory, state.tab].slice(-20) };
+    case "tabBack": {
+      // skip over entries equal to the screen being left, then land on the one before it
+      const rest = [...state.tabHistory];
+      let to: Tab = "chat";
+      while (rest.length) {
+        const prev = rest.pop() as Tab;
+        if (prev !== state.tab) {
+          to = prev;
+          break;
+        }
+      }
+      return { ...state, tab: to, tabHistory: rest };
+    }
     case "drawer":
       return { ...state, drawer: action.open };
     case "feedSeen":
@@ -735,6 +753,8 @@ interface StoreValue {
    *  transition started while the drawer closes could leave the old picture on screen
    *  in the Android WebView until the next tap). */
   setTab: (tab: Tab, opts?: { animate?: boolean }) => void;
+  /** One step back through the screens visited (the chat when there is nothing before). */
+  goBack: () => void;
   /** Open or close the chats drawer (the phone's hamburger). */
   setDrawer: (open: boolean) => void;
   openThread: (thread: string) => void;
@@ -1175,6 +1195,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           dispatch({ type: "tab", tab });
         }
       },
+      goBack: () => dispatch({ type: "tabBack" }),
       setDrawer: (open) => dispatch({ type: "drawer", open }),
       openThread: (thread) => dispatch({ type: "activeThread", thread }),
       deleteEvent: async (thread, id) => {
