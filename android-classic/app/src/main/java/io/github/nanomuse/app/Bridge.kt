@@ -186,6 +186,22 @@ class Bridge(private val activity: MainActivity) {
         activity.runOnUiThread { activity.requestAllPermissions() }
     }
 
+    /** Is MiniMuse the phone's default digital assistant? "on", "off" or "unknown". */
+    @JavascriptInterface
+    fun assistantState(): String = io.github.nanomuse.app.assist.Assist.state(activity)
+
+    /** Open Android's *Default digital assistant app* page, the only place one can be chosen. */
+    @JavascriptInterface
+    fun openAssistantSettings() {
+        activity.runOnUiThread {
+            try {
+                activity.startActivity(io.github.nanomuse.app.assist.Assist.settingsIntent())
+            } catch (_: Exception) {
+                activity.startActivity(android.content.Intent(android.provider.Settings.ACTION_SETTINGS))
+            }
+        }
+    }
+
     /** Ask for one permission by name: notifications, camera, microphone, location, calendar, contacts, nearby, install. */
     @JavascriptInterface
     fun requestPermission(key: String?) {

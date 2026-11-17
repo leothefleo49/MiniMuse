@@ -60,6 +60,10 @@ export interface AndroidBridge {
   requestInstallPermission?(): void;
   /** Request all missing runtime + install permissions on Android. */
   requestAllPermissions?(): void;
+  /** Is MiniMuse the phone's default digital assistant? "on", "off" or "unknown". */
+  assistantState?(): string;
+  /** Open Android's Default digital assistant app page, the only place one can be chosen. */
+  openAssistantSettings?(): void;
   /** Ask for one permission by name: notifications, camera, microphone, location, calendar, contacts, nearby, install. */
   requestPermission?(key: string): void;
   /** Return JSON summarizing granted permissions on this phone. */

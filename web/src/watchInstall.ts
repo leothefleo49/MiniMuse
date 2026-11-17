@@ -117,6 +117,7 @@ export function watchFailureNotice(res: WatchInstallResult | null | undefined, t
         title: t("The pairing screen is not open"),
         body: t("MiniMuse could not see a watch waiting for a pairing code."),
         steps: [
+          t("If Developer options is missing on the watch: Settings, About watch, Software info, tap Build number 7 times."),
           t("On the watch open Developer options, Wireless debugging, then Pair new device with pairing code."),
           t("Type the new 6-digit code here before it expires."),
         ],

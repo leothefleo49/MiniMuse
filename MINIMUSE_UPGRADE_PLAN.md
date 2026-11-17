@@ -88,7 +88,7 @@ reproduced against the real phone on the LAN before fixing:
 - [ ] The merge style can be set per chat in the chat's 3-dot menu
 
 ## 13. Watch app (Wear OS)
-- [ ] Watch setup text explains how to enable Developer options on the watch (tap Build number 7 times) before wireless debugging
+- [x] Watch setup text explains how to enable Developer options on the watch (tap Build number 7 times) before wireless debugging: the "no watch found" and "only a phone" popups, the card's guide, and the two messages that used to skip it all say so now (tests pass).
 - [ ] Muse-style home: large animated 3D-feeling avatar that turns and reacts (idle, listening, thinking, speaking)
 - [ ] Chat, call and mic buttons along the bottom
 - [ ] After a period of no interaction the screen shows only the avatar
@@ -98,11 +98,11 @@ reproduced against the real phone on the LAN before fixing:
 - [ ] An Apps page (before settings) lists apps the AI made, with watch versions
 
 ## 13b. Make MiniMuse the default assistant on every device
-- [ ] Phone (Android): MiniMuse is offered under *Default digital assistant app* (voice-interaction service + ASSIST/VOICE_COMMAND entry points), with a one-tap button in Settings that opens the right system screen and shows whether it is already the default
-- [ ] Watch (Wear OS): the watch app declares the same assistant entry points so it can be chosen as the watch's assistant, with a button/guide in the watch settings
-- [ ] PC (Windows): a global summon hotkey (configurable) and a "start with Windows" switch in Settings; the Copilot key can be mapped to it
-- [ ] Settings has one "Default assistant" section that shows per-device status (phone / watch / PC) and what to tap on each
-- [ ] Honest limits written down: what the OS lets an app do on each platform (e.g. Windows has no third-party default-assistant slot)
+- [~] Phone (Android): an `ASSIST` / `VOICE_COMMAND` activity plus a voice-interaction service (the pair Android's own role definition requires), so MiniMuse can be listed under *Default digital assistant app*; holding home or power then opens the main chat. Settings has a **Choose MiniMuse** button that opens Android's page and a status that rereads when you come back. Compiles, and the merged manifest was checked for every declaration. **Not run on a phone**: I cannot confirm Android actually lists it.
+- [~] Watch (Wear OS): the same two components in the watch app (compiles, manifest checked). Not run on a watch; the card tells the person where to look in the watch's settings, without claiming an exact menu path.
+- [ ] **Not done:** PC (Windows) summon shortcut and "start with Windows". Windows has no slot for a third-party default assistant, and the shortcut would live in the desktop shell, which I could not build and test here.
+- [~] Settings has one **Default assistant** section: the phone's status is read for real; the watch and the computer are instructions and an honest note, not live status.
+- [x] Limits written down: the card says Windows does not let an app replace its built-in assistant, and that each device lets you choose only in its own settings.
 
 ## 14. Release
 - [ ] All checks pass (Python tests, web typecheck/tests/build, Android unit tests where buildable)

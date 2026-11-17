@@ -3832,7 +3832,8 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                         return _fail(
                             "no_pairing_service",
                             "No device is showing a pairing screen. On the watch open Settings -> Developer options -> "
-                            "Wireless debugging -> Pair new device with pairing code, then enter the code here before it expires.",
+                            "Wireless debugging -> Pair new device with pairing code, then enter the code here before it expires. "
+                            "(No Developer options? Settings -> About watch -> Software info, tap Build number 7 times.)",
                             devs,
                         )
                 p_out = run_adb("pair", target_hp, pair_code, timeout=25)
@@ -3925,7 +3926,8 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                         return _fail(
                             "phone_only",
                             f"Only phone ADB target(s) found ({phone_names}); no Wear OS smartwatch is connected yet. "
-                            "Turn on Developer Options -> Wireless debugging on your watch, pair it once if needed, "
+                            "Turn on Developer Options -> Wireless debugging on your watch (no Developer Options? "
+                            "Settings -> About watch -> Software info, tap Build number 7 times), pair it once if needed, "
                             "and enter your watch's Wi-Fi IP:Port above.",
                             devs,
                             pairing=pairing_eps,

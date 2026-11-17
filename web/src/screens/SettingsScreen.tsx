@@ -47,6 +47,7 @@ import { androidApp, authenticateNativeBiometric, keepRunningStatus, nativeBiome
 import { WatchPairingCard } from "./DevicesScreen";
 import { UsageScreen } from "./UsageScreen";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { DefaultAssistantCard } from "../components/DefaultAssistantCard";
 import { DevicePermissions } from "../components/DevicePermissions";
 import { PhoneControlGuide } from "../components/PhoneControlGuide";
 import { SwitchModeConfirm } from "../components/SwitchModeConfirm";
@@ -195,6 +196,7 @@ export function SettingsScreen() {
       { id: "cloud", title: t("MiniMuse Cloud"), group: t("Models & Devices"), icon: <Cloud size={15} /> },
       { id: "notifications", title: t("Notifications"), group: t("Models & Devices"), icon: <Bell size={15} /> },
       { id: "watch", title: t("Smartwatch (Wear OS)"), group: t("Models & Devices"), icon: <Watch size={15} /> },
+      { id: "assistant", title: t("Default assistant"), group: t("Models & Devices"), icon: <Sparkles size={15} /> },
       ...(keepRunningStatus() ? [{ id: "keep-running" as const, title: t("Keep it running"), group: t("Models & Devices"), icon: <BatteryFull size={15} /> }] : []),
       ...(isDesktopApp() ? [{ id: "desktop" as const, title: t("Desktop app"), group: t("Models & Devices"), icon: <Monitor size={15} /> }] : []),
 
@@ -228,6 +230,7 @@ export function SettingsScreen() {
       { id: "permissions-main", sectionId: "permissions", sectionTitle: t("Permissions"), label: t("Device permissions"), description: t("What this device's system lets MiniMuse use: notifications, updates, location, microphone, camera, calendar, contacts and more."), keywords: ["camera", "microphone", "location", "install", "notifications", "calendar", "contacts", "nearby", "accessibility", "battery", "allow"] },
       { id: "sentinel-rules", sectionId: "sentinel", sectionTitle: t("Safety · Sentinel"), label: t("What it may do without asking"), description: t("Always, ask first or never, per kind of action: commands, email, browser, files, passwords, location and more."), keywords: ["always", "ask", "never", "approve", "permission", "email", "shell", "commands", "browser", "files", "passwords", "location", "install"] },
       { id: "sentinel-more", sectionId: "sentinel", sectionTitle: t("Safety · Sentinel"), label: t("Emergency stop, quiet hours and limits"), description: t("Stop everything now, jump to quiet hours, or set spending and usage limits."), keywords: ["emergency", "stop", "panic", "quiet", "limit", "spending", "budget"] },
+      { id: "assistant-main", sectionId: "assistant", sectionTitle: t("Default assistant"), label: t("Make MiniMuse your default assistant"), description: t("Choose MiniMuse as the assistant a phone or watch opens from its home, power or side button or assist gesture."), keywords: ["assistant", "default", "digital assistant", "home button", "power button", "side button", "gesture", "voice", "gemini", "google assistant"] },
       { id: "watch-main", sectionId: "watch", sectionTitle: t("Smartwatch (Wear OS)"), label: t("Watch APK install & wireless ADB pairing"), description: t("Discover Wear OS watches over Wi-Fi, install MiniMuse-wear.apk, and generate 6-digit pairing codes."), keywords: ["wear", "watch", "apk", "adb", "pair", "sideload"] },
       { id: "notifications-main", sectionId: "notifications", sectionTitle: t("Notifications"), label: t("Push & background notifications"), description: t("Enable alerts for approvals, questions, and finished background tasks."), keywords: ["push", "alerts", "test notification"] },
       ...(keepRunningStatus() ? [{ id: "keep-running-main", sectionId: "keep-running" as const, sectionTitle: t("Keep it running"), label: t("Battery optimization, overlay & boot start"), description: t("Keep Android background services alive, configure exact alarms, and export crash logs."), keywords: ["battery", "alarms", "boot", "logs"] }] : []),
@@ -824,6 +827,15 @@ export function SettingsScreen() {
         </Section>
         )}
 
+        {/* Default assistant: phone, watch and computer */}
+        {show("assistant") && (
+        <Section title={t("Default assistant")} id="assistant" plain={!wide}>
+          <SettingBlock id="assistant-main" highlightedId={highlightedId}>
+            <DefaultAssistantCard />
+          </SettingBlock>
+        </Section>
+        )}
+
         {/* Appearance */}
         {show("appearance") && (
         <Section title={t("Appearance")} id="appearance" plain={!wide}>
@@ -1160,8 +1172,8 @@ export function SettingsScreen() {
   );
 }
 
-type SectionId = "who" | "usage" | "sentinel" | "app-lock" | "passwords" | "proactivity" | "behavior" | "permissions" | "watch" | "notifications" | "keep-running" | "cloud" | "model" | "appearance" | "desktop" | "data" | "import" | "developer" | "about";
-const SECTION_IDS: SectionId[] = ["who", "usage", "sentinel", "app-lock", "passwords", "proactivity", "behavior", "permissions", "watch", "notifications", "keep-running", "cloud", "model", "appearance", "desktop", "data", "import", "developer", "about"];
+type SectionId = "who" | "usage" | "sentinel" | "app-lock" | "passwords" | "proactivity" | "behavior" | "permissions" | "watch" | "assistant" | "notifications" | "keep-running" | "cloud" | "model" | "appearance" | "desktop" | "data" | "import" | "developer" | "about";
+const SECTION_IDS: SectionId[] = ["who", "usage", "sentinel", "app-lock", "passwords", "proactivity", "behavior", "permissions", "watch", "assistant", "notifications", "keep-running", "cloud", "model", "appearance", "desktop", "data", "import", "developer", "about"];
 
 function CloudModeSelector({
   cloudMode,
