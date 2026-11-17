@@ -660,6 +660,8 @@ function applyWs(state: AppState, msg: WsMessage): AppState {
       return { ...state, trashCount: msg.count };
     case "sync":
       return { ...state, sync: msg.sync };
+    case "paired":
+      return { ...state, toast: t("Paired with {peer}.", { peer: msg.name }) };
     case "app_update":
       return { ...state, appUpdate: msg.update };
     case "working": {

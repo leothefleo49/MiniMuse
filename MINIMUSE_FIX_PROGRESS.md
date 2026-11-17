@@ -22,8 +22,8 @@ Repo: this directory. Remote: origin (leothefleo49/MiniMuse). Muse export data: 
 - [ ] 13. Sync Google/Gmail: simple redirect + sign in, few taps; remove duplicate connection popups
 - [ ] 14. Browser control on phone: install/enable easily or one-tap redirect instead of vague "unavailable"
 - [ ] 15. Artifacts: apps pinned at top / easy find + quick run in-app
-- [ ] 16. AI icon: add padding so name doesn't cover bottom and top isn't clipped (room for animation)
-- [ ] 17. QR pairing phone -> PC: scan result actually pairs and shows confirmation on both sides
+- [x] 16. (header: more top padding, avatar button padded, name tag no longer pulled up over the face; code-only, not seen on a phone) AI icon: add padding so name doesn't cover bottom and top isn't clipped (room for animation)
+- [x] 17. (root cause: the nanomuse:sync-qr event had a listener only inside DataControls, so a scan from anywhere else did nothing; now app-wide PairQrListener pairs + toasts on the phone, PC gets a 'paired' event + toast; 278 web tests + 2 new pytest + 46 sync tests pass; NOT tried with a real phone and PC) QR pairing phone -> PC: scan result actually pairs and shows confirmation on both sides
 
 ## C. Watch (Wear OS)
 - [ ] 18. Watch app overhaul: UI nearly identical to original Muse watch app + own additions (live character, pretty UI)

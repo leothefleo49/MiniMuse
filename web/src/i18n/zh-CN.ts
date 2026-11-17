@@ -2367,6 +2367,8 @@ const zhCN: Record<string, string> = {
   "Pick up where setup left off, or change what you chose": "从上次中断处继续设置，或更改你的选择",
   "Answering with": "当前使用的模型",
   "Not set yet": "尚未设置",
+  "Pairing...": "正在配对...",
+  "Could not pair: {error}": "无法配对：{error}",
   "Importing...": "正在导入...",
   "Import a file": "导入文件",
   "Import {name}": "导入 {name}",

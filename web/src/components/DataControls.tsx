@@ -238,15 +238,20 @@ export function SyncControls({
       const detail = (ev as CustomEvent<{ payload?: string } | string>).detail;
       const payload = typeof detail === "string" ? detail : detail?.payload ?? "";
       if (!payload.trim()) return;
+      // a payload that carries its code is paired by PairQrListener (app-wide); one without
+      // is filled in here for the person to finish
+      if (payload.toLowerCase().includes("code=")) return;
       setShowManual(true);
       setTarget(payload.trim());
-      if (payload.toLowerCase().includes("code=")) {
-        void claimPair(payload.trim());
-      }
     };
+    const onPaired = (ev: Event) => setSync((ev as CustomEvent<SyncState>).detail);
     window.addEventListener("nanomuse:sync-qr", onQr);
-    return () => window.removeEventListener("nanomuse:sync-qr", onQr);
-  }, [claimPair]);
+    window.addEventListener("nanomuse:sync-paired", onPaired);
+    return () => {
+      window.removeEventListener("nanomuse:sync-qr", onQr);
+      window.removeEventListener("nanomuse:sync-paired", onPaired);
+    };
+  }, []);
 
   const run = async (what: () => Promise<SyncState>, said: string) => {
     setBusy(true);

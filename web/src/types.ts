@@ -2211,6 +2211,7 @@ export type WsMessage =
   | { kind: "coding"; event: CodingEvent; agent: string; session_id: string; device?: string; run: CodingRun | null }
   | { kind: "trash"; trash: TrashedThread[]; count: number }
   | { kind: "sync"; sync: SyncState }
+  | { kind: "paired"; name: string }
   | { kind: "chrome_state"; connected: boolean; attached: boolean; tab_id: number | null; url: string; title: string }
   | { kind: "app_update"; update: AppUpdateLiveState }
   | { kind: "error"; error: string }

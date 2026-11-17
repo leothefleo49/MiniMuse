@@ -2056,6 +2056,7 @@ class ConversationSync:
             self.peer_sync_soon(delay=0.2)
         if getattr(self.svc, "bus", None):
             self.svc.bus.publish({"kind": "sync", "sync": self.view()})
+            self.svc.bus.publish({"kind": "paired", "name": remote_name or remote_id or "A device"})
         return (
             True,
             {

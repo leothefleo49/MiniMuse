@@ -48,9 +48,9 @@ export function MuseHeader({
   scrim?: boolean;
 }) {
   return (
-    <header className={cx("safe-top relative shrink-0 pt-1.5 pb-1 bg-transparent", scrim && "header-scrim", className)}>
+    <header className={cx("safe-top relative shrink-0 pt-3 pb-1 bg-transparent", scrim && "header-scrim", className)}>
       <div className="flex flex-col items-center px-16">
-        <button type="button" onClick={onAvatar} aria-label={name} className="relative rounded-full">
+        <button type="button" onClick={onAvatar} aria-label={name} className="relative rounded-full p-1">
           <Avatar profile={profile} status={status} size={size} />
           {badge !== undefined && badge > 0 && (
             <span className="pointer-events-none absolute -right-0.5 top-0 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-bg bg-rose-500 px-1 text-[10.5px] font-bold text-white">
@@ -58,8 +58,8 @@ export function MuseHeader({
             </span>
           )}
         </button>
-        {/* the tag rides up over the chin; its area is fixed so the bar keeps its height */}
-        <div className="relative z-10 -mt-2.5 flex min-h-[44px] flex-col items-center">
+        {/* the tag sits just under the face (never over it): the face has room to breathe and move */}
+        <div className="relative z-10 mt-0 flex min-h-[44px] flex-col items-center">
           <MuseNamePill name={name} statusLine={statusLine} statusTone={statusTone} spinning={spinning} onClick={onName ?? onAvatar} />
           {under && <div className="mt-1.5 flex max-w-full items-center">{under}</div>}
         </div>

@@ -8,6 +8,7 @@ import { BrandMark } from "./components/BrandMark";
 import { DesktopRemoteHint } from "./components/DesktopRemoteHint";
 import { ChatsDrawer } from "./components/ChatsDrawer";
 import { ImportProgress } from "./components/ImportProgress";
+import { PairQrListener } from "./components/PairQrListener";
 import { FileViewer } from "./components/FileViewer";
 import { FirstSignInSteps, useFirstSignIn } from "./components/FirstSignInSteps";
 import { Sidebar } from "./components/Sidebar";
@@ -504,6 +505,7 @@ export default function App() {
       </div>
       <ChatsDrawer />
       <ImportProgress />
+      <PairQrListener />
       <FileViewer path={state.viewer} onClose={() => openFile(null)} />
       {firstSteps}
       {lockPrompt}
