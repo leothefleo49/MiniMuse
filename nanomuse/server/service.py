@@ -62,6 +62,7 @@ from nanomuse.server.events import (
 )
 from nanomuse.server.failures import failure_notice
 from nanomuse.server.outbox import Delivery, DeliveryOutbox
+from nanomuse.server.proactivity import AutoProactivity, level_for
 from nanomuse.server.providers import ChatGPTSignIn, Providers
 from nanomuse.server.push import PushService
 from nanomuse.server.usage_ledger import UsageLedger
@@ -354,7 +355,7 @@ STARTER_IDEAS = [
 ]
 
 
-PROACTIVITY = ("off", "low", "default", "high")
+PROACTIVITY = ("off", "low", "default", "high", "auto")
 
 # identity limits and vocabularies (the app's forms and the identity tool share them)
 NAME_MAX = 20
@@ -404,14 +405,24 @@ class Profile:
     goal_interval_minutes: int = 60
     # "22:00-08:00" (server local time): no background passes in this window
     quiet_hours: str = ""
+    # what "auto" has learned from how the check-ins were answered (set by the service from
+    # proactivity.AutoProactivity; never saved with the profile)
+    auto_factor: float = 1.0
 
     @property
     def proactive(self) -> bool:
         return self.proactivity != "off"
 
     @property
+    def effective_level(self) -> str:
+        """The level a pass behaves at: the chosen one, or what "auto" has settled on."""
+        if self.proactivity == "auto":
+            return level_for(self.auto_factor)
+        return self.proactivity
+
+    @property
     def interval_seconds(self) -> int:
-        factor = _INTERVAL_FACTOR.get(self.proactivity, 1.0)
+        factor = self.auto_factor if self.proactivity == "auto" else _INTERVAL_FACTOR.get(self.proactivity, 1.0)
         return max(60, int(self.goal_interval_minutes * 60 * factor))
 
     def in_quiet_hours(self, now: datetime | None = None) -> bool:
@@ -448,6 +459,7 @@ class Profile:
             "style": self.style,
             "user_name": self.user_name,
             "proactivity": self.proactivity,
+            "effective_level": self.effective_level,
             "proactive": self.proactive,
             "goal_interval_minutes": self.goal_interval_minutes,
             "quiet_hours": self.quiet_hours,
@@ -457,7 +469,7 @@ class Profile:
     def from_dict(cls, data: dict[str, Any]) -> Profile:
         p = cls()
         for k, v in data.items():
-            if k != "proactive" and hasattr(p, k) and v is not None:
+            if k not in ("proactive", "effective_level") and hasattr(p, k) and v is not None:
                 setattr(p, k, v)
         if "proactivity" not in data and "proactive" in data:
             # profiles written before the dial existed
@@ -590,6 +602,8 @@ class MuseService:
         self._title_pending: set[str] = set()
         self._base_instructions = settings.agent.instructions
         self.profile = self._load_profile()
+        self.auto_proactivity = AutoProactivity(self.settings.data_dir)
+        self.profile.auto_factor = self.auto_proactivity.factor()
         self._apply_profile()
         self.ui = WebUI(
             self.bus,
@@ -1291,6 +1305,7 @@ class MuseService:
             self.profile.color,
         )
         self.profile = Profile.from_dict(merged)
+        self.profile.auto_factor = self.auto_proactivity.factor()
         if before != (
             self.profile.proactivity,
             self.profile.goal_interval_minutes,
@@ -2207,6 +2222,8 @@ class MuseService:
         attachments = [self.attachment(path) for path in files or []]
         if not text and not attachments:
             raise ValueError("empty message")
+        if source == "user":
+            self._note_reply()  # writing back is what tells "auto" that the check-ins are wanted
         once = None
         cm = self.cloud_mode()
         slots = self.cloud_slots()
@@ -2681,6 +2698,8 @@ class MuseService:
                             incoming.delivery, final, quiet
                         )
                     self._finish_run(thread, purpose, final.strip(), quiet)
+                    if incoming.run == "goal" and final.strip() and not quiet:
+                        self._note_checkin()  # a check-in reached the person: "auto" learns if it is answered
                     self._record_usage(thread, model_used, _usage_source(incoming.run, purpose))
                     if incoming.delivery:
                         self._complete_delivery(incoming.delivery)
@@ -3222,6 +3241,18 @@ class MuseService:
             self._queue_delivery(delivery)
         return delivery
 
+    # ------------------------------------------------------------------ auto proactivity
+    def _refresh_auto(self) -> None:
+        self.profile.auto_factor = self.auto_proactivity.factor()
+
+    def _note_checkin(self) -> None:
+        self.auto_proactivity.record_sent()
+        self._refresh_auto()
+
+    def _note_reply(self) -> None:
+        if self.auto_proactivity.record_reply():
+            self._refresh_auto()
+
     # ------------------------------------------------------------------ goals
     def advance_goal(self, goal_id: str, occurrence: str = "") -> Goal:
         goal = self.app.goals.get(goal_id)
@@ -3229,7 +3260,7 @@ class MuseService:
             raise KeyError(goal_id)
         if goal.status != "active":
             raise ValueError(f"goal is {goal.status}")
-        surfacing = prompts.SURFACING.get(self.profile.proactivity, prompts.SURFACING["default"])
+        surfacing = prompts.SURFACING.get(self.profile.effective_level, prompts.SURFACING["default"])
         stamp = occurrence or new_id()
         self._claim_delivery(
             f"goal:{goal.id}:{stamp}",
@@ -4333,6 +4364,8 @@ class MuseService:
             "triggers": self.triggers_view(),
             "proactive": self.profile.proactive,
             "proactivity": self.profile.proactivity,
+            "effective_level": self.profile.effective_level,
+            "auto": {**self.auto_proactivity.stats(), "factor": self.profile.auto_factor},
             "interval_minutes": self.profile.goal_interval_minutes,
             "effective_interval_minutes": self.profile.interval_seconds // 60,
             "quiet_hours": self.profile.quiet_hours,

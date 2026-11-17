@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { androidApp, discoverWatchAdbFromPhone, type WatchAdbDiscoveryResult } from "../android";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { NoticeDialog } from "../components/NoticeDialog";
+import { SwitchModeConfirm } from "../components/SwitchModeConfirm";
 import { SyncControls } from "../components/DataControls";
 import { api, chromeExtensionZipUrl } from "../api";
 import { PageBar } from "../components/BackBar";
@@ -44,6 +45,7 @@ export function DevicesScreen() {
   const local = state.devices;
   const hands = state.hands;
   const [refreshing, setRefreshing] = useState(false);
+  const [switchOpen, setSwitchOpen] = useState(false);
 
   const reload = async () => {
     try {
@@ -150,13 +152,14 @@ export function DevicesScreen() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => androidApp()?.disconnect()}
+                  onClick={() => setSwitchOpen(true)}
                   className="inline-flex h-9 items-center gap-1.5 rounded-full border border-border px-3.5 text-[13px] font-medium hover:bg-surface-2"
                 >
                   {t("Switch mode")}
                 </button>
               </div>
             </DeviceShell>
+            <SwitchModeConfirm open={switchOpen} onCancel={() => setSwitchOpen(false)} />
           </div>
         )}
 

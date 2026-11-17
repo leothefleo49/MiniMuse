@@ -49,6 +49,7 @@ import { UsageScreen } from "./UsageScreen";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DevicePermissions } from "../components/DevicePermissions";
 import { PhoneControlGuide } from "../components/PhoneControlGuide";
+import { SwitchModeConfirm } from "../components/SwitchModeConfirm";
 import { EmergencyStop, RelatedSafety } from "../components/SafetyControls";
 import { api, setToken } from "../api";
 import { DRAGON } from "../avatars";
@@ -115,6 +116,7 @@ export function SettingsScreen() {
   const [identity, setIdentity] = useState<Identity>(() => identityOf(state.profile, DRAGON, AVATAR_COLORS[0]));
   const [saving, setSaving] = useState(false);
   const [confirmAutoSentinel, setConfirmAutoSentinel] = useState(false);
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
   const t = useT();
   const localeSetting = useLocaleSetting();
   const theme = useTheme();
@@ -1123,7 +1125,7 @@ export function SettingsScreen() {
               onClick={() => {
                 const phone = androidApp();
                 if (phone) {
-                  phone.disconnect();
+                  setDisconnectOpen(true);
                   return;
                 }
                 setToken("");
@@ -1133,6 +1135,7 @@ export function SettingsScreen() {
             >
               <LogOut size={16} /> {androidApp() ? t("Disconnect from this server") : t("Forget this device's access token")}
             </button>
+            <SwitchModeConfirm open={disconnectOpen} onCancel={() => setDisconnectOpen(false)} />
           </SettingBlock>
         </Section>
         )}
@@ -2023,6 +2026,7 @@ function PhoneAppSettings({ name, forceOpen = false }: { name: string; forceOpen
   const t = useT();
   const phone = androidApp();
   const [on, setOn] = useState(() => phone?.notificationsEnabled() ?? false);
+  const [switchOpen, setSwitchOpen] = useState(false);
   if (!phone) return null;
   const mode = typeof phone.mode === "function" ? phone.mode() : "remote";
   const serverUrl = typeof phone.serverUrl === "function" ? phone.serverUrl() : "";
@@ -2056,11 +2060,12 @@ function PhoneAppSettings({ name, forceOpen = false }: { name: string; forceOpen
           )}
           <button
             type="button"
-            onClick={() => phone.disconnect()}
+            onClick={() => setSwitchOpen(true)}
             className="rounded-xl border border-border bg-bg px-3 py-1.5 text-[12.5px] font-medium hover:bg-surface-2 transition"
           >
             {t("Switch between phone and computer / server")}
           </button>
+          <SwitchModeConfirm open={switchOpen} onCancel={() => setSwitchOpen(false)} />
         </div>
       </div>
       <div className="text-[12.5px] text-muted">{t("MiniMuse for Android {version}", { version: phone.version() })}</div>
@@ -2334,6 +2339,7 @@ const LEVELS: Array<{ id: Proactivity; title: string; text: string }> = [
   { id: "low", title: "Low", text: "Checks in half as often; speaks up only when a step is done or it needs you." },
   { id: "default", title: "Default", text: "Works on goals on schedule; reports real progress, stays quiet otherwise." },
   { id: "high", title: "High", text: "Checks in twice as often and always reports, even 'still on track'." },
+  { id: "auto", title: "Auto", text: "Learns from you: checks in more when you answer, and backs off when you do not. Starts like Default." },
 ];
 
 export function ProactivityDial({ value, onChange, forceOpen = false }: { value: Proactivity; onChange: (v: Proactivity) => void; forceOpen?: boolean }) {
@@ -2345,7 +2351,7 @@ export function ProactivityDial({ value, onChange, forceOpen = false }: { value:
         <span className="text-[13.5px] font-medium">{t("Level")}: {t(current.title)}</span>
         <SettingInfo forceOpen={forceOpen} text={t(current.text)} />
       </div>
-      <div className="mt-2 grid grid-cols-4 gap-1 rounded-2xl bg-surface-2 p-1">
+      <div className="mt-2 grid grid-cols-5 gap-1 rounded-2xl bg-surface-2 p-1">
         {LEVELS.map((l) => (
           <button
             key={l.id}

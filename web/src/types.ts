@@ -841,7 +841,7 @@ export interface Profile {
   quiet_hours: string;
 }
 
-export type Proactivity = "off" | "low" | "default" | "high";
+export type Proactivity = "off" | "low" | "default" | "high" | "auto";
 
 export interface GoalStep {
   idx: number;

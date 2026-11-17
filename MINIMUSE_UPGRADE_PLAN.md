@@ -46,9 +46,9 @@ reproduced against the real phone on the LAN before fixing:
 - [~] Main app uses wide layouts on desktop: the map tab is two columns (map + stats) at wide widths, Settings already had a wide layout. Calendar, Devices and the other screens were not re-audited.
 
 ## 4. Modes and MiniMuse Cloud
-- [ ] "Switch mode" no longer restarts the app silently; it shows a clear confirmation explaining what happens
-- [ ] The app always runs locally, with cloud/sync as an add-on (local + cloud at the same time); disconnects resync later
-- [ ] Cloud branding is "MiniMuse Cloud" everywhere a user sees it, with notes on self-hosting it for free
+- [~] "Switch mode" no longer restarts the app silently: all three places that trigger it (Devices, and two in Settings) now ask first and say what happens (it drops the connection, stops the phone's background runtime and notifications, returns to the start screen, deletes nothing). The wiring is tested (disconnect fires only after confirming); not run on a phone.
+- [ ] **Not done:** "always run locally, with cloud/sync as an add-on at the same time". Today the phone app is either local or connected to a computer; running both at once and resyncing later is an architecture change I did not attempt.
+- [~] Cloud branding: the web UI already says "MiniMuse Cloud" everywhere a person reads it (no "nanoMuse Cloud" in any screen). **Not done:** a free, self-hosted MiniMuse Cloud of your own; the account service behind it is unchanged.
 
 ## 5. Pairing devices that both have data
 - [ ] When pairing two devices that both have data, a dialog offers: keep this device, keep the other device, or merge data and keep settings from one (default)
@@ -79,7 +79,7 @@ reproduced against the real phone on the LAN before fixing:
 - [~] Full phone control guide: Android's accessibility service is the mechanism the app really uses; the guide lists the steps including "Allow restricted settings". Developer options / Wireless debugging are explained for the watch (Devices). Controlling a phone from a PC over ADB is **not built**, so it is not described.
 
 ## 11. Proactivity
-- [ ] Proactivity has an **Auto (adaptive)** mode that adjusts how often the AI reaches out based on your responses
+- [x] Proactivity has an **Auto (adaptive)** mode. A check-in that actually reached you (a goal pass whose reply was not quiet) is noted; replying within 6 hours marks it answered; the recent answer rate sets the interval (x0.5 / x1 / x2 / x4) and how readily a pass speaks up. No evidence yet means it behaves like Default. 20 tests, including through a real goal pass with a scripted model. The Settings dial has the fifth option (typecheck and suite pass; the dial was not rendered in a browser).
 
 ## 12. Muse transfer: continuous sync and merge
 - [ ] Muse transfer offers a recurring update prompt with a chosen interval (e.g. daily, weekly, custom)
