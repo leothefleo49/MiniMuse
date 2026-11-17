@@ -243,11 +243,13 @@ def test_google_routes_and_watch_install_routes(
     assert st.status_code == 200
     assert st.json()["signed_in"] is False
 
-    # Missing client_id cleanly yields 400 with actionable guidance
+    # A default public client id ships with the app, so sign-in works without the user's own
     monkeypatch.delenv("MINIMUSE_GOOGLE_CLIENT_ID", raising=False)
     monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
-    err = client.post("/api/connections/google/oauth/start", json={})
-    assert err.status_code == 400
+    ok_default = client.post("/api/connections/google/oauth/start", json={})
+    assert ok_default.status_code == 200
+    assert "accounts.google.com" in ok_default.json()["auth_url"]
+    assert client.post("/api/connections/google/oauth/logout").status_code == 200
 
     # With client_id, generates valid Google OAuth2 PKCE URL
     ok = client.post(

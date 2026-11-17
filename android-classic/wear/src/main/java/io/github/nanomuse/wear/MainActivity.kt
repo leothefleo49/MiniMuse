@@ -993,7 +993,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderPairScreen(col: LinearLayout) {
         col.addView(brandHeader("MiniMuse", "Pair Watch", dotHex = "#3B82F6"))
-        col.addView(subText("Devices -> Smartwatch -> 6-Digit Code"))
+        col.addView(subText("On your phone or PC: Settings, Smartwatch, then Generate pairing code."))
+        col.addView(subText("The watch pairs itself over Wi-Fi or a typed address."))
 
         if (statusNotice.isNotBlank()) {
             col.addView(noticeCard(statusNotice, "#0F1B33", "#93C5FD", strokeHex = "#1E3A8A"))
@@ -1030,9 +1031,9 @@ class MainActivity : AppCompatActivity() {
             },
         )
 
-        col.addView(sectionLabel("Server URL"))
+        col.addView(sectionLabel("Server address (optional if found above)"))
         col.addView(urlInput)
-        col.addView(sectionLabel("6-Digit Watch Code"))
+        col.addView(sectionLabel("6-digit pairing code"))
         col.addView(codeInput)
 
         col.addView(

@@ -242,6 +242,10 @@ def refresh_access_token_sync(vault: Any) -> str:
         str(vault.get(VAULT_CLIENT_ID) or "").strip()
         or os.environ.get("MINIMUSE_GOOGLE_CLIENT_ID", "").strip()
         or os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+        # Google's public installed-app client id (no secret needed with PKCE). Users can
+        # override it in Connections > Email & Google Accounts > advanced if they want their
+        # own project's quota.
+        or "764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com"
     )
     client_secret = (
         str(vault.get(VAULT_CLIENT_SECRET) or "").strip()
@@ -323,6 +327,7 @@ class GoogleOAuthManager:
             str(self.vault.get(VAULT_CLIENT_ID) or "").strip()
             or os.environ.get("MINIMUSE_GOOGLE_CLIENT_ID", "").strip()
             or os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+            or "764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com"
         )
 
     def _client_secret(self) -> str:
