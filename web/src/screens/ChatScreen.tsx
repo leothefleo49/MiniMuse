@@ -250,9 +250,11 @@ export function ChatScreen() {
     if (waitingHere > 0 && !(here && status.state === "working")) {
       return waitingHere > 1 ? t("{n} approvals waiting for you", { n: waitingHere }) : t("1 approval waiting for you");
     }
-    // Idle shows nothing under the name, as on the phone: the tag is just the name.
-    if (!here) return thread?.busy ? t("On it") : undefined;
-    if (status.state === "idle" && !thread?.busy) return undefined;
+    // At rest the line under the name is the tagline the person wrote in setup (Muse's "Your day,
+    // sorted."), or nothing when there is none; while it works the line says what it is doing.
+    const tagline = profile?.tagline?.trim() || undefined;
+    if (!here) return thread?.busy ? t("On it") : tagline;
+    if (status.state === "idle" && !thread?.busy) return tagline;
     if (status.detail) return status.detail;
     if (status.state === "waiting") return t("Waiting for you");
     // The line names the step running right now, or says we are thinking: the person's
@@ -260,7 +262,7 @@ export function ChatScreen() {
     const running = runningStepTitle(events);
     if (running) return t("On it: {request}", { request: briefCut(running, 48) });
     return t("Thinking");
-  }, [status, thread, activeThread, waitingHere, events, t]);
+  }, [status, thread, activeThread, waitingHere, events, profile?.tagline, t]);
 
   const pendingApprovals = events.filter((e) => e.type === "approval" && e.status === "pending").length;
   // the steps (tool chips) stay out of the chat unless asked for; everything else always shows

@@ -40,6 +40,8 @@ class FirstRunState:
     session_id: str | None = None
     # how the person asked to be addressed, when they said
     user_address: str | None = None
+    # the address came from the setup page, so the opening does not ask for it again
+    address_from_setup: bool = False
     # the model's name suggestions for itself, when it gave some
     suggestions: list[str] = field(default_factory=list)
     # the name the agent got in the first conversation, when it did
@@ -56,6 +58,7 @@ class FirstRunState:
             "phase": self.phase,
             "session_id": self.session_id,
             "user_address": self.user_address,
+            "address_from_setup": self.address_from_setup,
             "suggestions": list(self.suggestions),
             "chosen": self.chosen,
             "lang": self.lang,
@@ -81,6 +84,7 @@ class FirstRunState:
             phase=phase if phase in PHASES else "none",
             session_id=text(raw.get("session_id")),
             user_address=text(raw.get("user_address")),
+            address_from_setup=raw.get("address_from_setup") is True,
             suggestions=[s for s in suggestions if isinstance(s, str) and s.strip()][:3]
             if isinstance(suggestions, list)
             else [],
@@ -98,9 +102,24 @@ def is_zh(lang: str) -> bool:
     return lang.lower().startswith("zh")
 
 
-def intro_lines(lang: str) -> list[str]:
+def intro_lines(lang: str, user_address: str | None = None) -> list[str]:
     """The three opening paragraphs, in the person's language; the phone's words, with the
-    computer in the phone's place (the web runs against a runtime on a computer)."""
+    computer in the phone's place (the web runs against a runtime on a computer).
+
+    ``user_address`` is how the person already said, in setup, to be called: the last line then
+    greets them by it and asks for the agent's name instead of asking for theirs again."""
+    lines = _intro_lines(lang)
+    who = (user_address or "").strip()
+    if who:
+        lines[-1] = (
+            f"很高兴认识你，{who}。你想叫我什么名字呢？"
+            if is_zh(lang)
+            else f"Nice to meet you, {who}. What would you like to call me?"
+        )
+    return lines
+
+
+def _intro_lines(lang: str) -> list[str]:
     if is_zh(lang):
         return [
             "你好，我是 MiniMuse，住在你电脑里的私人助理。让我替你分担几件事。",
@@ -183,6 +202,16 @@ def start_conversation(
         nxt.phase = "ask_user_name"
         nxt.started_at = now
     return nxt
+
+
+def begin_with_known_name(state: FirstRunState, user_name: str) -> FirstRunState:
+    """Setup already asked what to call the person, so the first conversation does not ask
+    again: it starts at the agent's name, with the address on file. Anything but a fresh
+    opening, or an empty name, leaves the state as it is."""
+    who = (user_name or "").strip()[:60]
+    if state.phase != "ask_user_name" or not who:
+        return state
+    return replace(state, phase="ask_agent_name", user_address=who, address_from_setup=True)
 
 
 @dataclass
@@ -419,6 +448,7 @@ __all__ = [
     "address_line",
     "address_memory",
     "after_turn",
+    "begin_with_known_name",
     "bound_to",
     "built_in_suggestions",
     "conversation_over",

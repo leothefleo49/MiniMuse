@@ -9,6 +9,7 @@ import { NOTICE_URL } from "../components/CommunityNotice";
 import { AVATAR_COLORS } from "../components/AvatarPicker";
 import { inputCls } from "../components/Form";
 import { IdentityForm, identityBody, identityOf, type Identity } from "../components/IdentityForm";
+import { ImportExport } from "../components/ImportExport";
 import { SignIn } from "../components/SignIn";
 import { getLocale, useT } from "../i18n";
 import { ownKeyLine } from "../region";
@@ -73,6 +74,8 @@ export function Onboarding() {
   const [cloudOpen, setCloudOpen] = useState(false);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [pairOpen, setPairOpen] = useState(false);
+  // "device": pair with another MiniMuse; "muse": bring over a Muse export (the prompt, the .zip)
+  const [transferTab, setTransferTab] = useState<"device" | "muse">("device");
   const [nearby, setNearby] = useState<NearbyPeer[]>([]);
   const [pairTarget, setPairTarget] = useState("");
   const [pairCode, setPairCode] = useState("");
@@ -302,6 +305,27 @@ export function Onboarding() {
       </button>
       {pairOpen && (
         <div className="mt-3 space-y-2.5 border-t border-border/60 pt-3">
+          <div role="tablist" aria-label={t("Where is your data now?")} className="flex gap-1.5">
+            {(["device", "muse"] as const).map((id) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={transferTab === id}
+                onClick={() => setTransferTab(id)}
+                className={cx(
+                  "flex-1 rounded-full px-3 py-1.5 text-[12.5px] font-medium transition-colors",
+                  transferTab === id ? "bg-accent text-accent-fg" : "bg-surface-2 text-muted hover:text-fg",
+                )}
+              >
+                {id === "device" ? t("From another MiniMuse") : t("From Muse")}
+              </button>
+            ))}
+          </div>
+          {transferTab === "muse" ? (
+            <ImportExport mode="import" />
+          ) : (
+          <>
           <p className="text-[12px] text-muted">
             {t("Pair with your PC or phone right now to copy your models, API keys, profile, AI avatar/animations, and chats — no need to enter them twice.")}
           </p>
@@ -358,6 +382,8 @@ export function Onboarding() {
             {pairing ? <Loader2 size={14} className="animate-spin" /> : null}
             {t("Pair & Sync Setup")}
           </button>
+          </>
+          )}
         </div>
       )}
     </div>

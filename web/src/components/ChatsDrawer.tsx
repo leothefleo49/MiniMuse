@@ -119,7 +119,12 @@ export function ChatsDrawer() {
     <div className="fixed inset-0 z-50">
       <div className="rise absolute inset-0 bg-black/40" onClick={() => setDrawer(false)} />
       <nav ref={panel} role="dialog" aria-modal="true" aria-label={t("Chats")} className="drawer-in safe-top safe-bottom absolute inset-y-0 left-0 flex w-[82vw] max-w-[320px] flex-col bg-bg shadow-2xl">
-        <div className="px-5 pt-5 pb-2 text-[24px] font-bold leading-7 tracking-tight">{name}</div>
+        <div className="px-5 pt-5 pb-2">
+          <div className="text-[24px] font-bold leading-7 tracking-tight">{name}</div>
+          {state.profile?.tagline?.trim() && (
+            <div className="mt-0.5 text-[13px] leading-[18px] text-muted">{state.profile.tagline.trim()}</div>
+          )}
+        </div>
 
         {/* the main chat, Devices and the coding agents: rows, one tap away like a chat */}
         <div className="mt-4 flex flex-1 flex-col min-h-0">

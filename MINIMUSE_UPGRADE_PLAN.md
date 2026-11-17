@@ -35,11 +35,11 @@ reproduced against the real phone on the LAN before fixing:
 - [ ] End-to-end install onto a real watch (**no watch is reachable from this PC: it is not on the Wi-Fi and Wireless debugging is not advertising; no emulator available**)
 
 ## 2. Setup (onboarding)
-- [ ] "Transfer Muse data" in setup opens a real transfer area (upload export, paste, or copy the Muse prompt)
-- [ ] Setup asks what the AI should call you (your name) so the first chat does not have to ask
+- [~] "Transfer Muse data" in setup opens a real transfer area: a *From Muse* tab in the setup card with the Muse prompt, .zip/file import and paste (the importer's setup mode is tested; the tab itself was not rendered in a browser)
+- [x] Setup asks what the AI should call you, and the first chat no longer asks again: setup already had the field, but the first conversation always began by asking; now it greets you by name and goes straight to naming the AI (5 new tests through the real API)
 - [ ] Setup has a permissions step that asks for the base permissions up front: notifications, auto self-update, location, microphone, nearby devices/connections, install updates (Android)
 - [ ] The auto phone-app-update permission is no longer hidden in watch settings; it lives in Permissions with a clear label and a real button
-- [ ] AI "subtext" (personality notes) from setup is actually sent to the model and visible/editable afterwards
+- [~] AI "subtext" from setup shows up: the style notes already went to the model; the *tagline* was only visible on the small SOUL card because the line under the name is deliberately blank at rest. It now shows under the name in the chat header and in the chats drawer (compiles and the web suite passes; not looked at in a browser)
 
 ## 3. Wide screens (Windows / PC)
 - [ ] Setup uses the width on wide screens (two-column layout, no tiny centered phone column)

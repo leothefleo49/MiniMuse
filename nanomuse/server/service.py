@@ -1286,7 +1286,9 @@ class MuseService:
         ``intro``, the three lines the app speaks first, in ``lang``."""
         view = self.firstrun.view(self.firstrun_lang(lang))
         if intro:
-            view["intro"] = firstrun.intro_lines(self.firstrun_lang(lang))
+            state = self.firstrun.state
+            known = state.user_address if state.address_from_setup else None
+            view["intro"] = firstrun.intro_lines(self.firstrun_lang(lang), known)
         return view
 
     # ------------------------------------------------------------------ chat titles
@@ -1420,7 +1422,12 @@ class MuseService:
             base = state
         lang = lang.strip().lower()
         lang = "zh" if lang.startswith("zh") else ("en" if lang else "")
-        self.firstrun.save(firstrun.start_conversation(base, MAIN_THREAD, lang))
+        started = firstrun.start_conversation(base, MAIN_THREAD, lang)
+        # setup already asked what to call the person: do not ask a second time
+        known = firstrun.begin_with_known_name(started, self.profile.user_name)
+        self.firstrun.save(known)
+        if known is not started:
+            self._remember_address(known.user_address or "")
         self._publish_firstrun()
         if underway:
             self.first_feed_day()

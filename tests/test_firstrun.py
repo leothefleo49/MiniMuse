@@ -327,3 +327,68 @@ def test_background_runs_never_hear_the_first_conversation(server):
     assert "First conversation" in system_prompt()
     # a reply without the block left the phase where it was
     assert client.get("/api/firstrun").json()["phase"] == "ask_user_name"
+
+
+# ----------------------------------------------------------------------------- a name given in setup
+def test_a_name_from_setup_skips_the_question_it_already_answered():
+    started = firstrun.start_conversation(fresh(), "main", "en")
+    assert started.phase == "ask_user_name"
+    known = firstrun.begin_with_known_name(started, "  Lin ")
+    assert known.phase == "ask_agent_name"
+    assert known.user_address == "Lin" and known.address_from_setup is True
+    # nothing to skip: no name, or not at the opening
+    assert firstrun.begin_with_known_name(started, "   ") is started
+    assert firstrun.begin_with_known_name(known, "Other") is known
+    unstarted = firstrun.FirstRunState()
+    assert firstrun.begin_with_known_name(unstarted, "Lin") is unstarted
+    finished = firstrun.FirstRunState(phase="done", chosen="Pip")
+    assert firstrun.begin_with_known_name(finished, "Lin") is finished
+    assert len(firstrun.begin_with_known_name(started, "x" * 200).user_address or "") == 60
+
+
+def test_the_opening_greets_a_known_name_instead_of_asking_for_it():
+    asking = firstrun.intro_lines("en")
+    assert asking[-1] == "Before we start, what should I call you?"
+    greeting = firstrun.intro_lines("en", "Lin")
+    assert greeting[:2] == asking[:2]
+    assert greeting[-1] == "Nice to meet you, Lin. What would you like to call me?"
+    assert "Lin" in firstrun.intro_lines("zh-CN", "Lin")[-1] and "称呼你" not in firstrun.intro_lines("zh-CN", "Lin")[-1]
+    # a blank name changes nothing
+    assert firstrun.intro_lines("en", "  ") == asking
+
+
+def test_the_setup_flag_survives_the_file(tmp_path):
+    store = firstrun.FirstRunStore(tmp_path)
+    store.save(firstrun.begin_with_known_name(firstrun.start_conversation(fresh(), "main", "en"), "Lin"))
+    again = firstrun.FirstRunStore(tmp_path).state
+    assert again.phase == "ask_agent_name" and again.address_from_setup is True and again.user_address == "Lin"
+    # an older file without the key reads as "not from setup"
+    assert firstrun.FirstRunState.from_dict({"phase": "ask_agent_name", "user_address": "Lin"}).address_from_setup is False
+
+
+def test_start_after_setup_asked_the_name_does_not_ask_it_again(server):
+    client, service, llm = server
+    service.update_profile({"user_name": "Lin"})  # typed on the setup page
+    started = client.post("/api/firstrun/start", json={"lang": "en"}).json()
+    # straight to the agent's name, the chooser is on offer, and the opening greets Lin
+    assert started["phase"] == "ask_agent_name" and started["user_address"] == "Lin"
+    assert started["intro"][-1] == "Nice to meet you, Lin. What would you like to call me?"
+    assert started["chips"] == firstrun.built_in_suggestions("main", "en")
+    assert "Call them: Lin" in [m.content for m in service.app.memory.all()]
+    # the model is told what the person is called, and that it is choosing its own name now
+    main = service.threads["main"].agent
+    main.prompt_addendum = service._firstrun_addendum_for("main")
+    prompt = main.build_system_prompt("hi")
+    assert "First conversation" in prompt and 'The user goes by "Lin"' in prompt
+    # the intro keeps greeting Lin when the page is reloaded
+    assert client.get("/api/firstrun?lang=en").json()["intro"][-1].startswith("Nice to meet you, Lin")
+    # picking a name finishes the opening the usual way
+    picked = client.post("/api/firstrun/pick", json={"name": "Wren"}).json()
+    assert picked["phase"] == "named" and service.profile.name == "Wren"
+
+
+def test_start_without_a_setup_name_still_asks_for_it(server):
+    client, service, _llm = server
+    started = client.post("/api/firstrun/start", json={"lang": "en"}).json()
+    assert started["phase"] == "ask_user_name" and started["address_from_setup"] is False
+    assert started["intro"][-1] == "Before we start, what should I call you?"

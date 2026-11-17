@@ -769,6 +769,24 @@ describe("Onboarding language, custom color, model search, local AI advisor & er
     ).toHaveLength(0);
   });
 
+  it("setup embeds the Muse importer (prompt + file import) without the export block; Settings keeps both", async () => {
+    await act(async () => {
+      tree = create(createElement(ImportExport, { mode: "import" }));
+    });
+    const inSetup = textOf(tree!);
+    expect(inSetup).toContain("Copy the prompt");
+    expect(inSetup).toContain("Import a file");
+    expect(inSetup).not.toContain("Download your agent data");
+    expect(inSetup).not.toContain("Copy Setup & Profile Transfer Bundle");
+
+    await act(async () => {
+      tree = create(createElement(ImportExport));
+    });
+    const inSettings = textOf(tree!);
+    expect(inSettings).toContain("Import a file");
+    expect(inSettings).toContain("Download your agent data");
+  });
+
   it("isolates wide Settings tabs, restores Usage tab, provides search counts/shortcuts and detail info toggles", async () => {
     const prevRaf = (globalThis as { requestAnimationFrame?: unknown }).requestAnimationFrame;
     const prevDoc = (globalThis as { document?: unknown }).document;

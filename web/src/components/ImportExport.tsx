@@ -112,7 +112,11 @@ function summaryOf(result: ImportResult, t: (key: string, vars?: Record<string, 
   return bits.join(", ") + ".";
 }
 
-export function ImportExport() {
+/**
+ * `full` is the Settings page: the Muse prompt, the import, and the export. `import` is what the
+ * setup screen embeds: the prompt and the import only, with no export block and no page margin.
+ */
+export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
   const t = useT();
   const { toast, refreshSettings } = useStore();
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -195,7 +199,7 @@ export function ImportExport() {
   };
 
   return (
-    <div className="-mx-4 pb-2">
+    <div className={mode === "full" ? "-mx-4 pb-2" : "pb-1"} data-testid={`import-export-${mode}`}>
       {/* ---- From Muse: the prompt, the warning, what to do after ---- */}
       <MuseSectionLabel>{t("From Muse")}</MuseSectionLabel>
       <MuseCard>
@@ -322,7 +326,9 @@ export function ImportExport() {
         </MuseCaption>
       )}
 
-      {/* ---- Export ---- */}
+      {/* ---- Export (the Settings page only) ---- */}
+      {mode === "full" && (
+        <>
       <MuseSectionLabel>{t("Export")}</MuseSectionLabel>
       <MuseCard>
         <MuseRow
@@ -343,6 +349,8 @@ export function ImportExport() {
           {t("Download a complete zip of everything this MiniMuse keeps (profile, user details, AI icons & animations, chats, memory, goals, reminders, and apps), or copy a Setup & Profile Transfer Bundle to paste into another device during setup.")}
         </MuseCaption>
       </MuseCard>
+        </>
+      )}
     </div>
   );
 }
