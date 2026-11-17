@@ -13,7 +13,7 @@ Repo: this directory. Remote: origin (leothefleo49/MiniMuse). Muse export data: 
 - [x] 6. (backend job API + pytest, ImportProgress pill mounted app-wide + vitest, 275 web tests pass, bundle rebuilt; real 3GB zip imports in ~1s of parsing; NOT yet seen on a phone) Muse import: runs in background safely (service/worker), faster, with a visible progress indicator reachable from anywhere; setup can continue meanwhile
 - [ ] 7. (PARTIAL/UNVERIFIED) Performance: UI renders locally, no lag/stutter after each click; network/AI work off the main thread
 - [x] 8. (tab history in the store, PageBar/BackBar use it; reducer tests + 277 web tests pass; not yet tried on a phone) Navigation: back arrow goes back one step, not to home chat
-- [ ] 9. Setup got cut short by earlier bug: allow re-running / resuming setup; all setup items editable later
+- [x] 9. (Settings > Import & export > 'Run setup again' reopens guided setup even when chats have messages, resumes the saved step; other setup choices already have Settings pages: Appearance, Model, identity, Import; 278 web tests pass) Setup got cut short by earlier bug: allow re-running / resuming setup; all setup items editable later
 
 ## B. Features
 - [ ] 10. Restricted settings: in-app button redirecting to Android "Allow restricted settings" / app info so phone control can be enabled

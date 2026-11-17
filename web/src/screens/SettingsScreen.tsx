@@ -112,7 +112,7 @@ const MODES: Array<{ id: "ask" | "task" | "strict" | "auto"; title: string; text
 ];
 
 export function SettingsScreen() {
-  const { state, refreshSettings, setTab, toast } = useStore();
+  const { state, refreshSettings, setTab, toast, reopenSetup } = useStore();
   const s = state.settings;
   const [identity, setIdentity] = useState<Identity>(() => identityOf(state.profile, DRAGON, AVATAR_COLORS[0]));
   const [saving, setSaving] = useState(false);
@@ -1082,6 +1082,16 @@ export function SettingsScreen() {
         <Section title={t("Import & export")} id="import" plain={!wide}>
           <SettingBlock id="import-main" highlightedId={highlightedId}>
             <ImportExport />
+          </SettingBlock>
+          <SettingBlock id="setup-again" highlightedId={highlightedId}>
+            <MuseCard>
+              <MuseRow
+                icon={<Sparkles size={22} />}
+                label={t("Run setup again")}
+                value={t("Pick up where setup left off, or change what you chose")}
+                onClick={() => reopenSetup()}
+              />
+            </MuseCard>
           </SettingBlock>
         </Section>
         )}

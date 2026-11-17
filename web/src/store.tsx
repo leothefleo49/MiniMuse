@@ -169,6 +169,8 @@ export interface AppState {
   skillsVersion: number;
   /** First-run setup dismissed for this session (the server remembers a finished one). */
   onboardingDismissed: boolean;
+  /** Setup opened again on purpose (Settings): shown even when chats already have messages. */
+  setupReopened: boolean;
   /** The sign-in door stepped past for a key of one's own (kept in storage): the sign-in stays an invitation under Connections. */
   signInSkipped: boolean;
   tab: Tab;
@@ -242,6 +244,7 @@ type Action =
   | { type: "draftFiles"; files: AttachmentInfo[] | null }
   | { type: "draftThread"; title: string | null }
   | { type: "onboardingDismissed" }
+  | { type: "setupReopen" }
   | { type: "signInSkipped" }
   | { type: "toast"; toast: string | null };
 
@@ -301,6 +304,7 @@ export const initial: AppState = {
   connectionsVersion: 0,
   skillsVersion: 0,
   onboardingDismissed: false,
+  setupReopened: false,
   signInSkipped: readStorage(SIGN_IN_SKIPPED_KEY) === "1",
   tab: "chat",
   tabHistory: [],
@@ -511,7 +515,9 @@ export function reducer(state: AppState, action: Action): AppState {
     case "draftThread":
       return { ...state, draftThread: action.title === null ? null : { title: action.title } };
     case "onboardingDismissed":
-      return { ...state, onboardingDismissed: true };
+      return { ...state, onboardingDismissed: true, setupReopened: false };
+    case "setupReopen":
+      return { ...state, setupReopened: true, onboardingDismissed: false };
     case "signInSkipped":
       return { ...state, signInSkipped: true };
     case "toast":
@@ -765,6 +771,8 @@ interface StoreValue {
   draft: (text: string | null) => void;
   draftFiles: (files: AttachmentInfo[] | null) => void;
   dismissOnboarding: () => void;
+  /** Open the guided setup again (a setup cut short, or to change what was chosen). */
+  reopenSetup: () => void;
   /** Past the sign-in door with a key of one's own; remembered by this browser. */
   skipSignIn: () => void;
   /** A short message at the bottom of the page. */
@@ -1210,6 +1218,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (text !== null) dispatch({ type: "tab", tab: "chat" });
       },
       dismissOnboarding: () => dispatch({ type: "onboardingDismissed" }),
+      reopenSetup: () => dispatch({ type: "setupReopen" }),
       skipSignIn: () => {
         writeStorage(SIGN_IN_SKIPPED_KEY, "1");
         dispatch({ type: "signInSkipped" });

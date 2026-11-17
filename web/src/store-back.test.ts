@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { initial, reducer } from "./store";
 
 describe("the back arrow", () => {
@@ -19,5 +19,16 @@ describe("the back arrow", () => {
     expect(s.tabHistory).toEqual(["chat"]);
     for (let i = 0; i < 60; i++) s = reducer(s, { type: "tab", tab: i % 2 ? "feed" : "ideas" });
     expect(s.tabHistory.length).toBeLessThanOrEqual(20);
+  });
+});
+
+describe("setup", () => {
+  it("can be opened again after it was finished, and closes when done", () => {
+    let s = reducer(initial, { type: "onboardingDismissed" });
+    s = reducer(s, { type: "setupReopen" });
+    expect(s.setupReopened).toBe(true);
+    expect(s.onboardingDismissed).toBe(false);
+    s = reducer(s, { type: "onboardingDismissed" });
+    expect(s.setupReopened).toBe(false);
   });
 });
