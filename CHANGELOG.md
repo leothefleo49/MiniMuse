@@ -21,6 +21,10 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 - Library > Artifacts pins your apps at the top with a Run button.
 - Watch: the rotating bezel scrolls and sets call volume, haptic feedback, and pairing tries every server found on Wi-Fi with the one code.
 
+### Changed
+- The back arrow returns to the previous screen instead of always the chat.
+- Watch pairing tries the typed address, the saved one and every server found on Wi-Fi with the one code.
+
 ### Not done in this release
 - Watch UI overhaul to match the original Muse watch app, and the watch still needs checking on a real watch.
 - Simple Google/Gmail sign-in (needs a Google OAuth client id), and a measured fix for per-tap lag. None of the phone or watch changes were tried on a physical device.
