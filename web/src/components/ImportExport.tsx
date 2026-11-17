@@ -297,7 +297,7 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
               void run(() => api.importData(file, file.name, options()), "file");
             }}
           />
-          <p className="pt-2 text-center text-[12px] text-muted">{t("A Muse export zip, a MiniMuse export zip, or any transcript or text file, up to 4 GB.")}</p>
+          <p className="pt-2 text-center text-[12px] text-muted">{t("A Muse export zip, a MiniMuse export zip, or any transcript or text file, of any size.")}</p>
         </div>
         <MuseDivider inset={16} />
         <div className="px-4 py-4">

@@ -4415,21 +4415,31 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        limit = data_import.IMPORT_UPLOAD_MB * 1024 * 1024
-        declared = request.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > limit:
-            raise HTTPException(
-                413, f"the file is larger than {data_import.IMPORT_UPLOAD_MB} MB"
-            )
+        # no size limit: the disk is the only bound, and it is checked before a byte is kept
+        limit = data_import.IMPORT_UPLOAD_MB * 1024 * 1024 if data_import.IMPORT_UPLOAD_MB else 0
         staging_dir = svc.data_dir / "imports" / "staging"
         staging_dir.mkdir(parents=True, exist_ok=True)
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit():
+            if limit and int(declared) > limit:
+                raise HTTPException(
+                    413, f"the file is larger than {data_import.IMPORT_UPLOAD_MB} MB"
+                )
+            # the upload is staged on disk and then read from there: it needs room for itself
+            # plus a margin for what it unpacks into
+            if int(declared) + data_import.DISK_MARGIN_BYTES > data_import.free_bytes(staging_dir):
+                raise HTTPException(
+                    507,
+                    "there is not enough free storage to import this file "
+                    f"({int(declared) // (1024 * 1024)} MB needed; free some space and try again)",
+                )
         staging = staging_dir / f"{uuid.uuid4().hex}.upload"
         try:
             total = 0
             with staging.open("wb") as out:
                 async for chunk in request.stream():
                     total += len(chunk)
-                    if total > limit:
+                    if limit and total > limit:
                         raise HTTPException(
                             413, f"the file is larger than {data_import.IMPORT_UPLOAD_MB} MB"
                         )

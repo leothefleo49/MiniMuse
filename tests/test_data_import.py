@@ -686,3 +686,41 @@ def test_api_import_file_and_text(api_server: Any, tmp_path: Path) -> None:
     )
     assert pasted.status_code == 200, pasted.text
     assert pasted.json()["events_added"] == 3
+
+
+# ------------------------------------------------------------------ no size limit
+
+
+def test_import_has_no_upload_or_expansion_limit() -> None:
+    assert data_import.IMPORT_UPLOAD_MB == 0
+    assert data_import.MAX_ZIP_TOTAL_BYTES == 0
+
+
+def test_a_big_app_file_streams_to_disk_even_past_the_text_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the text cap (what is read into memory) must not drop an app/media file of any size
+    monkeypatch.setattr(data_import, "MAX_ZIP_ENTRY_BYTES", 1024)
+    monkeypatch.setattr(data_import, "COPY_CHUNK", 4096)
+    svc = make_svc(tmp_path)
+    sqlite3.connect(svc.data_dir / "personal.db").close()
+    big = "x" * 300_000
+    zip_path = make_zip(
+        tmp_path,
+        {
+            "workspace/your_files/apps_and_data/apps/big-app/index.html": "<html>ok</html>",
+            "workspace/your_files/apps_and_data/apps/big-app/data.json": big,
+        },
+    )
+    result = import_file(svc, zip_path, "export.zip", ImportOptions(apps="both"))
+    assert result["apps_saved"] == 1
+    assert (svc.workspace_dir / "apps" / "big-app" / "data.json").read_text() == big
+    assert not list((svc.workspace_dir / "apps").rglob("*.import-part"))
+    # an identical re-import writes nothing twice
+    again = import_file(svc, zip_path, "export.zip", ImportOptions(apps="both"))
+    assert not list((svc.workspace_dir / "apps" / "big-app").glob("*-import-*"))
+    assert again["ok"] is True
+
+
+def test_free_bytes_reads_the_nearest_existing_parent(tmp_path: Path) -> None:
+    assert data_import.free_bytes(tmp_path / "does" / "not" / "exist") > 0

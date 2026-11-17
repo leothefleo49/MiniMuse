@@ -55,12 +55,19 @@ if TYPE_CHECKING:
     from nanomuse.server.service import MuseService
 
 # ------------------------------------------------------------------ bounds
-IMPORT_UPLOAD_MB = 4096
-"""How big one uploaded file may be: Muse exports are large zips."""
+IMPORT_UPLOAD_MB = 0
+"""How big one uploaded file may be, in MB. ``0`` means no limit: a Muse export is a zip of
+the whole workspace and routinely passes several GB. The free disk space is the real bound
+(checked up front by the endpoint)."""
 
-MAX_ZIP_ENTRIES = 300_000
-MAX_ZIP_ENTRY_BYTES = 512 * 1024 * 1024
-MAX_ZIP_TOTAL_BYTES = 16 * 1024**3
+MAX_ZIP_ENTRIES = 5_000_000
+MAX_ZIP_ENTRY_BYTES = 64 * 1024 * 1024
+"""The most of one *text* entry that is read into memory. App files are copied to disk in
+chunks, so they have no size limit."""
+MAX_ZIP_TOTAL_BYTES = 0
+"""``0``: no limit on what an archive expands to."""
+DISK_MARGIN_BYTES = 256 * 1024 * 1024
+COPY_CHUNK = 1024 * 1024
 MAX_TRANSCRIPT_CHARS = 20_000_000
 MAX_EVENTS_PER_CONVERSATION = 20_000
 MAX_TEXT_PASTE_BYTES = 32 * 1024 * 1024
@@ -488,6 +495,83 @@ def _store_memory_file(data_dir: Path, rel: Path, text: str) -> str | None:
     return f"memory/imports/{target.relative_to(data_dir / 'muse_memory' / 'imports').as_posix()}"
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(COPY_CHUNK), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _store_app_stream(
+    workspace: Path,
+    slug: str,
+    rel: Path,
+    archive: zipfile.ZipFile,
+    member: str,
+    plan: ImportPlan,
+) -> tuple[str, str]:
+    """One app file, streamed from the archive to ``workspace/apps/<slug>/`` in chunks (so
+    a file of any size costs no memory); returns ``(workspace-relative path, sha256)``.
+    The relative path is ``""`` when nothing was written (an identical file already
+    exists, or the disk refused). An existing different file keeps its name and the new
+    copy gets a numbered one."""
+    out_rel = Path("apps") / slug / rel
+    target = workspace / out_rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".import-part")
+    digest = hashlib.sha256()
+    try:
+        with archive.open(member) as src, tmp.open("wb") as out:
+            for chunk in iter(lambda: src.read(COPY_CHUNK), b""):
+                digest.update(chunk)
+                out.write(chunk)
+    except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        logger.warning("could not store imported app file %s: %s", member, exc)
+        tmp.unlink(missing_ok=True)
+        return "", digest.hexdigest()
+    sha = digest.hexdigest()
+    if target.exists():
+        try:
+            same = target.stat().st_size == tmp.stat().st_size and _sha256_file(target) == sha
+        except OSError:
+            same = False
+        if same:
+            tmp.unlink(missing_ok=True)
+            plan.duplicates += 1
+            return "", sha
+        for n in range(2, 1000):
+            alt = target.with_name(f"{target.stem}-import-{n}{target.suffix}")
+            if not alt.exists():
+                target = alt
+                out_rel = Path("apps") / slug / target.name
+                break
+        else:
+            tmp.unlink(missing_ok=True)
+            return "", sha
+    try:
+        tmp.replace(target)
+    except OSError as exc:
+        logger.warning("could not store imported app file: %s", exc)
+        tmp.unlink(missing_ok=True)
+        return "", sha
+    return out_rel.as_posix(), sha
+
+
+def free_bytes(path: Path) -> int:
+    """Free disk space at ``path`` (the nearest existing parent), or a huge number when it
+    cannot be read."""
+    import shutil
+
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        return shutil.disk_usage(probe).free
+    except OSError:
+        return 1 << 62
+
+
 def _store_app_entry(
     workspace: Path, slug: str, rel: Path, data: bytes, digest: str, plan: ImportPlan
 ) -> str:
@@ -671,8 +755,8 @@ def _ingest_zip(
         if len(names) > MAX_ZIP_ENTRIES:
             raise ValueError("the archive has too many entries to import safely")
         total = sum(info.file_size for info in archive.infolist())
-        if total > MAX_ZIP_TOTAL_BYTES:
-            raise ValueError("the archive expands to more than 16 GB; split it first")
+        if MAX_ZIP_TOTAL_BYTES and total > MAX_ZIP_TOTAL_BYTES:
+            raise ValueError("the archive expands to more than the import limit; split it first")
         apps: dict[str, dict[str, Any]] = {}
         for info in archive.infolist():
             member = info.filename
@@ -681,10 +765,11 @@ def _ingest_zip(
             parts = [p for p in member.replace("\\", "/").split("/") if p]
             if not parts:
                 continue
-            if info.file_size > MAX_ZIP_ENTRY_BYTES:
+            kind = _classify(parts)
+            # only text is read into memory, so only text has a size cap; app files stream
+            if kind != "app" and info.file_size > MAX_ZIP_ENTRY_BYTES:
                 plan.skipped_files += 1
                 continue
-            kind = _classify(parts)
             if kind == "manifest":
                 _read_manifest(archive, member, name, plan, data_dir)
             elif kind == "profile":
@@ -1002,9 +1087,6 @@ def _read_app_entry(
         slug,
         {"slug": slug, "title": slug.replace("-", " ").title(), "html_rel": "", "files": 0},
     )
-    with archive.open(member) as handle:
-        data = handle.read(MAX_ZIP_ENTRY_BYTES)
-    plan.ledger_marks.append((hashlib.sha256(data).hexdigest(), "app"))
     parts = [p for p in member.replace("\\", "/").split("/") if p]
     lower = [p.lower() for p in parts]
     if "apps" in lower:
@@ -1017,7 +1099,8 @@ def _read_app_entry(
     if not rel_parts:
         rel_parts = [Path(member).name]
     rel = _safe_rel("/".join(rel_parts))
-    out = _store_app_entry(svc.workspace(), slug, rel, data, hashlib.sha256(data).hexdigest(), plan)
+    out, sha = _store_app_stream(svc.workspace(), slug, rel, archive, member, plan)
+    plan.ledger_marks.append((sha, "app"))
     if out:
         app["files"] += 1
         low = rel.name.lower()

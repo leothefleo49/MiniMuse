@@ -2359,8 +2359,8 @@ const zhCN: Record<string, string> = {
   "Importing...": "正在导入...",
   "Import a file": "导入文件",
   "Import {name}": "导入 {name}",
-  "A Muse export zip, a MiniMuse export zip, or any transcript or text file, up to 4 GB.":
-    "Muse 导出压缩包、MiniMuse 导出压缩包，或任何转录和文本文件，最大 4 GB。",
+  "A Muse export zip, a MiniMuse export zip, or any transcript or text file, of any size.":
+    "Muse 导出压缩包、MiniMuse 导出压缩包，或任何转录和文本文件，大小不限。",
   "Or paste a transcript or any text here": "或者把转录或任意文本粘贴到这里",
   "Import this text": "导入这段文本",
   Export: "导出",
