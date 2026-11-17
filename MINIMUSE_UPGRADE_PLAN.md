@@ -42,8 +42,8 @@ reproduced against the real phone on the LAN before fixing:
 - [~] AI "subtext" from setup shows up: the style notes already went to the model; the *tagline* was only visible on the small SOUL card because the line under the name is deliberately blank at rest. It now shows under the name in the chat header and in the chats drawer (compiles and the web suite passes; not looked at in a browser)
 
 ## 3. Wide screens (Windows / PC)
-- [ ] Setup uses the width on wide screens (two-column layout, no tiny centered phone column)
-- [ ] Main app uses wide layouts on desktop (content max-widths, multi-column grids for settings, devices, calendar, map)
+- [x] Setup uses the width on wide screens. Measured in a real browser at 1920x1080: the entry screen was already two columns; the setup shell was 1080 px wide and the Appearance step a single column 1,390 px tall (scrolling in a 946 px window). Now the shell is 1280 px and Appearance is two columns of 592 px, 821 px tall, **no scrolling**. Phone width unchanged (the new rules only apply from 1024 px).
+- [~] Main app uses wide layouts on desktop: the map tab is two columns (map + stats) at wide widths, Settings already had a wide layout. Calendar, Devices and the other screens were not re-audited.
 
 ## 4. Modes and MiniMuse Cloud
 - [ ] "Switch mode" no longer restarts the app silently; it shows a clear confirmation explaining what happens
@@ -55,13 +55,13 @@ reproduced against the real phone on the LAN before fixing:
 - [ ] Backend merge honours the choice (no duplicated chats, settings taken from the chosen side)
 
 ## 6. Map
-- [ ] In-app interactive map (OpenStreetMap tiles, no key) inside the Location tab
-- [ ] Shows current location, saved/favorite places, and lets you add a place by tapping the map
-- [ ] Shows common travels / most-visited places, most-driven routes and roads, and trip statistics from the travel log
-- [ ] Works on phone and wide screens
+- [x] In-app interactive map (OpenStreetMap tiles, no key) as the first tab of Location. Verified in a real browser: container renders, 12 of 12 tiles loaded, pins, attribution.
+- [x] Shows saved/favorite places (amber star pins) and lets you add a place by tapping the map (tap opens "New place here" with the coordinates and a best-effort street name; saving put a 5th pin on the map). [~] "My location" (current position) is built but needs a granted location permission, which was not exercised.
+- [~] Most-visited places, common routes (A to B, with trips, miles, minutes, mph) and trip statistics (trips, miles, average and top speed) are shown and checked against seeded data. **Most-driven roads are not possible**: a trip stores where it started and ended, not the road; road stats need tracked trips, which are not recorded.
+- [x] Works on phone and wide screens (400 px: map 368x320, 4 tiles, no sideways scroll; 1920 px: two columns). Also found and fixed on the way: GPS pings were stored as ordinary trips, inflating "trips" (9 instead of 5) and creating a fake "GPS Snapshot" route (server fix + a rule for already-saved samples).
 
 ## 7. Calendar
-- [ ] Calendar is reachable directly inside the app (visible in navigation by default, not only behind a toggle)
+- [x] Calendar is reachable directly inside the app. On desktop it was already in the sidebar; on a phone there was **no way in** (the drawer only listed Devices, Coding agents, Trash). The drawer now has Calendar and Map & places rows (on by default, following the same on/off settings). Verified in a real browser at 400 px.
 
 ## 8. Simple API connections
 - [ ] Setup and Settings show only simple connections (sign in, or one/two clicks), with a clear "Link" action per service

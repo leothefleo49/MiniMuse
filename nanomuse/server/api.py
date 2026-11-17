@@ -2914,7 +2914,10 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     @app.post("/api/location/ping", dependencies=dep)
     async def ping_location(body: TripBody) -> dict[str, Any]:
         data = body.model_dump()
-        data["source"] = data.get("source") or "gps_ping"
+        # `source` defaults to "manual" on the model, so "was it given?" must ask the request, not the
+        # value: a ping that did not name its source is a position sample, not a trip someone logged
+        if "source" not in body.model_fields_set:
+            data["source"] = "gps_ping"
         if not data.get("place_name"):
             data["place_name"] = "Current GPS sample"
         return svc.app.location.log_trip(**data)

@@ -21,14 +21,15 @@ import { api } from "../api";
 import { Sheet } from "../components/Sheet";
 import { TabHeader } from "../components/TabHeader";
 import { useT } from "../i18n";
+import { PLACE_CATEGORIES } from "../mapData";
 import { useStore } from "../store";
+import { LocationMapTab } from "./LocationMapTab";
 import type { ContactLocation, LocationPlace, LocationSummary, LocationTrafficEstimate, LocationTrip, MapLinks } from "../types";
 import { cx } from "../util";
 
-type SubTab = "places" | "contacts" | "travel";
+type SubTab = "map" | "places" | "contacts" | "travel";
 type MapPref = "google" | "apple" | "waze" | "osm" | "geo";
 
-const PLACE_CATEGORIES = ["home", "work", "friend", "favorite", "frequent", "errand", "food", "travel", "other"];
 
 function directMapUrl(queryOrAddress: string, pref: MapPref, lat?: number | null, lng?: number | null, links?: MapLinks): string {
   if (links) {
@@ -58,7 +59,7 @@ export function LocationScreen() {
   const t = useT();
   const [summary, setSummary] = useState<LocationSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [subTab, setSubTab] = useState<SubTab>("places");
+  const [subTab, setSubTab] = useState<SubTab>("map");
   const [query, setQuery] = useState("");
   const [tagFilter, setTagFilter] = useState("");
   const [catFilter, setCatFilter] = useState("");
@@ -439,6 +440,16 @@ export function LocationScreen() {
         <div className="flex gap-1.5 rounded-2xl bg-surface-2 p-1 text-[13px]">
           <button
             type="button"
+            onClick={() => setSubTab("map")}
+            className={cx(
+              "flex-1 flex items-center justify-center gap-1.5 rounded-xl py-1.5 font-medium transition",
+              subTab === "map" ? "bg-surface text-fg shadow-xs" : "text-muted",
+            )}
+          >
+            <MapPin size={14} /> {t("Map")}
+          </button>
+          <button
+            type="button"
             onClick={() => setSubTab("places")}
             className={cx(
               "flex-1 flex items-center justify-center gap-1.5 rounded-xl py-1.5 font-medium transition",
@@ -473,6 +484,8 @@ export function LocationScreen() {
           <div className="flex justify-center py-12 text-muted">
             <Loader2 className="animate-spin" size={20} />
           </div>
+        ) : subTab === "map" ? (
+          <LocationMapTab summary={summary} reload={load} />
         ) : subTab === "places" ? (
           <div className="space-y-3">
             {/* Category chips */}

@@ -477,8 +477,17 @@ describe("CalendarScreen & LocationScreen", () => {
       tree = create(createElement(LocationScreen));
     });
     const text = textOf(tree!);
-    expect(text).toContain("1600 Pennsylvania Ave");
+    // the map is the first tab: most-visited places and the trip figures sit beside it
+    expect(text).toContain("Most visited places");
+    expect(text).toContain("Home");
     expect(text).toContain("42 visits");
+    expect(text).toContain("Common routes");
+    const placesTab = tree!.root.findAll((n) => n.type === "button" && textOf(n).includes("Saved & Frequent"))[0];
+    await act(async () => {
+      placesTab.props.onClick();
+    });
+    expect(textOf(tree!)).toContain("1600 Pennsylvania Ave");
+    expect(textOf(tree!)).toContain("42 visits");
 
     const travelTab = tree!.root.findAll((n) => n.type === "button" && textOf(n).includes("Speed & Traffic"))[0];
     await act(async () => {

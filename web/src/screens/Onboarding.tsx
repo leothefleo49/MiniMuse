@@ -391,7 +391,7 @@ export function Onboarding() {
   );
 
   return (
-    <div className="relative mx-auto flex h-full w-full max-w-[760px] flex-col bg-bg sm:border-x sm:border-border wide:max-w-[1080px] wide:border-x-0">
+    <div className="relative mx-auto flex h-full w-full max-w-[760px] flex-col bg-bg sm:border-x sm:border-border wide:max-w-[1280px] wide:border-x-0">
       {/* Keep safe-area clearance outside the bar so tall phone cutouts do not bloat the top bar */}
       <div className="shrink-0 safe-top bg-bg" />
       <header
@@ -461,15 +461,15 @@ export function Onboarding() {
         )}
 
         {step === "appearance" && (
-          <div className="pt-4 space-y-4">
-            <div className="flex items-center gap-3.5">
+          <div className="pt-4 space-y-4 wide:grid wide:grid-cols-2 wide:items-start wide:gap-4 wide:space-y-0" data-testid="onboarding-appearance">
+            <div className="flex items-center gap-3.5 wide:col-span-2">
               <Avatar profile={preview} size={72} />
               <div className="min-w-0">
                 <h1 className="text-[24px] font-bold tracking-tight">{t("Theme & AI appearance")}</h1>
                 <p className="text-[13.5px] text-muted">{t("Pick your canvas style, creature look, AI name, and navigation tabs.")}</p>
               </div>
             </div>
-            <div>{adjustLaterNotice}</div>
+            <div className="wide:col-span-2">{adjustLaterNotice}</div>
 
             <section className="rounded-3xl border border-border/70 bg-surface p-4 space-y-4">
               <div>
@@ -627,7 +627,7 @@ export function Onboarding() {
               </div>
             </section>
 
-            <section className="rounded-3xl border border-border/70 bg-surface p-4 space-y-3">
+            <section className="rounded-3xl border border-border/70 bg-surface p-4 space-y-3 wide:row-span-2">
               <div className="flex items-center gap-1.5 text-[13px] font-semibold">
                 <Sparkles size={15} className="text-accent" /> {t("AI name, avatar & personality")}
               </div>

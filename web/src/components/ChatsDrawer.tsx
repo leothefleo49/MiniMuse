@@ -1,4 +1,4 @@
-import { FileText, Home, MessageSquare, Monitor, MonitorSmartphone, MoreHorizontal, Pencil, Search, Settings, Smartphone, SquarePen, Terminal, Trash2, X } from "lucide-react";
+import { CalendarDays, FileText, Home, MapPin, MessageSquare, Monitor, MonitorSmartphone, MoreHorizontal, Pencil, Search, Settings, Smartphone, SquarePen, Terminal, Trash2, X } from "lucide-react";
 import { TrashModal } from "./TrashModal";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
@@ -160,6 +160,13 @@ export function ChatsDrawer() {
             </div>
           );
         })()}
+        {/* Calendar and the map used to be reachable only from the desktop sidebar: the phone had no way in */}
+        {state.settings?.ui?.show_calendar !== "false" && (
+          <Row icon={<CalendarDays size={20} />} label={t("Calendar")} selected={state.tab === "calendar"} onClick={() => go("calendar")} />
+        )}
+        {state.settings?.ui?.show_location !== "false" && (
+          <Row icon={<MapPin size={20} />} label={t("Map & places")} selected={state.tab === "location"} onClick={() => go("location")} />
+        )}
         <Row icon={<MonitorSmartphone size={20} />} label={t("Devices")} detail={devicesLine} selected={state.tab === "devices"} onClick={() => go("devices")} />
         {computersOnline && (
           <Row icon={<Terminal size={20} />} label={t("Coding agents")} selected={state.tab === "coding"} onClick={() => go("coding")} />
