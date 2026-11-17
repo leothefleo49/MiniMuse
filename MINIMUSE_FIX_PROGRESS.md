@@ -5,11 +5,11 @@ Rules: work ONE item at a time, in order. After each item: test -> commit -> the
 Repo: this directory. Remote: origin (leothefleo49/MiniMuse). Muse export data: `d:\Users\Tyler\Downloads\prompt data(muse wear OS apk and muse export)` (contains `EYI Package_*.zip` ~3GB export + Muse Wear OS apk).
 
 ## A. Foundations: crashes, import pipeline, performance, navigation
-- [ ] 1. Investigate repo layout (android app, watch app, import code) and note key file paths in "Notes" below
-- [ ] 2. Crash: split-screen / multi-window setup goes black and stays frozen (handle configChanges/resizeable, no heavy work on resize)
-- [ ] 3. Full screen / edge-to-edge: remove black bars top and bottom
-- [ ] 4. Muse import: remove size limit (stream the zip, no in-memory load)
-- [ ] 5. Muse import: study real export format from the zip; fix parsing so messages, titles, roles (back-and-forth), tasks, voice-call transcripts import correctly (no giant overlapping text, no "task listed as title")
+- [x] 1. Investigate repo layout - key paths in Notes below
+- [x] 2. (commit a7fa700; phone+wear Kotlin compile, NOT yet run on a device) Crash: split-screen / multi-window setup goes black and stays frozen (handle configChanges/resizeable, no heavy work on resize)
+- [x] 3. (commit a7fa700; compiles, NOT yet verified on a device) Full screen / edge-to-edge: remove black bars top and bottom
+- [x] 4. (commit 22b18bb; import tests pass) Muse import: remove size limit (stream the zip, no in-memory load)
+- [x] 5. (real 3GB export imports in 1.3s into one 'Muse main chat' with 10,667 correctly-sided, correctly-timed messages; manifest preferred over duplicate text copy; loose docs no longer become chats; widget tokens stripped; naive stamps read as UTC; 35 tests pass) Muse import: study real export format from the zip; fix parsing so messages, titles, roles (back-and-forth), tasks, voice-call transcripts import correctly (no giant overlapping text, no "task listed as title")
 - [ ] 6. Muse import: runs in background safely (service/worker), faster, with a visible progress indicator reachable from anywhere; setup can continue meanwhile
 - [ ] 7. Performance: UI renders locally, no lag/stutter after each click; network/AI work off the main thread
 - [ ] 8. Navigation: back arrow goes back one step, not to home chat
@@ -35,4 +35,6 @@ Repo: this directory. Remote: origin (leothefleo49/MiniMuse). Muse export data: 
 - [ ] 22. Honest final report (done / partial / not done)
 
 ## Notes (key paths, findings)
-(none yet)
+- Import code: nanomuse/server/data_import.py (tests/test_data_import.py). Android: android-classic/app/src/main/.../MainActivity.kt.
+- Real export: one 3.5MB 'Conversation with Muse AI_*.txt' in the form '[2026-10-03 20:07:47] You: text' (multi-line, [[hatch_widget:..]] tokens), a 34MB manifest.json (workspace_files + 11011 turns), ~58k files under workspace/.
+- Tyler also wants proper GitHub releases at the end (tag, notes, assets).

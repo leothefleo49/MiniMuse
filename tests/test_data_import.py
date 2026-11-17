@@ -724,3 +724,20 @@ def test_a_big_app_file_streams_to_disk_even_past_the_text_cap(
 
 def test_free_bytes_reads_the_nearest_existing_parent(tmp_path: Path) -> None:
     assert data_import.free_bytes(tmp_path / "does" / "not" / "exist") > 0
+
+
+def test_muse_bracket_export_parses_into_back_and_forth_messages() -> None:
+    text = (
+        "Conversation with Muse AI\n\n"
+        "[2026-10-03 20:07:47] Muse AI: Hey there. [[hatch_widget:widget-1]]\n"
+        "[2026-10-03 20:07:52] You: Muse\n"
+        "[2026-10-03 20:08:09] Muse AI: Sorry about that.\n\nWhat should I call you?\n"
+        "[2026-10-03 20:08:29] You: Tyler\n"
+    )
+    turns = data_import.parse_transcript(text, "Conversation with Muse AI_11-17-2026.txt")
+    assert [t.role for t in turns] == ["assistant", "user", "assistant", "user"]
+    assert turns[0].text == "Hey there."
+    assert "What should I call you?" in turns[2].text
+    assert turns[0].ts == "2026-10-03T20:07:47+00:00"
+    assert data_import.looks_like_transcript(text)
+    assert data_import.title_from_text(text, "x.txt") == "Chat with Muse AI"

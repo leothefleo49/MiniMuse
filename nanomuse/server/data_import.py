@@ -124,6 +124,42 @@ PLAIN_LINE = re.compile(
     re.MULTILINE,
 )
 
+# Muse's own "Conversation with Muse AI" export: "[2026-10-03 20:07:52] You: Muse", the
+# message running on over the following lines until the next stamped line
+BRACKET_LINE = re.compile(
+    r"^\[(?P<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?(?:\s*[A-Z]{2,5})?)\]\s+"
+    r"(?P<speaker>[^:\n\[\]]{1,40}?):[ \t]?(?P<text>.*)$"
+)
+
+# widget placeholders Muse leaves in its own messages: "[[hatch_widget:widget-ca26...]]"
+WIDGET_TOKEN = re.compile(r"[ \t]*\[\[hatch_widget:[^\]]*\]\]")
+
+
+def _parse_bracket_transcript(text: str) -> list[dict[str, str]]:
+    """The stamped-line messages of a transcript, or ``[]`` when it is not written that way."""
+    raw: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for line in text.splitlines():
+        match = BRACKET_LINE.match(line)
+        ts = parse_timestamp(match.group("ts")) if match else ""
+        if match and ts:
+            if current is not None:
+                raw.append(current)
+            current = {
+                "speaker": _clean_speaker(match.group("speaker")),
+                "ts": ts,
+                "text": match.group("text") + "\n",
+            }
+        elif current is not None:
+            current["text"] += line + "\n"
+    if current is not None:
+        raw.append(current)
+    for entry in raw:
+        entry["text"] = WIDGET_TOKEN.sub("", entry["text"]).strip()
+    kept = [entry for entry in raw if entry["text"]]
+    return kept if len(kept) >= 2 else []
+
+
 DATE_IN_NAME = re.compile(r"(20\d{2})[-_](\d{2})[-_](\d{2})")
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_. -]+")
@@ -190,20 +226,41 @@ class ImportPlan:
     ui_prefs: dict[str, Any] = field(default_factory=dict)
     avatar_files: int = 0
     avatar_face: str = ""
+    manifest_transcripts: set[str] = field(default_factory=set)
 
 
 # ------------------------------------------------------------------ parsing
+_TIME_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%a %b %d, %Y, %I:%M:%S %p",
+    "%a %b %d, %Y, %I:%M %p",
+    "%b %d, %Y, %I:%M:%S %p",
+    "%b %d, %Y, %I:%M %p",
+    "%A, %B %d, %Y, %I:%M:%S %p",
+    "%A, %B %d, %Y, %I:%M %p",
+    "%B %d, %Y, %I:%M:%S %p",
+    "%B %d, %Y, %I:%M %p",
+    "%A, %B %d, %Y at %I:%M %p",
+    "%B %d, %Y at %I:%M %p",
+)
+
+
 def parse_timestamp(raw: str) -> str:
     """One timestamp as ISO UTC, or ``""`` when it cannot be read.
 
-    Muse writes two shapes: ``2026-10-17 13:18:45 MDT`` and ``Sat Oct 10, 2026, 9:54:24 AM
-    MDT``. The timezone abbreviation is read from the table; anything ISO goes through
-    Python's parser."""
-    raw = raw.strip().strip(".,;")
+    Muse writes several shapes: ``2026-10-17 13:18:45 MDT``, ``Sat Oct 10, 2026, 9:54:24 AM
+    MDT`` and the same without seconds (``Sat Oct 31, 2026, 5:35 PM MDT``), plus the long
+    ``Saturday, October 31, 2026, 5:35 PM MDT``. The timezone abbreviation is read from
+    the table; anything ISO goes through Python's parser."""
+    raw = raw.strip().strip(".,;[]()")
     if not raw:
         return ""
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
         return dt.astimezone(UTC).isoformat(timespec="seconds")
     except ValueError:
         pass
@@ -214,12 +271,8 @@ def parse_timestamp(raw: str) -> str:
     if abbr is not None and abbr.group(1) in TZ_OFFSETS:
         offset = TZ_OFFSETS[abbr.group(1)]
         raw = raw[: abbr.start()].strip()
-    for fmt in (
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S",
-        "%a %b %d, %Y, %I:%M:%S %p",
-        "%b %d, %Y, %I:%M:%S %p",
-    ):
+    raw = re.sub(r"\s+", " ", raw)
+    for fmt in _TIME_FORMATS:
         try:
             dt = datetime.strptime(raw, fmt)
         except ValueError:
@@ -229,16 +282,65 @@ def parse_timestamp(raw: str) -> str:
     return ""
 
 
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z]+", text.lower()))
+
+
 def _speaker_role(speaker: str) -> tuple[str, str]:
-    """(role, prefix): the side of the chat, and the speaker's name to keep on the line
-    when the name is nobody's known side."""
-    low = speaker.strip().lower()
-    words = set(re.findall(r"[a-z]+", low))
+    """(role, prefix) for one speaker on its own: the side of the chat, and the name to
+    keep on the line when the name is nobody's known side."""
+    words = _words(speaker)
     if words & set(_USER_WORDS):
         return "user", ""
     if words & set(_ASSISTANT_WORDS):
         return "assistant", ""
     return "assistant", f"{speaker.strip()}: "
+
+
+def _resolve_roles(speakers: list[str]) -> dict[str, tuple[str, str]]:
+    """The side of the chat of every speaker in one transcript.
+
+    A name that says which side it is (User, You, Muse, Assistant...) is taken at its word.
+    When there are exactly two people and one is known, the other is the opposite side:
+    ``Tyler`` and ``Muse`` are a person and an assistant, whatever ``Tyler`` is called. Two
+    unknown names: the first to speak is the person. Anyone else keeps their name on the
+    line, on the assistant's side."""
+    ordered: list[str] = []
+    for speaker in speakers:
+        if speaker not in ordered:
+            ordered.append(speaker)
+    roles: dict[str, tuple[str, str]] = {}
+    unknown: list[str] = []
+    for speaker in ordered:
+        words = _words(speaker)
+        if words & set(_USER_WORDS):
+            roles[speaker] = ("user", "")
+        elif words & set(_ASSISTANT_WORDS):
+            roles[speaker] = ("assistant", "")
+        else:
+            unknown.append(speaker)
+    if len(ordered) == 2 and len(unknown) == 1:
+        other = next(s for s in ordered if s != unknown[0])
+        roles[unknown[0]] = ("assistant" if roles[other][0] == "user" else "user", "")
+    elif len(ordered) == 2 and len(unknown) == 2:
+        roles[unknown[0]] = ("user", "")
+        roles[unknown[1]] = ("assistant", "")
+    else:
+        for speaker in unknown:
+            roles[speaker] = ("assistant", f"{speaker.strip()}: ")
+    return roles
+
+
+# "**Tyler:** text" / "**Tyler**: text", anywhere in the text (voice-call transcripts often
+# arrive with the line breaks flattened, so the markers are found inline)
+INLINE_SPEAKER = re.compile(
+    r"\*\*(?P<speaker>[A-Za-z][A-Za-z0-9 _.'’-]{0,30}?)(?::\*\*|\*\*:)\s*"
+)
+
+
+def _clean_speaker(raw: str) -> str:
+    """``Tyler (User)`` and ``**Tyler**`` are both just ``Tyler``'s side of the chat."""
+    return re.sub(r"\s+", " ", raw.replace("*", "")).strip()
 
 
 def looks_like_transcript(text: str) -> bool:
@@ -247,73 +349,200 @@ def looks_like_transcript(text: str) -> bool:
         for match in pattern.finditer(text):
             if parse_timestamp(match.group("ts")):
                 return True
+    if len(INLINE_SPEAKER.findall(text)) >= 4:
+        return True
+    if _parse_bracket_transcript(text):
+        return True
     return bool(PLAIN_LINE.search(text))
 
 
+def _spread(turns: list[Turn], source: str) -> None:
+    """Turns with no time at all get one, a second apart, in order: the date in the file's
+    name when there is one, else the floor. Nothing then sorts out of order."""
+    stamp = DATE_IN_NAME.search(source or "")
+    try:
+        base = (
+            datetime(int(stamp.group(1)), int(stamp.group(2)), int(stamp.group(3)), tzinfo=UTC)
+            if stamp
+            else datetime(1, 1, 1, tzinfo=UTC)
+        )
+    except ValueError:
+        base = datetime(1, 1, 1, tzinfo=UTC)
+    for i, turn in enumerate(turns):
+        if turn.ts == FLOOR_TS or not turn.ts:
+            turn.ts = (base + timedelta(seconds=i)).isoformat(timespec="seconds")
+
+
+def _pick_header_pattern(text: str) -> tuple[re.Pattern[str] | None, set[str]]:
+    """The header shape this transcript is written in (the one with the most lines that
+    carry a readable time), and the speakers seen on those lines."""
+    best: re.Pattern[str] | None = None
+    best_count = 0
+    best_speakers: set[str] = set()
+    for candidate in HEADER_PATTERNS:
+        count = 0
+        speakers: set[str] = set()
+        for match in candidate.finditer(text):
+            if parse_timestamp(match.group("ts")):
+                count += 1
+                speakers.add(_clean_speaker(match.group("speaker")).lower())
+        if count > best_count:
+            best, best_count, best_speakers = candidate, count, speakers
+    if best is None:
+        # headers whose times cannot be read at all: still headers when the speaker is a
+        # known side of the chat ("## Muse - whenever")
+        for candidate in HEADER_PATTERNS:
+            for match in candidate.finditer(text):
+                speaker = _clean_speaker(match.group("speaker"))
+                words = _words(speaker)
+                if words & (set(_USER_WORDS) | set(_ASSISTANT_WORDS)):
+                    return candidate, {speaker.lower()}
+    return best, best_speakers
+
+
 def parse_transcript(text: str, source: str = "") -> list[Turn]:
-    """The messages of a Muse transcript, in order, with their timestamps.
+    """The messages of a Muse transcript, in order, with their timestamps and the right
+    side of the chat for each speaker.
 
     Recognizes the ``## Speaker — timestamp`` sections, the ``**Speaker - timestamp**``
-    bold headers, ``### Speaker — timestamp`` blocks and bare ``User:`` lines. Text before
-    the first header (the title and metadata) is left out; an unknown speaker keeps their
-    name on the line so nothing is lost."""
-    turns: list[Turn] = []
-    last_ts = ""
-    pattern = None
-    for candidate in HEADER_PATTERNS:
-        if candidate.search(text):
-            pattern = candidate
-            break
-    if pattern is None:
+    bold headers (the shape of Muse's own chat exports), ``### Speaker — timestamp``
+    blocks, inline ``**Speaker:** text`` voice-call transcripts and bare ``User:`` lines.
+    Text before the first header (the title and metadata) is left out. Who is the person
+    and who the assistant is worked out for the whole transcript at once."""
+    raw: list[dict[str, str]] = _parse_bracket_transcript(text)  # {speaker, ts, text}
+    pattern, header_speakers = (None, set()) if raw else _pick_header_pattern(text)
+    if raw:
+        pass
+    elif pattern is not None:
+        last_ts = ""
+        current: dict[str, str] | None = None
         for line in text.splitlines():
-            match = PLAIN_LINE.match(line.strip())
+            match = pattern.match(line.strip())
             if match:
-                role, prefix = _speaker_role(match.group("speaker"))
-                body = (prefix + match.group("text")).strip()
+                speaker = _clean_speaker(match.group("speaker"))
+                ts = parse_timestamp(match.group("ts"))
+                known_side = bool(
+                    _words(speaker) & (set(_USER_WORDS) | set(_ASSISTANT_WORDS))
+                ) or speaker.lower() in header_speakers
+                if ts or known_side:
+                    last_ts = ts or last_ts
+                    if current is not None and current["text"].strip():
+                        raw.append(current)
+                    current = {"speaker": speaker, "ts": last_ts or FLOOR_TS, "text": ""}
+                    continue
+            if current is not None:
+                if line.strip() in ("---", "***"):
+                    continue
+                current["text"] += line + "\n"
+        if current is not None and current["text"].strip():
+            raw.append(current)
+    else:
+        inline = list(INLINE_SPEAKER.finditer(text))
+        distinct = {_clean_speaker(m.group("speaker")).lower() for m in inline}
+        if len(inline) >= 3 and len(distinct) <= 4:
+            for i, match in enumerate(inline):
+                end = inline[i + 1].start() if i + 1 < len(inline) else len(text)
+                body = text[match.end() : end].strip()
                 if body:
-                    turns.append(Turn(role=role, text=body, ts=last_ts or FLOOR_TS))
-        return turns
-    current: dict[str, Any] | None = None
-    for line in text.splitlines():
-        match = pattern.match(line.strip())
-        if match:
-            ts = parse_timestamp(match.group("ts"))
-            last_ts = ts or last_ts
-            role, prefix = _speaker_role(match.group("speaker"))
-            if current is not None and str(current["text"]).strip():
-                turns.append(
-                    Turn(
-                        role=str(current["role"]),
-                        text=str(current["text"]).strip(),
-                        ts=str(current["ts"]),
+                    raw.append(
+                        {
+                            "speaker": _clean_speaker(match.group("speaker")),
+                            "ts": FLOOR_TS,
+                            "text": body,
+                        }
                     )
-                )
-            current = {
-                "role": role,
-                "prefix": prefix,
-                "text": "",
-                "ts": last_ts or FLOOR_TS,
-            }
-            continue
-        if current is not None:
-            stripped = line.strip()
-            if stripped in ("---", "***"):
-                continue
-            current["text"] = str(current["text"]) + line + "\n"
-    if current is not None and str(current["text"]).strip():
-        turns.append(
-            Turn(
-                role=str(current["role"]),
-                text=(str(current["prefix"]) + str(current["text"]).strip()).strip(),
-                ts=str(current["ts"]),
-            )
+        else:
+            plain: dict[str, str] | None = None
+            for line in text.splitlines():
+                stripped = line.strip()
+                match = PLAIN_LINE.match(stripped)
+                if match:
+                    if plain is not None and plain["text"].strip():
+                        raw.append(plain)
+                    plain = {
+                        "speaker": match.group("speaker"),
+                        "ts": FLOOR_TS,
+                        "text": match.group("text") + "\n",
+                    }
+                elif plain is not None and stripped not in ("---", "***"):
+                    plain["text"] += line + "\n"
+            if plain is not None and plain["text"].strip():
+                raw.append(plain)
+    if not raw:
+        return []
+    roles = _resolve_roles([entry["speaker"] for entry in raw])
+    turns = [
+        Turn(
+            role=roles[entry["speaker"]][0],
+            text=(roles[entry["speaker"]][1] + entry["text"].strip()).strip(),
+            ts=entry["ts"] or FLOOR_TS,
         )
+        for entry in raw
+        if entry["text"].strip()
+    ]
+    if all(turn.ts == FLOOR_TS for turn in turns):
+        _spread(turns, source)
     return turns
 
 
+_GENERIC_TITLE = re.compile(r"^(?:chat\s+)?transcript$", re.IGNORECASE)
+
+
+def _clean_heading(heading: str) -> str:
+    """The chat's own name out of a transcript's first heading: ``Chat transcript — Begin a
+    chat session`` and ``Chat Transcript — "Begin a chat session" (original main chat)``
+    are both ``Begin a chat session``; ``Voice Call Chat Transcript`` is ``Voice Call``."""
+    title = re.sub(r"[*_`]+", "", heading).strip()
+    split = re.match(
+        r"^(?P<lead>.*?)\s*(?:chat\s+)?transcript\b\s*(?:[—–:-]+\s*(?P<rest>.*))?$",
+        title,
+        re.IGNORECASE,
+    )
+    if split is not None:
+        rest = (split.group("rest") or "").strip()
+        lead = (split.group("lead") or "").strip()
+        title = rest or lead
+    title = re.sub(r"\s*\([^)]*\)\s*$", "", title).strip()
+    title = title.strip("\"'“”‘’ ")
+    return "" if _GENERIC_TITLE.match(title) else title
+
+
+def title_from_text(text: str, name: str) -> str:
+    """A chat's title: the name inside its transcript when it has one, else the file's."""
+    head = text[:4000]
+    first = head.lstrip().split("\n", 1)[0].strip()
+    named = re.match(r"^Conversation with\s+(.{1,60})$", first, re.IGNORECASE)
+    if named is not None and not first.startswith("["):
+        return f"Chat with {named.group(1).strip()}"[:80]
+    heading = re.search(r"^#\s+(.+?)\s*$", head, re.MULTILINE)
+    if heading is not None:
+        title = _clean_heading(heading.group(1))
+        if title:
+            return title[:80]
+    labelled = re.search(
+        r"^\s*[-*]?\s*\*\*(?:Chat|Title|Conversation)\s*:\*\*\s*(.+?)\s*$",
+        head,
+        re.MULTILINE | re.IGNORECASE,
+    )
+    if labelled is not None:
+        title = re.sub(r"\s*\([^)]*\)\s*$", "", labelled.group(1)).strip("\"'“”‘’ *")
+        if title:
+            return title[:80]
+    return title_from_name(name)
+
+
+_FILE_EXT = re.compile(r"\.(?:md|markdown|txt|json|csv|log|html?|bak)$", re.IGNORECASE)
+
+
 def title_from_name(name: str) -> str:
-    stem = Path(name).stem
-    stem = re.sub(r"[-_]chat[-_]?transcript", "", stem, flags=re.IGNORECASE)
+    """A title from a file name: no folders, no extension, no leading date, no
+    ``-chat-transcript``, dashes and underscores as spaces."""
+    stem = name.replace("\\", "/").rsplit("/", 1)[-1]
+    while _FILE_EXT.search(stem):
+        stem = _FILE_EXT.sub("", stem)
+    stem = re.sub(r"^\d{4}[-_]\d{2}[-_]\d{2}[-_ ]+", "", stem)
+    stem = re.sub(r"[-_ ]chat[-_]?transcript", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"[-_ ]transcript$", "", stem, flags=re.IGNORECASE)
     stem = stem.replace("-", " ").replace("_", " ").strip()
     return stem[:80] or Path(name).name
 
@@ -731,7 +960,12 @@ def _accept_text(
     turns = parse_transcript(text_clean[:MAX_TRANSCRIPT_CHARS], name)
     if turns:
         plan.conversations.append(
-            Conversation(title=title_from_name(name), kind="transcript", turns=turns, source=name)
+            Conversation(
+                title=title_from_text(text_clean, name),
+                kind="transcript",
+                turns=turns,
+                source=name,
+            )
         )
         return
     if options.background_memory:
@@ -791,6 +1025,14 @@ def _ingest_zip(
             else:
                 plan.skipped_files += 1
         _finish_apps(svc, apps, options, plan)
+    if plan.manifest_transcripts:
+        # the manifest already carries these chats with exact times and sides; the text copy of
+        # the same chat would show up a second time
+        plan.conversations = [
+            c
+            for c in plan.conversations
+            if not (c.kind == "transcript" and c.source.rsplit("/", 1)[-1] in plan.manifest_transcripts)
+        ]
 
 
 _AVATAR_SUFFIXES = {".webp", ".png", ".jpg", ".jpeg", ".gif", ".mp4", ".webm", ".json"}
@@ -861,9 +1103,12 @@ def _read_manifest(
         role = str(turn.get("role") or "")
         if role not in ("user", "assistant"):
             continue
-        content = str(turn.get("content") or "").strip()
+        content = WIDGET_TOKEN.sub("", str(turn.get("content") or "")).strip()
         if not content:
             continue
+        transcript_file = str(turn.get("transcript_file") or "").strip()
+        if transcript_file:
+            plan.manifest_transcripts.add(transcript_file.replace("\\", "/").rsplit("/", 1)[-1])
         turns.append(
             Turn(
                 role=role,
@@ -1024,7 +1269,7 @@ def _read_text_entry(
     if turns:
         plan.conversations.append(
             Conversation(
-                title=title_from_name(member), kind="transcript", turns=turns, source=member
+                title=title_from_text(text, member), kind="transcript", turns=turns, source=member
             )
         )
         return
@@ -1033,7 +1278,9 @@ def _read_text_entry(
         stored = _store_memory_file(data_dir, rel, text)
         if stored and index_memory_text(data_dir / "personal.db", stored, text):
             plan.memory_files += 1
-    if options.restore_chats:
+    lowered = member.replace("\\", "/").lower()
+    is_chat_file = lowered.startswith("conversations/") or "transcript" in lowered
+    if options.restore_chats and is_chat_file:
         plan.conversations.append(
             Conversation(
                 title=title_from_name(member), kind="text", turns=[], source=member, body=text
