@@ -31,8 +31,8 @@ Repo: this directory. Remote: origin (leothefleo49/MiniMuse). Muse export data: 
 - [x] 20. (Bezel.kt + onGenericMotionEvent: rotary scrolls the page, turns call volume during a live call; haptics on call start/end and volume notches; VIBRATE permission; Gradle compile + unit tests pass in WSL; NOT felt on a real watch) Watch rotating bezel scrolling, bezel volume control during live call, haptics
 
 ## D. Wrap-up
-- [ ] 21. Full test pass / build; update CHANGELOG, push to GitHub, update release
-- [ ] 22. Honest final report (done / partial / not done)
+- [x] 21. (v1.2.1 released: https://github.com/leothefleo49/MiniMuse/releases/tag/v1.2.1 as Latest, 10 assets, checksums verified; full pytest = the same 54 failures as clean 1.2.0 and nothing new, 278 web tests pass, signed APKs versionCode 129, Windows exe smoke-tested to report 1.2.1; nothing tried on a physical phone/watch) Full test pass / build; update CHANGELOG, push to GitHub, update release
+- [x] 22. (see the release notes and the final message) Honest final report (done / partial / not done)
 
 ## Notes (key paths, findings)
 - Import code: nanomuse/server/data_import.py (tests/test_data_import.py). Android: android-classic/app/src/main/.../MainActivity.kt.
