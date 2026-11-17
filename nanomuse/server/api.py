@@ -2777,6 +2777,20 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     async def put_browser(body: BrowserBody) -> dict[str, Any]:
         return conn.set_browser(body.enabled)
 
+    @app.post("/api/connections/browser/install", dependencies=dep)
+    async def install_browser() -> dict[str, Any]:
+        """Install Playwright and its Chromium in the background: one tap instead of a command."""
+        from nanomuse.server import browser_install
+
+        return browser_install.start()
+
+    @app.get("/api/connections/browser/install", dependencies=dep)
+    async def browser_install_status() -> dict[str, Any]:
+        from nanomuse.server import browser_install
+        from nanomuse.tools.browser import playwright_available
+
+        return {**browser_install.status(), "available": playwright_available()}
+
     @app.put("/api/connections/calendar", dependencies=dep)
     async def put_calendar(body: CalendarBody) -> dict[str, Any]:
         try:

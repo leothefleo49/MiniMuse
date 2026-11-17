@@ -4767,6 +4767,31 @@ function BrowserCard({
   const t = useT();
   const b = data.browser;
   const [busy, setBusy] = useState(false);
+  const [install, setInstall] = useState<{ status: string; step: string; message: string } | null>(null);
+  const installing = install?.status === "running";
+  useEffect(() => {
+    if (!installing) return;
+    const timer = window.setInterval(() => {
+      api
+        .browserInstallStatus()
+        .then((s) => {
+          setInstall(s);
+          if (s.status === "done") {
+            toast(t("Browser control is installed."));
+            onChange();
+          }
+        })
+        .catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [installing, onChange, t, toast]);
+  const startInstall = () => {
+    setInstall({ status: "running", step: t("Starting..."), message: "" });
+    api
+      .installBrowser()
+      .then(setInstall)
+      .catch((e: Error) => setInstall({ status: "error", step: "", message: e.message }));
+  };
   const flip = async () => {
     setBusy(true);
     try {
@@ -4817,13 +4842,21 @@ function BrowserCard({
       }
     >
       {!b.available && (
-        <p className="text-[12.5px] text-muted">
-          {t("Uses system Chrome/Edge automatically when Playwright is present, or install:")}{" "}
-          <code className="rounded bg-surface-2 px-1">
-            pip install &quot;minimuse[browser]&quot; &amp;&amp; playwright
-            install chromium
-          </code>
-        </p>
+        <div className="space-y-2">
+          <p className="text-[12.5px] text-muted">
+            {t("Browser control needs a browser on this computer. One tap installs it; it takes a few minutes the first time.")}
+          </p>
+          <button
+            type="button"
+            onClick={startInstall}
+            disabled={installing}
+            className="flex items-center gap-2 rounded-full bg-accent px-4 py-2 text-[13px] font-semibold text-accent-fg disabled:opacity-60"
+          >
+            {installing && <Loader2 size={14} className="animate-spin" />}
+            {installing ? install?.step || t("Installing...") : t("Install browser control")}
+          </button>
+          {install?.status === "error" && <p className="text-[12.5px] text-red-500">{install.message}</p>}
+        </div>
       )}
     </Card>
   );

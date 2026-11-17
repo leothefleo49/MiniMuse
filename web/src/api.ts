@@ -222,6 +222,14 @@ export type ImportResult = {
   note: string;
 };
 
+/** Where the one-tap browser install is. */
+export type BrowserInstallState = {
+  status: "idle" | "running" | "done" | "error";
+  step: string;
+  message: string;
+  log: string[];
+};
+
 /** One import running (or lately finished) in the background. */
 export type ImportJobView = {
   id: string;
@@ -897,6 +905,10 @@ export const api = {
     request<MediaSlotData>(`/api/connections/${slot}`, { method: "PUT", body: JSON.stringify(body) }),
   setBrowser: (enabled: boolean) =>
     request<ConnectionsData["browser"]>("/api/connections/browser", { method: "PUT", body: JSON.stringify({ enabled }) }),
+  /** One-tap install of the computer's browser control; poll `browserInstallStatus` while it runs. */
+  installBrowser: () => request<BrowserInstallState>("/api/connections/browser/install", { method: "POST" }),
+  browserInstallStatus: () =>
+    request<BrowserInstallState & { available: boolean }>("/api/connections/browser/install", { cache: "no-store" }),
   addMCP: (body: Record<string, unknown>) => request<ConnectionsData>("/api/connections/mcp", json(body)),
   removeMCP: (name: string) =>
     request<{ ok: boolean }>(`/api/connections/mcp/${encodeURIComponent(name)}`, { method: "DELETE" }),
