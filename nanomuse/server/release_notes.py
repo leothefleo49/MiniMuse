@@ -17,6 +17,17 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.2": {
+        "title": "Google sign-in out of the box, faster chats, and watch polish",
+        "added": [
+            "Google sign-in works without your own Google Cloud project: a public OAuth client id ships with the app",
+            "Faster chats: off-screen messages are skipped while rendering",
+        ],
+        "improved": [
+            "Watch pairing screen: clearer steps, optional server address",
+        ],
+        "fixed": [],
+    },
     "1.2.1": {
         "title": "Muse imports that read properly, in the background, plus fixes from your first run",
         "added": [

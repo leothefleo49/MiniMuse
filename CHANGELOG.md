@@ -4,6 +4,14 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-11-17
+### Added
+- Google sign-in now works out of the box: a public OAuth client id ships with the app (PKCE, no secret needed), so 'Sign in with Google Popup' works without your own Google Cloud project.
+- Per-tap lag: message bubbles now skip painting when off-screen (content-visibility), so long chats scroll and render faster.
+
+### Fixed
+- Watch pairing screen: clearer step-by-step instructions, optional server address (auto-tries every server found on Wi-Fi with the one code).
+
 ## [1.2.1] - 2026-11-17
 ### Fixed
 - Muse import: the real Muse export (`[date time] You: ...` lines) is now read into proper back-and-forth messages with the right sides and times, instead of giant overlapping text; titles drop the file extension and trailing date, voice calls are titled by day so they stay separate chats, flattened `**Tyler:** ... **Muse:** ...` voice-call text is split into messages, and imported chats are dated by their messages instead of the import time.
