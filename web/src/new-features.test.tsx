@@ -254,6 +254,11 @@ describe("Local-first SignInGate & Mobile setup header layout", () => {
     await act(async () => {
       getStarted.props.onClick();
     });
+    // the new permissions step sits between the welcome and the look
+    expect(textOf(tree!)).toContain("Allow the basics");
+    await act(async () => {
+      tree!.root.findAll((n) => n.type === "button" && textOf(n).includes("Continue"))[0].props.onClick();
+    });
     expect(textOf(tree!)).toContain("Theme & AI appearance");
     expect(textOf(tree!)).toContain("Optional tabs & default maps");
 
@@ -682,6 +687,9 @@ describe("Onboarding language, custom color, model search, local AI advisor & er
     const getStarted = tree!.root.findAll((n) => n.type === "button" && textOf(n).includes("Get started"))[0];
     await act(async () => {
       getStarted.props.onClick();
+    });
+    await act(async () => {
+      tree!.root.findAll((n) => n.type === "button" && textOf(n).includes("Continue"))[0].props.onClick();
     });
     const customAccentInput = tree!.root.findByProps({ "aria-label": "Custom accent colour" });
     expect(customAccentInput.props.type).toBe("color");

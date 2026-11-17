@@ -43,10 +43,13 @@ import {
   Zap,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { androidApp, androidPermissionsStatus, authenticateNativeBiometric, keepRunningStatus, nativeBiometricInfo, type AppUpdateView, type KeepRunningStatus } from "../android";
+import { androidApp, authenticateNativeBiometric, keepRunningStatus, nativeBiometricInfo, type AppUpdateView, type KeepRunningStatus } from "../android";
 import { WatchPairingCard } from "./DevicesScreen";
 import { UsageScreen } from "./UsageScreen";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { DevicePermissions } from "../components/DevicePermissions";
+import { PhoneControlGuide } from "../components/PhoneControlGuide";
+import { EmergencyStop, RelatedSafety } from "../components/SafetyControls";
 import { api, setToken } from "../api";
 import { DRAGON } from "../avatars";
 import { desktopBridge, desktopUpdates, isDesktopApp } from "../desktop";
@@ -220,7 +223,9 @@ export function SettingsScreen() {
       { id: "behavior-self-improve", sectionId: "behavior", sectionTitle: t("Agent behavior"), label: t("Self-improving integrations"), description: t("Allow the agent to add connectors and APIs automatically when needed."), keywords: ["integrations", "mcp", "api"] },
       { id: "behavior-lang", sectionId: "behavior", sectionTitle: t("Agent behavior"), label: t("Reply language"), description: t("Choose the language the assistant writes replies in."), keywords: ["language", "english", "chinese"] },
       { id: "behavior-bg-model", sectionId: "behavior", sectionTitle: t("Agent behavior"), label: t("Background model"), description: t("Pick which model runs scheduled routines, reminders, and background goals."), keywords: ["flash", "pro", "local", "gemini"] },
-      { id: "permissions-main", sectionId: "permissions", sectionTitle: t("Permissions"), label: t("Device capabilities & permissions"), description: t("Allow or ask before phone/computer actions and grant Android install/runtime permissions."), keywords: ["camera", "microphone", "location", "install", "adb"] },
+      { id: "permissions-main", sectionId: "permissions", sectionTitle: t("Permissions"), label: t("Device permissions"), description: t("What this device's system lets MiniMuse use: notifications, updates, location, microphone, camera, calendar, contacts and more."), keywords: ["camera", "microphone", "location", "install", "notifications", "calendar", "contacts", "nearby", "accessibility", "battery", "allow"] },
+      { id: "sentinel-rules", sectionId: "sentinel", sectionTitle: t("Safety · Sentinel"), label: t("What it may do without asking"), description: t("Always, ask first or never, per kind of action: commands, email, browser, files, passwords, location and more."), keywords: ["always", "ask", "never", "approve", "permission", "email", "shell", "commands", "browser", "files", "passwords", "location", "install"] },
+      { id: "sentinel-more", sectionId: "sentinel", sectionTitle: t("Safety · Sentinel"), label: t("Emergency stop, quiet hours and limits"), description: t("Stop everything now, jump to quiet hours, or set spending and usage limits."), keywords: ["emergency", "stop", "panic", "quiet", "limit", "spending", "budget"] },
       { id: "watch-main", sectionId: "watch", sectionTitle: t("Smartwatch (Wear OS)"), label: t("Watch APK install & wireless ADB pairing"), description: t("Discover Wear OS watches over Wi-Fi, install MiniMuse-wear.apk, and generate 6-digit pairing codes."), keywords: ["wear", "watch", "apk", "adb", "pair", "sideload"] },
       { id: "notifications-main", sectionId: "notifications", sectionTitle: t("Notifications"), label: t("Push & background notifications"), description: t("Enable alerts for approvals, questions, and finished background tasks."), keywords: ["push", "alerts", "test notification"] },
       ...(keepRunningStatus() ? [{ id: "keep-running-main", sectionId: "keep-running" as const, sectionTitle: t("Keep it running"), label: t("Battery optimization, overlay & boot start"), description: t("Keep Android background services alive, configure exact alarms, and export crash logs."), keywords: ["battery", "alarms", "boot", "logs"] }] : []),
@@ -537,6 +542,23 @@ export function SettingsScreen() {
               </div>
             )}
           </SettingBlock>
+          <SettingBlock id="sentinel-rules" highlightedId={highlightedId}>
+            <div className="mb-2 flex items-center gap-2">
+              <span className="text-[14px] font-medium">{t("What it may do without asking")}</span>
+              <SettingInfo
+                forceOpen={highlightedId === "sentinel-rules"}
+                text={t("Per kind of action: Always lets it go ahead, Ask first checks with you each time, Never blocks it.")}
+              />
+            </div>
+            <ApprovalRules forceOpen={highlightedId === "sentinel-rules"} />
+          </SettingBlock>
+          <SettingBlock id="sentinel-more" highlightedId={highlightedId} className="space-y-3">
+            <RelatedSafety
+              onQuietHours={() => openSection("proactivity", "proactivity-quiet")}
+              onLimits={() => openSection("usage")}
+            />
+            <EmergencyStop />
+          </SettingBlock>
         </Section>
         )}
 
@@ -778,8 +800,16 @@ export function SettingsScreen() {
         {show("permissions") && (
         <Section title={t("Permissions")} id="permissions" plain={!wide}>
           <SettingBlock id="permissions-main" highlightedId={highlightedId}>
-            <PermissionsSection forceOpen={highlightedId === "permissions-main"} />
+            <p className="mb-2.5 px-1 text-[12.5px] leading-[17px] text-muted">
+              {t("What this device's system lets MiniMuse use. Whether it may act without asking is a separate choice, under Safety.")}
+            </p>
+            <DevicePermissions />
           </SettingBlock>
+          {androidApp() && (
+            <SettingBlock id="permissions-control" highlightedId={highlightedId}>
+              <PhoneControlGuide />
+            </SettingBlock>
+          )}
         </Section>
         )}
 
@@ -2609,6 +2639,14 @@ const COMPUTER_CAPS: Array<[string, string]> = [
   ["downloads", "Downloads"],
   ["device_settings", "Device settings"],
   ["microphone", "Microphone"],
+  ["run_commands", "Run commands"],
+  ["send_email", "Send email"],
+  ["browse_web", "Use the web browser"],
+  ["control_screen", "Control this computer's screen"],
+  ["passwords", "Use saved passwords"],
+  ["install_software", "Install software & system changes"],
+  ["share_location", "Share location"],
+  ["other_devices", "Act on your other devices"],
 ];
 
 const PHONE_CAPS: Array<[string, string]> = [
@@ -2623,23 +2661,18 @@ const PHONE_CAPS: Array<[string, string]> = [
 ];
 
 /**
- * What each device's capabilities may do, one policy for the account: the computer's
- * rows land on the sentinel's tool lists server-side; the phone's ride the same settings
- * push and are read by the phone app. Editing from either device reaches both.
+ * When MiniMuse may act with or without asking, per kind of action: Always, Ask first or Never.
+ * One policy for the account: the computer's rows land on the sentinel's tool lists server-side
+ * (and are enforced from the first moment after a restart); the phone's ride the same settings
+ * push and are read by the phone app. These are *rules*; the operating-system permissions
+ * (notifications, location, microphone ...) are a different list, under Permissions.
  */
-function PermissionsSection({ forceOpen = false }: { forceOpen?: boolean }) {
+function ApprovalRules({ forceOpen = false }: { forceOpen?: boolean }) {
   const { state, toast } = useStore();
   const t = useT();
-  const phone = androidApp();
-  const [nativePerms, setNativePerms] = useState(() => androidPermissionsStatus());
   const perms = state.settings?.permissions;
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    const onPerms = () => setNativePerms(androidPermissionsStatus());
-    window.addEventListener("nanomuse:permissions-changed", onPerms);
-    return () => window.removeEventListener("nanomuse:permissions-changed", onPerms);
-  }, []);
   const set = async (device: "computer" | "phone", cap: string, mode: string) => {
     if (busy) return;
     setBusy(true);
@@ -2702,28 +2735,6 @@ function PermissionsSection({ forceOpen = false }: { forceOpen?: boolean }) {
   const phoneLabel = kind === "phone" ? t("This phone") : kind === "tablet" ? t("This tablet") : t("Phone");
   return (
     <div className="space-y-3">
-      {phone && (typeof phone.requestAllPermissions === "function" || typeof phone.requestInstallPermission === "function") && (
-        <div className="rounded-2xl border border-accent/30 bg-accent/5 p-3.5 space-y-2">
-          <div className="text-[13.5px] font-semibold">{t("Phone & Watch Auto-Install Permissions")}</div>
-          <p className="text-[12px] text-muted leading-snug">
-            {t("Grant install-packages, notification, camera & location permissions so MiniMuse can self-update and automatically push the watch app without prompts.")}
-          </p>
-          <div className="flex flex-wrap items-center gap-2 pt-0.5">
-            <button
-              type="button"
-              onClick={() => {
-                if (typeof phone.requestAllPermissions === "function") phone.requestAllPermissions();
-                else if (typeof phone.requestInstallPermission === "function") phone.requestInstallPermission();
-                toast(t("Opening Android permission prompts…"));
-              }}
-              className="inline-flex items-center gap-1.5 rounded-full bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-accent-fg shadow-sm"
-            >
-              <ShieldCheck size={14} />
-              {nativePerms?.installPackages ? t("All Install Permissions Granted") : t("Grant All Needed Permissions")}
-            </button>
-          </div>
-        </div>
-      )}
       <div>
         <p className="mb-1.5 px-1 text-[13.5px] font-medium">{computerLabel}</p>
         {rows("computer", COMPUTER_CAPS)}
@@ -2735,7 +2746,7 @@ function PermissionsSection({ forceOpen = false }: { forceOpen?: boolean }) {
       <div className="pt-1">
         <SettingInfo
           forceOpen={forceOpen}
-          pillLabel={t("How device permissions work")}
+          pillLabel={t("How these rules work")}
           text={`${t("One policy for every device; a change here lands on the other device on its own.")}\n${t("The phone's app still asks the system the first time a capability is used; Always keeps using it, Never stops trying.")}`}
         />
       </div>

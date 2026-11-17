@@ -1,4 +1,4 @@
-import { ArrowRight, CalendarDays, Check, ChevronDown, ChevronRight, Cloud, Info, Loader2, Lock, MapPin, Palette, RefreshCw, Smartphone, Sparkles, Zap } from "lucide-react";
+import { ArrowRight, CalendarDays, Check, ChevronDown, ChevronRight, Cloud, Info, Loader2, Lock, MapPin, Palette, RefreshCw, ShieldCheck, Smartphone, Sparkles, Zap } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ACCENTS, BUBBLE_PRESETS, setAccent, setBubble, useAccent, useBubble } from "../accent";
 import { androidApp } from "../android";
@@ -9,6 +9,7 @@ import { NOTICE_URL } from "../components/CommunityNotice";
 import { AVATAR_COLORS } from "../components/AvatarPicker";
 import { inputCls } from "../components/Form";
 import { IdentityForm, identityBody, identityOf, type Identity } from "../components/IdentityForm";
+import { DevicePermissions } from "../components/DevicePermissions";
 import { ImportExport } from "../components/ImportExport";
 import { SignIn } from "../components/SignIn";
 import { getLocale, useT } from "../i18n";
@@ -20,7 +21,7 @@ import { cx } from "../util";
 import { ApiIntegrationsCard } from "../components/ApiIntegrationsCard";
 import { CalendarCard, ContactsCard, EmailCard, ModelCard, primaryBtn, secondaryBtn, syncPhoneGoogleToServer } from "./ConnectionsScreen";
 
-type Step = "welcome" | "appearance" | "list" | "model" | "connect";
+type Step = "welcome" | "permissions" | "appearance" | "list" | "model" | "connect";
 const STEP_STORAGE_KEY = "nanomuse_onboarding_step";
 const IS_TEST_MODE = import.meta.env.MODE === "test";
 
@@ -28,7 +29,7 @@ function loadInitialStep(): Step {
   if (IS_TEST_MODE) return "welcome";
   try {
     const raw = sessionStorage.getItem(STEP_STORAGE_KEY);
-    if (raw === "welcome" || raw === "appearance" || raw === "list" || raw === "model" || raw === "connect") {
+    if (raw === "welcome" || raw === "permissions" || raw === "appearance" || raw === "list" || raw === "model" || raw === "connect") {
       return raw;
     }
   } catch {
@@ -279,8 +280,8 @@ export function Onboarding() {
     conn.contacts.sources.length > 0
   );
 
-  const progress: Step[] = ["welcome", "appearance", "list"];
-  const idx = step === "welcome" ? 0 : step === "appearance" ? 1 : 2;
+  const progress: Step[] = ["welcome", "permissions", "appearance", "list"];
+  const idx = step === "welcome" ? 0 : step === "permissions" ? 1 : step === "appearance" ? 2 : 3;
 
   const adjustLaterNotice = (
     <div className="inline-flex items-center gap-1.5 rounded-full bg-surface-2/80 px-3 py-1 text-[11.5px] text-muted">
@@ -439,6 +440,23 @@ export function Onboarding() {
                 {t("MiniMuse is a non-profit open-source community project, free forever.")}
               </a>
             </p>
+          </div>
+        )}
+
+        {step === "permissions" && (
+          <div className="mx-auto w-full pt-4 space-y-4 wide:max-w-2xl" data-testid="onboarding-permissions">
+            <div className="flex items-center gap-3.5">
+              <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-accent/12 text-accent">
+                <ShieldCheck size={26} />
+              </span>
+              <div className="min-w-0">
+                <h1 className="text-[24px] font-bold tracking-tight">{t("Allow the basics")}</h1>
+                <p className="text-[13.5px] text-muted">
+                  {t("Asking now means nothing interrupts you later: notifications, updates by itself, and finding your devices.")}
+                </p>
+              </div>
+            </div>
+            <DevicePermissions compact />
           </div>
         )}
 
@@ -946,8 +964,13 @@ export function Onboarding() {
           the footer's own bottom padding (source order) and pin the buttons to the window edge. */}
       <div className="safe-bottom shrink-0">
         <footer className="flex gap-2 px-6 pb-7 pt-3 wide:px-10 wide:pb-8">
-        {step === "appearance" && (
+        {step === "permissions" && (
           <button type="button" onClick={() => setStep("welcome")} className={secondaryBtn}>
+            {t("Back")}
+          </button>
+        )}
+        {step === "appearance" && (
+          <button type="button" onClick={() => setStep("permissions")} className={secondaryBtn}>
             {t("Back")}
           </button>
         )}
@@ -962,8 +985,13 @@ export function Onboarding() {
           </button>
         )}
         {step === "welcome" && (
-          <button type="button" onClick={() => setStep("appearance")} className={cx(primaryBtn, "flex-1 py-3")}>
+          <button type="button" onClick={() => setStep("permissions")} className={cx(primaryBtn, "flex-1 py-3")}>
             {t("Get started")} <ArrowRight size={16} />
+          </button>
+        )}
+        {step === "permissions" && (
+          <button type="button" onClick={() => setStep("appearance")} className={cx(primaryBtn, "flex-1 py-3")}>
+            {t("Continue")} <ArrowRight size={16} />
           </button>
         )}
         {step === "appearance" && (

@@ -650,6 +650,8 @@ class MuseService:
             "always_allow": list(self.settings.sentinel.always_allow_tools),
             "deny": list(self.settings.sentinel.deny_tools),
         }
+        # a policy saved earlier is in force from the first moment, not only after it is edited
+        self._apply_permission_policy()
         admin_tool = self.app.tools.get("system_admin")
         if admin_tool is not None:
             admin_tool.attach(self)
@@ -1023,6 +1025,14 @@ class MuseService:
             ("downloads", "Downloads"),
             ("device_settings", "Device settings"),
             ("microphone", "Microphone"),
+            ("run_commands", "Run commands"),
+            ("send_email", "Send email"),
+            ("browse_web", "Use the web browser"),
+            ("control_screen", "Control this computer's screen"),
+            ("passwords", "Use saved passwords"),
+            ("install_software", "Install software & system changes"),
+            ("share_location", "Share location"),
+            ("other_devices", "Act on your other devices"),
         ],
         "phone": [
             ("location", "Location"),
@@ -1042,6 +1052,24 @@ class MuseService:
         "files_write": ["files"],
         "downloads": ["files", "shell"],
         "device_settings": ["pc_control"],
+        "run_commands": ["shell", "python_execute"],
+        "send_email": ["send_email"],
+        "browse_web": ["browser"],
+        "control_screen": ["computer_act", "computer_task"],
+        "passwords": ["passwords"],
+        "install_software": ["system_admin"],
+        "share_location": ["location"],
+        "other_devices": [
+            "delegate",
+            "devices",
+            "device_shell",
+            "device_put",
+            "device_get",
+            "device_open",
+            "device_files",
+            "device_screen",
+            "device_notify",
+        ],
     }
 
     def _permissions_view(self) -> dict[str, dict[str, str]]:
@@ -1062,24 +1090,31 @@ class MuseService:
         return out
 
     def _apply_permission_policy(self) -> None:
-        """The computer's capability rows land on the sentinel's tool lists: a
-        capability on "always" joins the allowed set, on "never" the denied one, on
-        "ask" it returns to the configured baseline."""
+        """The computer's capability rows land on the sentinel's tool lists.
+
+        Several capabilities can stand for the same tool (Files: read, Files: write and Downloads
+        all use ``files``), so each tool gets the strictest answer of the rows behind it: any
+        "never" denies it; it is allowed without asking only when every row behind it says
+        "always"; anything else returns it to the configured baseline (so "ask first" never drops
+        a tool that the baseline already asks about, such as ``shell``)."""
         policy = self._permissions_view().get("computer", {})
         base = self._sentinel_baseline
         allow = set(base["always_allow"])
         ask = set(base["always_ask"])
         deny = set(base["deny"])
+        modes: dict[str, set[str]] = {}
         for cap, tools in self.CAPABILITY_TOOLS.items():
-            mode = policy.get(cap, "ask")
             for tool in tools:
+                modes.setdefault(tool, set()).add(policy.get(cap, "ask"))
+        for tool, seen in modes.items():
+            if "never" in seen:
                 allow.discard(tool)
                 ask.discard(tool)
+                deny.add(tool)
+            elif seen == {"always"}:
+                ask.discard(tool)
                 deny.discard(tool)
-                if mode == "always":
-                    allow.add(tool)
-                elif mode == "never":
-                    deny.add(tool)
+                allow.add(tool)
         self.settings.sentinel.always_allow_tools = sorted(allow)
         self.settings.sentinel.always_ask_tools = sorted(ask)
         self.settings.sentinel.deny_tools = sorted(deny)

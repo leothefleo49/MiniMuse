@@ -37,8 +37,8 @@ reproduced against the real phone on the LAN before fixing:
 ## 2. Setup (onboarding)
 - [~] "Transfer Muse data" in setup opens a real transfer area: a *From Muse* tab in the setup card with the Muse prompt, .zip/file import and paste (the importer's setup mode is tested; the tab itself was not rendered in a browser)
 - [x] Setup asks what the AI should call you, and the first chat no longer asks again: setup already had the field, but the first conversation always began by asking; now it greets you by name and goes straight to naming the AI (5 new tests through the real API)
-- [ ] Setup has a permissions step that asks for the base permissions up front: notifications, auto self-update, location, microphone, nearby devices/connections, install updates (Android)
-- [ ] The auto phone-app-update permission is no longer hidden in watch settings; it lives in Permissions with a clear label and a real button
+- [~] Setup has a permissions step right after the welcome that asks for the basics up front (notifications, install updates, find devices on the Wi-Fi) with one "Allow the basics" button; the rest are in Settings (the step, the permission model and the setup flow are tested; Android's real dialogs and the page itself were not run on a phone or in a browser)
+- [~] The auto phone-app-update permission is no longer hidden in watch settings: the button is gone from the watch card and it is now the row **Install updates by itself** in Permissions, with a one-sentence reason and an Allow button (model unit tested; not rendered on a phone)
 - [~] AI "subtext" from setup shows up: the style notes already went to the model; the *tagline* was only visible on the small SOUL card because the line under the name is deliberately blank at rest. It now shows under the name in the chat header and in the chats drawer (compiles and the web suite passes; not looked at in a browser)
 
 ## 3. Wide screens (Windows / PC)
@@ -74,9 +74,9 @@ reproduced against the real phone on the LAN before fixing:
 - [ ] Other key actions (pairing, update, connect/disconnect, sync errors) use the popup system
 
 ## 10. Safety vs. Permissions
-- [ ] **Safety** section: when the AI may act with or without asking (per category), plus more safety options (quiet hours, spending limit, message-sending rules, app-install rules, location sharing, emergency stop)
-- [ ] **Permissions** section: real OS/hardware permissions with status and grant buttons (notifications, location, camera, mic, contacts, calendar, SMS, phone, files, accessibility, overlay, install apps, battery optimisation, usage access, notification access, Bluetooth/nearby, exact alarms)
-- [ ] Wireless debugging / full phone control guide with simple steps (enable developer options, pair, connect)
+- [~] **Safety** section: the Always / Ask first / Never rules moved here from Permissions, with 8 new categories mapped to real tools (run commands, send email = message-sending rule, browser, control the screen, saved passwords, install software = app-install rule, share location, act on other devices), plus links to quiet hours and usage limits and an **Emergency stop**. Server enforcement is tested (`test_safety_rules.py`, 8 tests); the page itself was not rendered in a browser. Two existing bugs found and fixed on the way: a saved "Never" stopped being enforced after a restart (proved on the original v1.1.0), and touching any rule silently removed `shell` from "always ask". Phone-side rows are still enforced by the phone app, not the server.
+- [~] **Permissions** section: real system permissions with status and Allow buttons: notifications, install updates, nearby devices, location, microphone, camera, calendar, contacts, background running, show over apps, exact alarms, control this phone (Android: the bridge now reports and requests them; Kotlin compiles; the list is unit tested). Browser/desktop: notifications, location, microphone, camera. Not covered: SMS, phone calls, files, usage access, notification access, Bluetooth.
+- [~] Full phone control guide: Android's accessibility service is the mechanism the app really uses; the guide lists the steps including "Allow restricted settings". Developer options / Wireless debugging are explained for the watch (Devices). Controlling a phone from a PC over ADB is **not built**, so it is not described.
 
 ## 11. Proactivity
 - [ ] Proactivity has an **Auto (adaptive)** mode that adjusts how often the AI reaches out based on your responses

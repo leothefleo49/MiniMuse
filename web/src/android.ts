@@ -60,6 +60,8 @@ export interface AndroidBridge {
   requestInstallPermission?(): void;
   /** Request all missing runtime + install permissions on Android. */
   requestAllPermissions?(): void;
+  /** Ask for one permission by name: notifications, camera, microphone, location, calendar, contacts, nearby, install. */
+  requestPermission?(key: string): void;
   /** Return JSON summarizing granted permissions on this phone. */
   permissionsStatus?(): string;
   /** JSON array of Google/calendar emails signed in on this phone (when Calendar permission is granted). */
@@ -149,6 +151,11 @@ export interface AndroidPermissionsStatus {
   installPackages: boolean;
   camera: boolean;
   location: boolean;
+  /** newer builds report these too; an older app leaves them out */
+  microphone?: boolean;
+  calendar?: boolean;
+  contacts?: boolean;
+  nearby?: boolean;
 }
 
 export function androidPermissionsStatus(): AndroidPermissionsStatus | null {

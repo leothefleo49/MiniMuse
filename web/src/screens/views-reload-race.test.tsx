@@ -175,6 +175,9 @@ describe("Onboarding connections reload race", () => {
       screen.root.findAll((n) => n.type === "button" && textOf(n).includes("Get started"))[0].props.onClick();
     });
     await act(async () => {
+      screen.root.findAll((n) => n.type === "button" && textOf(n).includes("Continue"))[0].props.onClick();
+    });
+    await act(async () => {
       screen.root.findAll((n) => n.type === "button" && textOf(n).includes("Next: Model & Accounts"))[0].props.onClick();
     });
     store.state = { ...store.state, connectionsVersion: 1 };
@@ -196,6 +199,9 @@ describe("Onboarding connections reload race", () => {
     // advance welcome -> appearance -> list (checklist with model line)
     await act(async () => {
       screen.root.findAll((n) => n.type === "button" && textOf(n).includes("Get started"))[0].props.onClick();
+    });
+    await act(async () => {
+      screen.root.findAll((n) => n.type === "button" && textOf(n).includes("Continue"))[0].props.onClick();
     });
     await act(async () => {
       screen.root.findAll((n) => n.type === "button" && textOf(n).includes("Next: Model & Accounts"))[0].props.onClick();

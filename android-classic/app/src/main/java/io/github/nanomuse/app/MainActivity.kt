@@ -648,12 +648,41 @@ class MainActivity : AppCompatActivity() {
         val cameraOk = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         val locOk = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val nearbyOk = Build.VERSION.SDK_INT < 33 || granted(Manifest.permission.NEARBY_WIFI_DEVICES)
         return JSONObject()
             .put("notifications", notifOk)
             .put("installPackages", installOk)
             .put("camera", cameraOk)
             .put("location", locOk)
+            .put("microphone", granted(Manifest.permission.RECORD_AUDIO))
+            .put("calendar", granted(Manifest.permission.READ_CALENDAR))
+            .put("contacts", granted(Manifest.permission.READ_CONTACTS))
+            .put("nearby", nearbyOk)
             .toString()
+    }
+
+    /**
+     * One permission, by the name the web app uses. Runtime permissions show Android's own dialog;
+     * "install" opens the *Install unknown apps* page, which Android only lets a person switch on.
+     */
+    fun requestPermissionByKey(key: String) {
+        val wanted: Array<String> = when (key) {
+            "notifications" -> if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else emptyArray()
+            "camera" -> arrayOf(Manifest.permission.CAMERA)
+            "microphone" -> arrayOf(Manifest.permission.RECORD_AUDIO)
+            "location" -> arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+            "calendar" -> arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
+            "contacts" -> arrayOf(Manifest.permission.READ_CONTACTS)
+            "nearby" -> if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES) else emptyArray()
+            "install" -> {
+                if (!AppUpdate.canInstallPackages(this)) AppUpdate.requestInstallPackagesPermission(this)
+                emitPermissionsChanged()
+                return
+            }
+            else -> emptyArray()
+        }
+        val missing = wanted.filter { !granted(it) }
+        if (missing.isNotEmpty()) askMultiplePermissions.launch(missing.toTypedArray()) else emitPermissionsChanged()
     }
 
     fun requestAllPermissions() {
@@ -665,6 +694,10 @@ class MainActivity : AppCompatActivity() {
         }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             needed.add(Manifest.permission.CAMERA)
+        }
+        if (!granted(Manifest.permission.RECORD_AUDIO)) needed.add(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33 && !granted(Manifest.permission.NEARBY_WIFI_DEVICES)) {
+            needed.add(Manifest.permission.NEARBY_WIFI_DEVICES)
         }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             needed.add(Manifest.permission.ACCESS_FINE_LOCATION)

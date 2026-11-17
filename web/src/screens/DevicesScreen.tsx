@@ -1,6 +1,6 @@
-import { Check, ChevronDown, ChevronUp, Download, Globe, Hand, Laptop, Loader2, MessageSquare, MoreHorizontal, Pencil, QrCode, RefreshCw, ShieldCheck, Smartphone, Square, Watch, Wifi, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Download, Globe, Hand, Laptop, Loader2, MessageSquare, MoreHorizontal, Pencil, QrCode, RefreshCw, Smartphone, Square, Watch, Wifi, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { androidApp, androidPermissionsStatus, discoverWatchAdbFromPhone, type WatchAdbDiscoveryResult } from "../android";
+import { androidApp, discoverWatchAdbFromPhone, type WatchAdbDiscoveryResult } from "../android";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { NoticeDialog } from "../components/NoticeDialog";
 import { SyncControls } from "../components/DataControls";
@@ -834,7 +834,6 @@ function ChromeCompanionCard() {
 export function WatchPairingCard() {
   const t = useT();
   const { toast } = useStore();
-  const phone = androidApp();
   const [info, setInfo] = useState<WatchCodeInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
@@ -846,7 +845,6 @@ export function WatchPairingCard() {
   const [pairIpPort, setPairIpPort] = useState("");
   const [pairCode, setPairCode] = useState("");
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
-  const [perms, setPerms] = useState(() => androidPermissionsStatus());
   const [notice, setNotice] = useState<WatchNotice | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const installingRef = useRef(false);
@@ -877,15 +875,6 @@ export function WatchPairingCard() {
       toast((e as Error).message);
     } finally {
       setScanning(false);
-    }
-  };
-
-  const grantPhonePermissions = () => {
-    if (typeof phone?.requestAllPermissions === "function") {
-      phone.requestAllPermissions();
-      toast(t("Requesting phone & install permissions…"));
-    } else if (typeof phone?.requestInstallPermission === "function") {
-      phone.requestInstallPermission();
     }
   };
 
@@ -930,9 +919,6 @@ export function WatchPairingCard() {
 
   useEffect(() => {
     void scanAdb();
-    const onPerms = () => setPerms(androidPermissionsStatus());
-    window.addEventListener("nanomuse:permissions-changed", onPerms);
-    return () => window.removeEventListener("nanomuse:permissions-changed", onPerms);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1072,17 +1058,6 @@ export function WatchPairingCard() {
             {installing ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
             {installing ? t("Downloading & Installing to Watch…") : t("Auto-Download & Install on Watch")}
           </button>
-
-          {phone && (typeof phone.requestAllPermissions === "function" || typeof phone.requestInstallPermission === "function") && (
-            <button
-              type="button"
-              onClick={grantPhonePermissions}
-              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3.5 py-1.5 text-[12px] font-medium text-fg hover:bg-surface-2"
-            >
-              <ShieldCheck size={13} className={perms?.installPackages ? "text-emerald-500" : "text-accent"} />
-              {perms?.installPackages ? t("Phone App Permissions Granted") : t("Grant Phone Self-Update Permissions")}
-            </button>
-          )}
 
           <button
             type="button"

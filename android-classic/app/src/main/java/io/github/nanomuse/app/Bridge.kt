@@ -186,6 +186,12 @@ class Bridge(private val activity: MainActivity) {
         activity.runOnUiThread { activity.requestAllPermissions() }
     }
 
+    /** Ask for one permission by name: notifications, camera, microphone, location, calendar, contacts, nearby, install. */
+    @JavascriptInterface
+    fun requestPermission(key: String?) {
+        activity.runOnUiThread { activity.requestPermissionByKey(key.orEmpty()) }
+    }
+
     /** Return JSON summarizing granted permissions on this phone. */
     @JavascriptInterface
     fun permissionsStatus(): String = activity.permissionsStatusJson()
