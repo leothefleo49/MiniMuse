@@ -9,8 +9,10 @@
     <string name="connect_url_hint">http://192.168.1.20:8787/?token=…</string>
     <string name="connect_button">连接</string>
     <string name="connect_checking">正在连接…</string>
-    <string name="connect_bad_url">这不是服务器地址。地址形如 http://主机:8787/?token=…</string>
+    <string name="connect_bad_url">这不是服务器地址。地址形如 http://主机:8787/?token=…（配对二维码要在 MiniMuse 里面扫：设备 → 与电脑配对。）</string>
     <string name="connect_no_token">地址里没有令牌。请使用 nanomuse serve 打印的链接（末尾是 ?token=…）。</string>
+    <string name="connect_pair_starting">找到配对码：正在这台手机上启动 MiniMuse，以便与你的电脑配对。</string>
+    <string name="connect_pair_need_app">这个二维码用于两台 MiniMuse 互相配对，需要先有一台在运行。要连接服务器，请扫描 nanomuse serve 打印的二维码；连接后，在「设备 → 与电脑配对」里再扫一次这个配对码。</string>
     <string name="connect_unreachable">无法连接 %1$s。服务器在运行吗？手机和电脑在同一个网络吗？</string>
     <string name="connect_unauthorized">服务器拒绝了这个令牌。请从 nanomuse serve 复制当前链接。</string>
     <string name="connect_scan_prompt">把摄像头对准 nanomuse serve 打印的二维码</string>

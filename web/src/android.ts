@@ -50,6 +50,11 @@ export interface AndroidBridge {
   setAutoUpdateEnabled?(on: boolean): void;
   /** Open the native QR scanner directly to pair with a computer or server. */
   scanToPair?(): void;
+  /**
+   * A pairing QR scanned on the phone's start screen: the app started its local server for it
+   * and parked the payload here for the page to claim. Taken (and cleared) once, on load.
+   */
+  takePendingPairPayload?(): string;
   /** JSON readiness for native BiometricPrompt on HTTP local / LAN WebView pages. */
   biometricStatus?(): string;
   /** Prompt native Fingerprint / Face ID; emits `nanomuse:native-biometric`. */

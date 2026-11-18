@@ -53,6 +53,15 @@ class Prefs(context: Context) {
         get() = sp.getString("local_token", "") ?: ""
         set(v) = sp.edit().putString("local_token", v).apply()
 
+    /**
+     * A pairing QR scanned on the start screen (`nanomuse://pair?...`), parked here until the
+     * web app is up and can claim it. The start screen has no server to claim with, so the
+     * scan starts the local runtime and hands the payload over through the page instead.
+     */
+    var pendingPair: String
+        get() = sp.getString("pending_pair", "") ?: ""
+        set(v) = sp.edit().putString("pending_pair", v).apply()
+
     val connected: Boolean get() = serverUrl.isNotEmpty() && token.isNotEmpty()
 
     fun forget() {
@@ -121,6 +130,18 @@ class Prefs(context: Context) {
             val origin = "${u.scheme}://$host$port"
             val token = (u.getQueryParameter("token") ?: u.fragment?.substringAfter("token=", "")?.substringBefore("&") ?: "").trim()
             return origin to token
+        }
+
+        /**
+         * A device-pairing QR (the one Settings, Devices shows under "Show pairing code"):
+         * `nanomuse://pair?code=...` or the older `nanomuse-pair:` form. It carries no access
+         * token, so [parseLink] rejects it as "not a server address" - the scan flows route it
+         * to the pairing claim instead.
+         */
+        fun isPairLink(text: String): Boolean {
+            val s = text.trim()
+            return s.startsWith("nanomuse://pair", ignoreCase = true) ||
+                s.startsWith("nanomuse-pair:", ignoreCase = true)
         }
     }
 }

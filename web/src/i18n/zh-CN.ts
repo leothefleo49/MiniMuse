@@ -2423,7 +2423,7 @@ const zhCN: Record<string, string> = {
   "Connected to a computer server. Scan a new QR code or switch back to local.": "已连接到电脑服务器。扫描新的二维码或切回手机本地。",
   "Could not check the password.": "没能验证密码。",
   "Could not turn off the lock.": "没能关闭应用锁。",
-  "Currently running locally on this phone. Scan your PC's QR code anytime to switch.": "当前在此手机本地运行。随时扫描电脑上的二维码即可切换。",
+  "Currently running locally on this phone. Scan your PC's QR code anytime to pair with it or switch.": "当前在此手机本地运行。随时扫描电脑上的二维码即可配对或切换。",
   "Disable password / PIN (Fingerprint / Passkey only)": "停用密码 / PIN 码（仅保留指纹 / 通行密钥）",
   "Enter your password or PIN to open {app}.": "输入密码或 PIN 码以打开 {app}。",
   "Forgot password or PIN?": "忘记密码或 PIN 码？",
@@ -2690,6 +2690,7 @@ const zhCN: Record<string, string> = {
   "Google Calendar Popup": "Google 日历弹窗",
   "Google Contacts Popup": "Google 通讯录弹窗",
   "Google OAuth Client ID": "Google OAuth 客户端 ID",
+  "Google OAuth Client ID (optional override)": "Google OAuth 客户端 ID（可选，覆盖内置值）",
   "Google OAuth Client ID is ready ({id}). Click Sign in with Google Popup to grant Gmail, Calendar & Contacts sync in one click.":
     "Google OAuth 客户端 ID 已就绪（{id}）。点击「通过 Google 弹窗登录」即可一键授权 Gmail、日历与通讯录同步。",
   "Google OAuth Sign-In": "Google OAuth 登录",
@@ -3247,6 +3248,7 @@ const zhCN: Record<string, string> = {
   "Google & Mail": "Google 与邮箱",
   "Google OAuth Client ID is ready ({id}). Click Sign in with Google Popup to auto-sync Gmail, Calendar, Contacts, Drive & Tasks.": "Google OAuth 客户端 ID 已就绪（{id}）。点击弹出窗口登录 Google，即可自动同步 Gmail、日历、通讯录、Drive 与 Tasks。",
   "Hide advanced URL & auth settings": "收起高级 URL 与认证设置",
+  "Hide advanced": "收起高级选项",
   "Optional — already linked to Google OAuth": "可选 — 已自动关联 Google OAuth",
   "Optional. Sync Google Calendar & Contacts in 1 click, connect Gmail with App Password or OAuth, or enable 36+ APIs cleanly.": "可选。一键同步 Google 日历与通讯录、通过应用专用密码或 OAuth 连接 Gmail，或快速启用 36+ API。",
   "Paste 16-char Google App Password": "粘贴 16 位 Google 应用专用密码",
@@ -3399,6 +3401,7 @@ const zhCN: Record<string, string> = {
   "Waiting for the code": "等待输入代码",
   "6-digit code from the watch": "手表上的 6 位代码",
   "Advanced: type the address yourself": "高级：自己输入地址",
+  "Advanced: use your own Google Cloud project": "高级：使用你自己的 Google Cloud 项目",
   "Download the watch app": "下载手表应用",
   "Enter code": "输入代码",
   // setup: transfer from Muse

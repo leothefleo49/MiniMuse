@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import android.widget.Toast
 import io.github.nanomuse.app.databinding.ActivityConnectBinding
 import io.github.nanomuse.app.runtime.LocalRuntime
 import io.github.nanomuse.app.runtime.RuntimeService
@@ -46,6 +47,11 @@ class ConnectActivity : AppCompatActivity() {
     private val scanner = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
         val text = result.data?.getStringExtra(QrScanActivity.EXTRA_QR_RESULT)?.trim() ?: return@registerForActivityResult
+        // a pairing code QR is not a server address: it goes to the pairing claim, not `connect`
+        if (Prefs.isPairLink(text)) {
+            pairFromQr(text)
+            return@registerForActivityResult
+        }
         showRemote()
         ui.url.setText(text)
         connect(text)
@@ -207,9 +213,33 @@ class ConnectActivity : AppCompatActivity() {
         private const val STATE_IN_REMOTE = "in_remote_mode"
     }
 
+    // ------------------------------------------------------------------ a pairing code QR
+
+    /**
+     * A pairing code QR from the other device (Settings, Devices, "Show pairing code"). This
+     * screen has no server to claim with, so with a runtime on the phone the scan starts the
+     * local runtime and parks the payload ([Prefs.pendingPair]) for the page to claim once it
+     * loads; without a runtime there is nothing to pair from yet, so say what the QR is
+     * instead of "not a server address".
+     */
+    private fun pairFromQr(payload: String) {
+        if (runtime.available) {
+            prefs.pendingPair = payload
+            Toast.makeText(this, R.string.connect_pair_starting, Toast.LENGTH_LONG).show()
+            runLocal()
+        } else {
+            fail(getString(R.string.connect_pair_need_app))
+        }
+    }
+
     // ------------------------------------------------------------------ on the computer
 
     private fun connect(text: String) {
+        // pasted or shared pairing code: same routing as a scan (see pairFromQr)
+        if (Prefs.isPairLink(text)) {
+            pairFromQr(text)
+            return
+        }
         val parsed = Prefs.parseLink(text)
         if (parsed == null) return fail(getString(R.string.connect_bad_url))
         val (origin, token) = parsed

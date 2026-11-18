@@ -138,7 +138,7 @@ export function DevicesScreen() {
                 <p className="text-[14.5px] font-semibold leading-tight">{t("Pair with your computer")}</p>
                 <p className="mt-0.5 text-[12.5px] leading-snug text-muted">
                   {androidApp()?.mode?.() === "local"
-                    ? t("Currently running locally on this phone. Scan your PC's QR code anytime to switch.")
+                    ? t("Currently running locally on this phone. Scan your PC's QR code anytime to pair with it or switch.")
                     : t("Connected to a computer server. Scan a new QR code or switch back to local.")}
                 </p>
               </div>

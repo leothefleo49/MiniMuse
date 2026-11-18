@@ -131,6 +131,18 @@ class Bridge(private val activity: MainActivity) {
         activity.runOnUiThread { activity.scanToPair() }
     }
 
+    /**
+     * A pairing QR scanned on the start screen: the app started the local runtime for it and
+     * parked the payload here. Taken (and cleared) once by the page when it loads, which
+     * claims the pairing straight away.
+     */
+    @JavascriptInterface
+    fun takePendingPairPayload(): String {
+        val payload = prefs.pendingPair
+        if (payload.isNotEmpty()) prefs.pendingPair = ""
+        return payload
+    }
+
     /** Hardware fingerprint / face unlock readiness for local & LAN HTTP WebView pages. */
     @JavascriptInterface
     fun biometricStatus(): String = activity.biometricStatusJson()

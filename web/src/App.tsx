@@ -426,8 +426,9 @@ export default function App() {
         )}
         {!state.lite && <DesktopRemoteHint />}
         {/* `tabbar-room` keeps the screens, the chat's composer included, above the floating bar;
-            a wide window has the sidebar instead and gives the room back. */}
-        <main className={cx("tabbar-room mx-auto min-h-0 w-full flex-1 wide:max-w-[900px]", !state.lite && "wide:pb-0")}>
+            a wide window has the sidebar instead and gives the room back. The room itself is
+            wider than it used to be (900px) so a desktop window is not mostly empty margin. */}
+        <main className={cx("tabbar-room mx-auto min-h-0 w-full flex-1 wide:max-w-[1200px]", !state.lite && "wide:pb-0")}>
           <ErrorBoundary scope="main-tab">
             <Suspense fallback={<Loading />}>
               {state.tab === "chat" && <ChatScreen />}
