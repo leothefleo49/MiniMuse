@@ -11,6 +11,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -54,6 +55,9 @@ data class WatchState(
     val cards: List<WatchInfoCard> = emptyList(),
     val serverShellVersion: String = "",
     val wearApkUrl: String = "",
+    val avatarId: String = "dragon",
+    val avatarEmoji: String = "?",
+    val avatarColor: String = "#0064d4",
 ) {
     companion object {
         fun fromJson(obj: JSONObject): WatchState {
@@ -138,6 +142,7 @@ data class WatchState(
                 }
             }
             val updObj = obj.optJSONObject("update")
+            val avObj = obj.optJSONObject("avatar")
             return WatchState(
                 agentName = obj.optString("agent_name", "MiniMuse").ifBlank { "MiniMuse" },
                 version = obj.optString("version"),
@@ -149,6 +154,9 @@ data class WatchState(
                 cards = cardsList,
                 serverShellVersion = updObj?.optString("shell_version").orEmpty(),
                 wearApkUrl = updObj?.optString("apk_url").orEmpty(),
+                avatarId = avObj?.optString("id", "dragon")?.ifBlank { "dragon" } ?: "dragon",
+                avatarEmoji = avObj?.optString("emoji", "?")?.ifBlank { "?" } ?: "?",
+                avatarColor = avObj?.optString("color", "#0064d4")?.ifBlank { "#0064d4" } ?: "#0064d4",
             )
         }
     }
@@ -249,6 +257,40 @@ class WatchClient(private val config: WatchConfig) {
         }
     }
 
+    /**
+     * The agent's face for the home screen: the studio still for `id` from the files API,
+     * cached on disk so the hero doesn't refetch on every render.
+     */
+    suspend fun fetchAvatarFile(id: String, cacheDir: File): Result<File> = withContext(Dispatchers.IO) {
+        val baseUrl = config.serverUrl
+        val token = config.token
+        if (baseUrl.isBlank() || token.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Not paired"))
+        }
+        val safe = id.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val out = File(cacheDir, "avatar-$safe.webp")
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/files/avatar/$id/idle.webp")
+                .header("Authorization", "Bearer $token")
+                .get()
+                .build()
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IllegalStateException("HTTP ${resp.code}"))
+                }
+                val body = resp.body ?: return@withContext Result.failure(IllegalStateException("Empty avatar"))
+                val tmp = File(cacheDir, "avatar-$safe.tmp")
+                tmp.outputStream().use { body.byteStream().copyTo(it) }
+                if (out.exists()) out.delete()
+                if (!tmp.renameTo(out)) tmp.copyTo(out, overwrite = true)
+                Result.success(out)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun ask(prompt: String, language: String = Locale.getDefault().toLanguageTag()): Result<Unit> =
         withContext(Dispatchers.IO) {
             val clean = prompt.trim()
@@ -277,8 +319,7 @@ class WatchClient(private val config: WatchConfig) {
         }
 
     suspend fun approve(item: WatchApproval, approved: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
-        val payload = JSONObject()
-            .put("id", item.id)
+        val payload = JSONObject()            .put("id", item.id)
             .put("approved", approved)
             .put("scope", "once")
             .put("kind", item.kind)

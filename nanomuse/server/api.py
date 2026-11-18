@@ -3360,6 +3360,14 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
 
         return {
             "agent_name": svc.profile.name,
+            # the agent's face, so the watch can wear it full-bleed on its home screen:
+            # a studio face id (its stills come through /api/files), "" for the emoji,
+            # or "dragon" for the bundled dragon.
+            "avatar": {
+                "id": svc.profile.avatar,
+                "emoji": svc.profile.emoji,
+                "color": svc.profile.color,
+            },
             "version": svc.settings_view()["version"],
             "busy": bool(main_thread.busy) if main_thread is not None else False,
             "call": call_capabilities(svc),

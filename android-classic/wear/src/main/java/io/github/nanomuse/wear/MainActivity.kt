@@ -7,7 +7,12 @@ import android.animation.ValueAnimator
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
@@ -36,13 +41,16 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.provider.Settings
+import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.LinearInterpolator
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -83,6 +91,18 @@ class MainActivity : AppCompatActivity() {
     private var discoveredServers: List<DiscoveredServer> = emptyList()
     private var scanningLan = false
     private var statusNotice = ""
+
+    // Muse-style chat screen (the hero's chat bubble): recent turns + a typed prompt
+    private var chatOpen = false
+    private var chatInputOpen = false
+    private var chatDraft = ""
+
+    // The agent's face worn full-bleed on the home screen: the studio still from the server,
+    // the bundled dragon, or the emoji on its colour.
+    private var avatarBitmap: Bitmap? = null
+    private var avatarLoadedKey = ""
+    private var avatarFailedKey = ""
+    private var avatarLoadJob: Job? = null
 
     private var pollJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -164,6 +184,9 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this).apply {
             setBackgroundColor(Color.BLACK)
             isFillViewport = true
+            // the home hero wears the whole round screen: children may paint over the padding
+            clipToPadding = false
+            clipChildren = false
         }
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -172,6 +195,8 @@ class MainActivity : AppCompatActivity() {
             val padH = if (round) (w * 0.11f).roundToInt() else dp(12)
             val padV = if (round) (w * 0.14f).roundToInt() else dp(16)
             setPadding(padH, padV, padH, padV + dp(20))
+            clipToPadding = false
+            clipChildren = false
         }
         scroll.addView(
             col,
@@ -962,6 +987,8 @@ class MainActivity : AppCompatActivity() {
             renderLiveCallScreen(col)
         } else if (voiceAskActive) {
             renderVoiceAskScreen(col)
+        } else if (chatOpen) {
+            renderChatScreen(col)
         } else {
             renderHomeScreen(col)
         }
@@ -1202,69 +1229,268 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderHomeScreen(col: LinearLayout) {
         val st = currentState
-        val name = st?.agentName ?: config.agentName
-        val (statusLine, dotColor) = when {
-            st == null -> "Connecting" to "#3B82F6"
-            st.busy -> "Working" to "#0168FF"
-            st.call.realtimeSupported -> "Online · Realtime" to "#10B981"
-            else -> "Online" to "#10B981"
-        }
-        col.addView(brandHeader(name, statusLine, dotHex = dotColor))
+        val screenW = resources.displayMetrics.widthPixels
 
-        if (statusNotice.isNotBlank()) {
-            col.addView(noticeCard(statusNotice, "#0F1B33", "#93C5FD", strokeHex = "#1E3A8A"))
+        // Muse-style home: the agent's face wears the whole round screen, three round
+        // buttons sit at the bottom (call, chat, voice), the status glows at the top.
+        val hero = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(screenW, screenW).apply {
+                // cancel the column padding so the face is full-bleed
+                val round = resources.configuration.isScreenRound
+                val padH = if (round) (screenW * 0.11f).roundToInt() else dp(12)
+                val padV = if (round) (screenW * 0.14f).roundToInt() else dp(16)
+                marginStart = -padH
+                marginEnd = -padH
+                topMargin = -padV
+            }
         }
 
-        // Prominent update chip only when a new watch release is ready
+        hero.addView(avatarHeroView(st), FrameLayout.LayoutParams(screenW, screenW))
+
+        val (statusLine, statusHex) = when {
+            st == null -> "Connecting..." to "#8AB8FF"
+            st.busy -> "Working..." to "#8AB8FF"
+            statusNotice.isNotBlank() -> statusNotice to "#FDE68A"
+            else -> "Online" to "#9BE7C4"
+        }
+        hero.addView(
+            TextView(this).apply {
+                text = statusLine
+                textSize = 15f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                setShadowLayer(14f, 0f, 0f, Color.parseColor(statusHex))
+                maxLines = 1
+            },
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP,
+            ).apply { topMargin = dp(16) },
+        )
+
+        if (st == null || st.busy) {
+            hero.addView(PulseArcView(this), FrameLayout.LayoutParams(screenW, screenW))
+        }
+
+        // Quiet rows close to the top: the update chip and an approval hint (only when present).
+        val overlayCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
         val upd = availableWatchUpdate
         if (upd != null) {
-            val label = if (updatingWatchApk) "Updating ${watchUpdateProgress}%..." else "Update to Watch v${upd.version}"
-            col.addView(
-                pillButton(label, "#0D9488", strokeHex = "#14B8A6") {
+            overlayCol.addView(
+                pillButton(
+                    if (updatingWatchApk) "Updating ${watchUpdateProgress}%..." else "Update to Watch v${upd.version}",
+                    "#CC0D9488",
+                    strokeHex = "#14B8A6",
+                ) {
                     if (!updatingWatchApk) startSingleFlightWatchUpdate(upd)
-                }.apply { isEnabled = !updatingWatchApk },
+                }.apply {
+                    isEnabled = !updatingWatchApk
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    )
+                },
+            )
+        }
+        if (st != null && st.approvals.isNotEmpty()) {
+            overlayCol.addView(
+                TextView(this).apply {
+                    text = "Needs approval (${st.approvals.size}) - open Chat"
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#FDE68A"))
+                    setShadowLayer(10f, 0f, 0f, Color.parseColor("#92400E"))
+                },
+            )
+        }
+        if (overlayCol.childCount > 0) {
+            hero.addView(
+                overlayCol,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP,
+                ).apply { topMargin = dp(44) },
             )
         }
 
-        // Primary Hero Controls: compact side-by-side Live Call & Voice Ask
-        val heroRow = LinearLayout(this).apply {
+        val iconRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-        }.also { it.layoutParams = marginBottomParams(dp(8)) }
-        heroRow.addView(
-            pillButton("Live Call", "#0168FF", strokeHex = "#3B82F6") {
-                startLiveCall()
-            }.also {
-                it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = dp(4)
-                }
-            },
+        }
+        val callReady = st?.call?.realtimeSupported == true
+        iconRow.addView(
+            iconButton(R.drawable.ic_call, if (callReady) "#FF2D8E" else null) { startLiveCall() },
         )
-        heroRow.addView(
-            pillButton("Voice Ask", "#101E36", fgHex = "#93C5FD", strokeHex = "#2563EB") {
-                startVoiceAsk()
-            }.also {
-                it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginStart = dp(4)
-                }
-            },
-        )
-        col.addView(heroRow)
-
-        col.addView(
-            pillButton("Open Live UI", "#121216", fgHex = "#E4E4E7", strokeHex = "#26262C") {
-                webShellOpen = true
+        iconRow.addView(
+            iconButton(R.drawable.ic_chat, "#0168FF") {
+                chatOpen = true
+                statusNotice = ""
                 render()
             },
         )
+        iconRow.addView(
+            iconButton(R.drawable.ic_mic, null) { startVoiceAsk() },
+        )
+        hero.addView(
+            iconRow,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM,
+            ).apply { bottomMargin = dp(14) },
+        )
+        col.addView(hero)
 
+        if (st != null && st.cards.isNotEmpty()) {
+            for (card in st.cards.take(2)) {
+                val txt = if (card.title.isNotEmpty()) "${card.title}: ${card.body}" else card.body
+                col.addView(noticeCard(txt.take(140), "#121216", "#E2E8F0", strokeHex = "#26262C"))
+            }
+        }
+
+        // Options stay tucked away: live UI, stay awake, update check, unpair
+        col.addView(
+            pillButton("Options", "#0D0D10", fgHex = "#9CA3AF", strokeHex = "#222228") {
+                optionsExpanded = !optionsExpanded
+                render()
+            },
+        )
+        if (optionsExpanded) {
+            col.addView(
+                pillButton("Open Live UI", "#121216", fgHex = "#E4E4E7", strokeHex = "#26262C") {
+                    webShellOpen = true
+                    render()
+                },
+            )
+            val wakeLabel = if (config.keepScreenOnDuringVoice) "Stay Awake Voice: ON" else "Stay Awake Voice: OFF"
+            col.addView(
+                pillButton(wakeLabel, "#141418", strokeHex = "#282830") {
+                    config.keepScreenOnDuringVoice = !config.keepScreenOnDuringVoice
+                    updateWakeLocks()
+                    render()
+                },
+            )
+            val checkLabel = if (checkingWatchUpdate) "Checking Updates..." else "Check Update (v${BuildConfig.VERSION_NAME})"
+            col.addView(
+                pillButton(checkLabel, "#141418", strokeHex = "#282830") {
+                    if (!checkingWatchUpdate) maybeAutoCheckWatchUpdate(force = true)
+                }.apply { isEnabled = !checkingWatchUpdate },
+            )
+            col.addView(
+                pillButton("Unpair Watch", "#3B0D0D", fgHex = "#FCA5A5", strokeHex = "#7F1D1D") {
+                    endLiveCall()
+                    config.clearPairing()
+                    currentState = null
+                    statusNotice = ""
+                    optionsExpanded = false
+                    render()
+                    startLanScan()
+                },
+            )
+        }
+    }
+
+    /** The face that fills the home screen: the studio still, the bundled dragon, or the emoji on its colour. */
+    private fun avatarHeroView(st: WatchState?): View {
+        val id = st?.avatarId ?: "dragon"
+        if (id.isBlank() || id == "emoji") {
+            return FrameLayout(this).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.parseColor(st?.avatarColor ?: "#0064d4"))
+                }
+                addView(
+                    TextView(this@MainActivity).apply {
+                        text = st?.avatarEmoji ?: "?"
+                        textSize = 72f
+                        gravity = Gravity.CENTER
+                    },
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    ),
+                )
+            }
+        }
+        val screenW = resources.displayMetrics.widthPixels
+        return ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            layoutParams = LinearLayout.LayoutParams(screenW, screenW)
+            val bmp = avatarBitmapFor(id)
+            if (bmp != null) {
+                setImageBitmap(bmp)
+            } else {
+                setImageResource(R.drawable.dragon_idle)
+                if (id != "dragon") loadAvatarAsync(id)
+            }
+        }
+    }
+
+    private fun avatarBitmapFor(id: String): Bitmap? {
+        if (avatarLoadedKey == id && avatarBitmap != null) return avatarBitmap
+        if (id == "dragon") {
+            val bmp = BitmapFactory.decodeResource(resources, R.drawable.dragon_idle)
+            if (bmp != null) {
+                avatarBitmap = bmp
+                avatarLoadedKey = id
+            }
+            return bmp
+        }
+        // A studio face: the cached download first, then the server.
+        if (avatarFailedKey == id) return null
+        val f = File(cacheDir, "avatar-${id.replace(Regex("[^A-Za-z0-9._-]"), "_")}.webp")
+        if (f.exists()) {
+            val bmp = BitmapFactory.decodeFile(f.absolutePath)
+            if (bmp != null) {
+                avatarBitmap = bmp
+                avatarLoadedKey = id
+                return bmp
+            }
+            f.delete()
+        }
+        return null
+    }
+
+    private fun loadAvatarAsync(id: String) {
+        if (id.isBlank() || id == "dragon") return
+        if (avatarFailedKey == id || avatarLoadJob?.isActive == true) return
+        avatarLoadJob = lifecycleScope.launch {
+            client.fetchAvatarFile(id, cacheDir).onSuccess { f ->
+                val bmp = BitmapFactory.decodeFile(f.absolutePath)
+                if (bmp != null) {
+                    avatarBitmap = bmp
+                    avatarLoadedKey = id
+                    mainHandler.post {
+                        if (config.isPaired && !chatOpen && callPhase == CallPhase.OFF && !voiceAskActive) render()
+                    }
+                }
+            }.onFailure {
+                avatarFailedKey = id
+            }
+        }
+    }
+
+    /** The chat screen the hero's bubble opens: indigo bubbles, white text, keyboard and mic at the bottom. */
+    private fun renderChatScreen(col: LinearLayout) {
+        val st = currentState
+        col.addView(
+            pillButton("Back", "#121216", fgHex = "#E4E4E7", strokeHex = "#26262C") {
+                chatOpen = false
+                chatInputOpen = false
+                statusNotice = ""
+                render()
+            },
+        )
+        // Approvals need an answer, so they come first.
         if (st != null && st.approvals.isNotEmpty()) {
-            col.addView(sectionLabel("Needs Approval (${st.approvals.size})"))
             for (ap in st.approvals.take(3)) {
                 col.addView(noticeCard("${ap.tool}: ${ap.summary}", "#271A07", "#FDE68A", strokeHex = "#92400E"))
-                val apRow = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                }.also { it.layoutParams = marginBottomParams(dp(8)) }
+                val apRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
                 apRow.addView(
                     pillButton("Allow", "#15803D", strokeHex = "#22C55E") {
                         lifecycleScope.launch {
@@ -1292,17 +1518,19 @@ class MainActivity : AppCompatActivity() {
                 col.addView(apRow)
             }
         }
-
-        if (st != null && st.cards.isNotEmpty()) {
-            for (card in st.cards.take(3)) {
-                val txt = if (card.title.isNotEmpty()) "${card.title}: ${card.body}" else card.body
-                col.addView(noticeCard(txt.take(180), "#121216", "#E2E8F0", strokeHex = "#26262C"))
-            }
+        if (statusNotice.isNotBlank()) {
+            col.addView(noticeCard(statusNotice, "#0F1B33", "#93C5FD", strokeHex = "#1E3A8A"))
         }
-
+        val recent = st?.recent ?: emptyList()
+        for (msg in recent) {
+            col.addView(bubbleView(msg.text.take(600), isUser = msg.role == "user"))
+        }
+        if (recent.isEmpty()) {
+            col.addView(noticeCard("Say hello - your agent answers here.", "#121216", "#A1A1AA", strokeHex = "#26262C"))
+        }
+        // Quick actions the agent offered on the watch.
         if (st != null && st.actions.isNotEmpty()) {
-            col.addView(sectionLabel("Quick Actions"))
-            for (act in st.actions.take(4)) {
+            for (act in st.actions.take(3)) {
                 col.addView(
                     pillButton(act.label, "#121216", fgHex = "#E4E4E7", strokeHex = "#26262C") {
                         statusNotice = "Sending: ${act.label}..."
@@ -1320,57 +1548,135 @@ class MainActivity : AppCompatActivity() {
                 )
             }
         }
-
-        if (st != null && st.recent.isNotEmpty()) {
-            col.addView(sectionLabel("Recent"))
-            for (msg in st.recent.takeLast(5).reversed()) {
-                col.addView(bubbleView(msg.text.take(220), isUser = msg.role == "user"))
-            }
+        // The input row: keyboard, the typed prompt + send (when open), the mic.
+        val inputRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
         }
-
-        // Calm collapsed Options drawer so primary controls stay clean & minimal
-        col.addView(
-            pillButton(
-                if (optionsExpanded) "Hide Options" else "Options",
-                "#0D0D10",
-                fgHex = "#9CA3AF",
-                strokeHex = "#222228",
-            ) {
-                optionsExpanded = !optionsExpanded
+        inputRow.addView(
+            iconButton(R.drawable.ic_keyboard, null, sizeDp = 38) {
+                chatInputOpen = !chatInputOpen
                 render()
             },
         )
-        if (optionsExpanded) {
-            val wakeLabel = if (config.keepScreenOnDuringVoice) "Stay Awake Voice: ON" else "Stay Awake Voice: OFF"
-            col.addView(
-                pillButton(wakeLabel, "#141418", strokeHex = "#282830") {
-                    config.keepScreenOnDuringVoice = !config.keepScreenOnDuringVoice
-                    updateWakeLocks()
-                    render()
+        if (chatInputOpen) {
+            val input = EditText(this).apply {
+                hint = "Ask..."
+                setText(chatDraft)
+                setHintTextColor(Color.parseColor("#71717A"))
+                setTextColor(Color.WHITE)
+                textSize = 13f
+                background = outlinedRect("#121216", "#2A2A32", 14)
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                isSingleLine = true
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                    override fun afterTextChanged(s: Editable?) {
+                        chatDraft = s?.toString() ?: ""
+                    }
+                })
+            }
+            inputRow.addView(
+                input,
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(6)
                 },
             )
-            col.addView(
-                pillButton("Refresh", "#141418", strokeHex = "#282830") {
-                    refreshState()
+            inputRow.addView(
+                iconButton(R.drawable.ic_send, "#0168FF", sizeDp = 38) {
+                    val text = chatDraft.trim()
+                    if (text.isNotEmpty()) {
+                        chatDraft = ""
+                        chatInputOpen = false
+                        submitWatchAsk(text)
+                    }
                 },
             )
-            val checkLabel = if (checkingWatchUpdate) "Checking Updates..." else "Check Update (v${BuildConfig.VERSION_NAME})"
-            col.addView(
-                pillButton(checkLabel, "#141418", strokeHex = "#282830") {
-                    if (!checkingWatchUpdate) maybeAutoCheckWatchUpdate(force = true)
-                }.apply { isEnabled = !checkingWatchUpdate },
-            )
-            col.addView(
-                pillButton("Unpair Watch", "#3B0D0D", fgHex = "#FCA5A5", strokeHex = "#7F1D1D") {
-                    endLiveCall()
-                    config.clearPairing()
-                    currentState = null
-                    statusNotice = ""
-                    optionsExpanded = false
-                    render()
-                    startLanScan()
+        } else {
+            inputRow.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        }
+        inputRow.addView(
+            iconButton(R.drawable.ic_mic, null, sizeDp = 38) { startVoiceAsk() },
+        )
+        col.addView(inputRow)
+    }
+
+    /** A round icon button like the Muse hero's: a translucent circle, a white glyph, pink when active. */
+    private fun iconButton(iconRes: Int, activeHex: String? = null, sizeDp: Int = 48, onClick: () -> Unit): View {
+        val size = dp(sizeDp)
+        val pad = dp(sizeDp / 4)
+        return FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                marginStart = dp(6)
+                marginEnd = dp(6)
+            }
+            background = RippleDrawable(
+                ColorStateList.valueOf(Color.parseColor("#33FFFFFF")),
+                GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(if (activeHex != null) Color.parseColor(activeHex) else Color.parseColor("#59000000"))
+                },
+                GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.WHITE)
                 },
             )
+            addView(
+                ImageView(this@MainActivity).apply {
+                    setImageResource(iconRes)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    setColorFilter(Color.WHITE)
+                    setPadding(pad, pad, pad, pad)
+                },
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
+            setOnClickListener {
+                buzz(Buzz.CLICK)
+                onClick()
+            }
+        }
+    }
+
+    /** The busy arc: a blue arc sweeping around the round screen while the agent connects or works. */
+    inner class PulseArcView(context: Context) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            color = Color.parseColor("#0168FF")
+            strokeWidth = dp(5).toFloat()
+            strokeCap = Paint.Cap.ROUND
+        }
+        private var angle = 0f
+        private val animator = ValueAnimator.ofFloat(0f, 360f).apply {
+            duration = 1600
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = LinearInterpolator()
+            addUpdateListener { anim ->
+                angle = anim.animatedValue as Float
+                invalidate()
+            }
+        }
+
+        override fun onAttachedToWindow() {
+            super.onAttachedToWindow()
+            animator.start()
+        }
+
+        override fun onDetachedFromWindow() {
+            animator.cancel()
+            super.onDetachedFromWindow()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val r = minOf(w, h) / 2f - paint.strokeWidth
+            val cx = w / 2f
+            val cy = h / 2f
+            canvas.drawArc(RectF(cx - r, cy - r, cx + r, cy + r), 150f + angle, 110f, false, paint)
         }
     }
 
@@ -1577,9 +1883,9 @@ class MainActivity : AppCompatActivity() {
                 textSize = 12.5f
                 setTextColor(Color.WHITE)
                 background = if (isUser) {
-                    roundRect("#015CFB", 16)
+                    roundRect("#015CFB", 18)
                 } else {
-                    outlinedRect("#15151A", "#27272F", 16)
+                    roundRect("#3E4266", 18)
                 }
                 setPadding(dp(11), dp(8), dp(11), dp(8))
                 maxWidth = (resources.displayMetrics.widthPixels * 0.72f).roundToInt()
