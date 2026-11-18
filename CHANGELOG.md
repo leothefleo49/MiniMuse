@@ -13,6 +13,9 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 ### Fixed
 - The watch no longer shows a plain button list: it now matches the original Muse watch app.
 
+### Changed
+- The watch pairing screen and options were tidied; approvals now live in the watch chat.
+
 ## [1.2.3] - 2026-11-17
 ### Changed
 - Google sign-in: the client id and secret fields are now behind an 'Advanced' toggle; a default public client id ships with the app so most users never need them.
