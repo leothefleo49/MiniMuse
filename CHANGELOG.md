@@ -3,6 +3,8 @@
 All notable changes to nanoMuse. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Unreleased changes are on `main`.
 
 ## [Unreleased]
+
+## [1.2.5] - 2026-11-18
 ### Added
 - Import & export: a **Keep the original archive** switch. The uploaded ZIP is stored byte for byte under `workspace/imports/`, next to a verification report, and both are listed on the same screen with a delete button. The agent can re-read the source later; the imported chats never depend on it.
 - Muse import reads the new export archive completely: the profile and user details, the avatar bundle (every file, subfolders kept) plus the idle / working / waiting / happy / error stills and clips the app animates, transcripts in every header shape Muse writes, apps with their own data, notes, goals, documents, uploads, and the system folder.

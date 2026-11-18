@@ -17,6 +17,24 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.5": {
+        "title": "Your whole Muse export, read and checked",
+        "added": [
+            "Import & export: a Keep the original archive switch keeps the .zip you sent, byte for byte, next to a report of what the import found; delete either from the same screen",
+            "Muse import now reads the newer export archive completely: profile and user details, the avatar bundle and its moods, transcripts in every header shape, apps with their own data, notes, goals, documents, uploads, and the system folder",
+            "After an import the app shows the archive's own counts against what actually landed, section by section, and saves the same report in the workspace",
+        ],
+        "improved": [
+            "The Muse prompt now asks for one exact transcript format, a counts block, no dependency folders, and an update-only mode for later transfers",
+            "A conversation Muse carries twice in one archive arrives as one chat",
+            "Sending the same archive again stores nothing twice and does not double the search index",
+        ],
+        "fixed": [
+            "Transcripts that switch header format halfway through no longer lose their messages",
+            "Goal notes named like transcripts stay notes, and HTML documents no longer show up as junk apps",
+            "Avatar clips are no longer cut off at the text size limit",
+        ],
+    },
     "1.2.4": {
         "title": "The watch looks like Muse again",
         "added": [
