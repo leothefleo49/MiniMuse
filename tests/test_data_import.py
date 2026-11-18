@@ -137,7 +137,31 @@ def test_classify_archive_layout() -> None:
         == "memory"
     )
     assert data_import._classify(["workspace", "your_files", "some-note.md"]) == "transcript"
-    assert data_import._classify(["workspace", "photo.png"]) == "skip"
+    # anything unrecognized is still somebody's file, never dropped
+    assert data_import._classify(["workspace", "photo.png"]) == "file"
+    assert data_import._classify(["workspace", "script.py"]) == "file"
+    # a document that happens to be a web page stays a document, not a junk app
+    assert (
+        data_import._classify(["workspace", "your_files", "notes", "documents", "page.html"])
+        == "memory"
+    )
+    # half-written transcript pages and half-written uploads are never content
+    assert (
+        data_import._classify(["workspace", "your_files", ".transcript-pages", "segA.md"])
+        == "skip"
+    )
+    assert data_import._classify(["notes", ".hatch-fileserver-tmp.x.jpg.123.tmp"]) == "skip"
+    assert data_import._classify(["notes", "x.md.tmp"]) == "skip"
+    assert data_import._classify(["notes", ".DS_Store"]) == "skip"
+    # a hidden file that carries something is stored, not thrown away
+    assert data_import._classify(["notes", "documents", "venv", ".f2py_f2cmap"]) == "file"
+    # a goal note whose name says "transcript" is a note, not a chat
+    assert (
+        data_import._classify(["notes", "goals", "x", "call-transcript-setting-nov5.md"])
+        == "memory"
+    )
+    # a copy next to the original is a file, not a second chat
+    assert data_import._classify(["chat-transcripts", "x.md.bak"]) == "file"
 
 
 def test_options_reject_unknown_values() -> None:
@@ -167,12 +191,16 @@ class FakeAgent:
         pass
 
 
+# the size-limit test shrinks what a chat keeps, so trimming can be seen on a tiny transcript
+_TINY_LIMIT: int | None = None
+
+
 class FakeThread:
     def __init__(self, tid: str, title: str, threads_dir: Path) -> None:
         self.id = tid
         self.title = title
         self.created_at = "2026-11-01T00:00:00+00:00"
-        self.timeline = Timeline(tid, threads_dir / f"{tid}.json")
+        self.timeline = Timeline(tid, threads_dir / f"{tid}.json", max_events=_TINY_LIMIT or 2000)
         self.agent = FakeAgent()
 
     def meta(self) -> dict[str, Any]:
@@ -187,6 +215,26 @@ class FakeBus:
         self.published.append(message)
 
 
+class FakeProfile:
+    """The profile the import merges into: a dict with the app's own fields."""
+
+    def __init__(self) -> None:
+        self.fields: dict[str, Any] = {
+            "name": "",
+            "user_name": "",
+            "tagline": "",
+            "color": "",
+            "emoji": "",
+            "avatar": "",
+            "tone": "",
+            "communication": "",
+            "style": "",
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.fields)
+
+
 class FakeSvc:
     """The slice of MuseService the import touches, with the real Timeline and files."""
 
@@ -198,7 +246,11 @@ class FakeSvc:
         self.workspace_dir.mkdir()
         self.threads: dict[str, FakeThread] = {}
         self.bus = FakeBus()
+        self.profile = FakeProfile()
         self._counter = 0
+
+    def update_profile(self, **fields: Any) -> None:
+        self.profile.fields.update({k: v for k, v in fields.items() if v is not None})
 
     def workspace(self) -> Path:
         return self.workspace_dir
@@ -794,3 +846,328 @@ def test_imported_chats_are_dated_by_their_messages(api_server: Any, tmp_path: P
     made = [t for t in client.get("/api/threads").json() if t["title"] == "dated"][0]
     assert made["updated_at"].startswith("2026-10-17T19:30")
     assert made["created_at"].startswith("2026-10-17T19:18")
+
+
+# ------------------------------------------------------------------ the archive's own formats
+
+# The archive Muse's builder actually writes: time first, em dash, then the speaker, with
+# AM/PM and the zone abbreviation. Half of one chat used the bold bracketed shape instead.
+ARCHIVE_TRANSCRIPT = (
+    "# Chat transcript - Update chat archive files\n"
+    "\n"
+    "- Chat ID: 835eec42\n"
+    "- Date range: 2026-11-15 to 2026-11-16\n"
+    "- Messages: 4\n"
+    "\n"
+    "## 2026-11-15 9:41 PM MST - Tyler\n"
+    "\n"
+    "Update it all again\n"
+    "\n"
+    "## 2026-11-15 9:42 PM MST - Muse\n"
+    "\n"
+    "Updating now.\n"
+    "\n"
+    "**[Sat 2026-11-15 21:43:02 MST] Tyler:**\n"
+    "\n"
+    "And the thumbnails?\n"
+    "\n"
+    "**[Sat 2026-11-15 21:43:30 MST] Muse:**\n"
+    "\n"
+    "Fixed too.\n"
+)
+
+
+def test_parse_transcript_timestamp_first_headers() -> None:
+    turns = parse_transcript(ARCHIVE_TRANSCRIPT)
+    assert [t.role for t in turns] == ["user", "assistant", "user", "assistant"]
+    assert turns[0].text == "Update it all again"
+    assert turns[0].ts == "2026-11-16T04:41:00+00:00"
+    assert turns[3].text == "Fixed too."
+
+
+def test_one_transcript_may_switch_header_shape() -> None:
+    # the same file in two shapes: every message counts, neither shape is dropped
+    turns = parse_transcript(ARCHIVE_TRANSCRIPT)
+    assert len(turns) == 4
+
+
+def test_parse_transcript_bold_em_dash_headers() -> None:
+    text = (
+        "**Tyler \u2014 Sun Oct 11, 2026, 9:15 AM MDT**\n\nanime?\n\n"
+        "**Muse \u2014 Sun Oct 11, 2026, 9:16 AM MDT**\n\nweekly.\n"
+    )
+    turns = parse_transcript(text)
+    assert [t.role for t in turns] == ["user", "assistant"]
+    assert turns[0].ts == "2026-10-11T15:15:00+00:00"
+
+
+def test_transcript_metadata_line_is_not_a_message() -> None:
+    # "- Messages: 4" is the file's own bookkeeping, not a turn
+    turns = parse_transcript(ARCHIVE_TRANSCRIPT)
+    assert all("Messages:" not in t.text for t in turns)
+
+
+def test_archive_root_and_declared_counts_are_read(tmp_path: Path) -> None:
+    svc = make_svc(tmp_path)
+    profile = {
+        "assistant": {"name": "Muse", "tagline": "Here for it", "emoji": "🌀"},
+        "user": {"call_name": "Tyler"},
+        "avatar": {"face_id": "face-1"},
+        "archive_root": "workspace/your_files/minimuse-archive/",
+        "counts": {"chat_transcripts_in_archive": 1, "total_transcript_messages": 4},
+    }
+    zip_path = make_zip(
+        tmp_path,
+        {
+            "workspace/your_files/minimuse-archive/profile/muse-profile.json": json.dumps(profile),
+            "workspace/your_files/minimuse-archive/chat-transcripts/one-chat-transcript.md": ARCHIVE_TRANSCRIPT,
+        },
+    )
+    result = import_file(svc, zip_path, "export.zip", ImportOptions())
+    assert result["profile_updated"] is True
+    assert result["threads_created"] == 1
+    assert result["verify"]["ok"] is True, result["verify"]
+    assert any("chat transcripts" in line for line in result["verify"]["lines"])
+
+
+def test_verify_names_a_gap_instead_of_claiming_success(tmp_path: Path) -> None:
+    svc = make_svc(tmp_path)
+    profile = {
+        "counts": {"chat_transcripts_in_archive": 3, "total_transcript_messages": 40},
+    }
+    zip_path = make_zip(
+        tmp_path,
+        {
+            "workspace/your_files/minimuse-archive/profile/muse-profile.json": json.dumps(profile),
+            "workspace/your_files/minimuse-archive/chat-transcripts/one-chat-transcript.md": ARCHIVE_TRANSCRIPT,
+        },
+    )
+    result = import_file(svc, zip_path, "export.zip", ImportOptions())
+    assert result["verify"]["ok"] is False
+    assert any("GAP" in line for line in result["verify"]["lines"])
+
+
+def test_a_switched_off_section_is_a_note_not_a_gap(tmp_path: Path) -> None:
+    svc = make_svc(tmp_path)
+    profile = {"counts": {"chat_transcripts_in_archive": 1, "memory_files": 9}}
+    zip_path = make_zip(
+        tmp_path,
+        {
+            "workspace/your_files/minimuse-archive/profile/muse-profile.json": json.dumps(profile),
+            "workspace/your_files/minimuse-archive/chat-transcripts/one-chat-transcript.md": ARCHIVE_TRANSCRIPT,
+        },
+    )
+    result = import_file(svc, zip_path, "export.zip", ImportOptions(background_memory=False))
+    assert result["verify"]["ok"] is True
+    assert any("switched off" in line for line in result["verify"]["lines"])
+
+
+def test_more_than_declared_is_not_a_gap(tmp_path: Path) -> None:
+    # the archive counted itself low: everything it promised is here, and more
+    svc = make_svc(tmp_path)
+    profile = {"counts": {"chat_transcripts_in_archive": 1, "total_transcript_messages": 3}}
+    zip_path = make_zip(
+        tmp_path,
+        {
+            "workspace/your_files/minimuse-archive/profile/muse-profile.json": json.dumps(profile),
+            "workspace/your_files/minimuse-archive/chat-transcripts/one-chat-transcript.md": ARCHIVE_TRANSCRIPT,
+        },
+    )
+    result = import_file(svc, zip_path, "export.zip", ImportOptions())
+    assert result["verify"]["ok"] is True, result["verify"]
+    assert any("more than declared" in line for line in result["verify"]["lines"])
+
+
+def test_avatar_bundle_and_its_moods_land_in_the_workspace(tmp_path: Path) -> None:
+    svc = make_svc(tmp_path)
+    model = {
+        "face_id": "face-1",
+        "active_image": "static-idle.webp",
+        "animated_variants_mp4": {"idle": "idle.mp4", "working": "working.mp4"},
+    }
+    zip_path = make_zip(
+        tmp_path,
+        {
+            "workspace/your_files/minimuse-archive/avatar/face-1/avatar-model.json": json.dumps(model),
+            "workspace/your_files/minimuse-archive/avatar/face-1/frames/static-idle.webp": "webp",
+            "workspace/your_files/minimuse-archive/avatar/face-1/frames/static-working.webp": "webp",
+            "workspace/your_files/minimuse-archive/avatar/face-1/idle.mp4": "mp4",
+        },
+    )
+    result = import_file(svc, zip_path, "export.zip", ImportOptions())
+    assert result["avatar_files"] == 4
+    # the bundle is kept as it was, subfolders included
+    assert (svc.workspace_dir / "avatar" / "face-1" / "frames" / "static-idle.webp").exists()
+    assert result["avatar_moods"] and result["avatar_moods"] >= 2
+    # the moods the app looks for are materialized beside the bundle
+    moods = list((svc.workspace_dir / "avatar").rglob("idle.*"))
+    assert moods
+
+
+def test_keep_original_stores_the_zip_and_a_report(tmp_path: Path) -> None:
+    svc = make_svc(tmp_path)
+    profile = {"counts": {"chat_transcripts_in_archive": 1, "total_transcript_messages": 4}}
+    zip_path = make_zip(
+        tmp_path,
+        {
+            "workspace/your_files/minimuse-archive/profile/muse-profile.json": json.dumps(profile),
+            "workspace/your_files/minimuse-archive/chat-transcripts/one-chat-transcript.md": ARCHIVE_TRANSCRIPT,
+        },
+    )
+    result = import_file(svc, zip_path, "export.zip", ImportOptions())
+    assert result["verify"]["ok"] is True
+    # a second upload of the same bytes is what gets kept, so the fixture zip is untouched
+    staging = tmp_path / "staging.upload"
+    staging.write_bytes(zip_path.read_bytes())
+    kept = data_import.keep_original(svc, staging, "export.zip")
+    stored = svc.workspace_dir / Path(kept)
+    assert stored.exists() and stored.stat().st_size == zip_path.stat().st_size
+    assert stored.parent == svc.workspace_dir / "imports"
+    assert not staging.exists()
+    reports = list((svc.workspace_dir / "imports").glob("*-verify.md"))
+    assert reports
+    assert "every declared count matched" in reports[0].read_text(encoding="utf-8")
+
+
+def test_second_import_of_the_same_memory_file_stores_it_once(tmp_path: Path) -> None:
+    svc = make_svc(tmp_path)
+    sqlite3.connect(svc.data_dir / "personal.db").close()
+    zip_path = make_zip(
+        tmp_path,
+        {
+            "workspace/your_files/minimuse-archive/notes/memory/MEMORY.md": "# Facts\n- likes cats",
+            "workspace/your_files/minimuse-archive/notes/goals/finish-the-app/GROALS.md": "goal text",
+        },
+    )
+    first = import_file(svc, zip_path, "export.zip", ImportOptions())
+    assert first["memory_files"] == 2
+    second = import_file(svc, zip_path, "export.zip", ImportOptions())
+    assert second["memory_files"] == 0
+    assert second["duplicates"] >= 2
+    stored = list((svc.data_dir / "muse_memory" / "imports").rglob("MEMORY*.md"))
+    assert len(stored) == 1
+
+
+def test_second_import_does_not_double_the_search_index(tmp_path: Path) -> None:
+    svc = make_svc(tmp_path)
+    sqlite3.connect(svc.data_dir / "personal.db").close()
+    zip_path = make_zip(
+        tmp_path,
+        {"workspace/your_files/minimuse-archive/chat-transcripts/one-chat-transcript.md": ARCHIVE_TRANSCRIPT},
+    )
+    import_file(svc, zip_path, "export.zip", ImportOptions())
+    second = import_file(svc, zip_path, "export.zip", ImportOptions())
+    assert second["messages_indexed"] == 0
+    conn = sqlite3.connect(svc.data_dir / "personal.db")
+    count = conn.execute("SELECT count(*) FROM messages_fts").fetchone()[0]
+    conn.close()
+    assert count == 4
+
+
+def test_one_conversation_carried_twice_becomes_one_chat(tmp_path: Path) -> None:
+    # the archive keeps the canonical copy and Muse keeps its own working copy: same chat id,
+    # so one chat, and the messages that only the second copy has are kept
+    head = "- Chat ID: e7ce5fac-3702-4b7f-b7c3-466693085b81\n\n"
+    canonical = "# Chat transcript - Garment marks\n\n" + head + (
+        "## 2026-10-17 1:18:45 PM MDT - Tyler\n\nhey\n\n"
+        "## 2026-10-17 1:24:23 PM MDT - Muse\n\nhello\n"
+    )
+    working = "# Chat Transcript - garment-mark-weight-loss-chat-2026-10-17\n\n" + head + (
+        "## 2026-10-17 1:18:45 PM MDT - Tyler\n\nhey\n\n"
+        "## 2026-10-17 1:24:23 PM MDT - Muse\n\nhello\n\n"
+        "## 2026-10-17 1:30:00 PM MDT - Tyler\n\none more\n"
+    )
+    svc = make_svc(tmp_path)
+    zip_path = make_zip(
+        tmp_path,
+        {
+            "workspace/your_files/minimuse-archive/chat-transcripts/2026-10-17-garment-chat-transcript.md": canonical,
+            "workspace/your_files/apps_and_data/chat-transcripts/garment-mark.md": working,
+        },
+    )
+    result = import_file(svc, zip_path, "export.zip", ImportOptions())
+    assert result["conversations"] == 1
+    assert result["threads_created"] == 1
+    thread = next(t for t in svc.threads.values() if t.title)
+    assert len(thread.timeline.events) == 3
+    assert [e["text"] for e in thread.timeline.events][-1] == "one more"
+
+
+def _capped_timeline(cap: int):
+    """A Timeline class whose chats keep only ``cap`` messages, for the size-limit test."""
+    from nanomuse.server.events import Timeline as RealTimeline
+
+    class Capped(RealTimeline):
+        def __init__(self, thread_id, path, max_events: int = 2000) -> None:
+            super().__init__(thread_id, path, max_events=cap)
+
+    return Capped
+
+
+def test_reimport_does_not_refill_a_chat_past_its_size_limit(tmp_path: Path) -> None:
+    # a chat keeps its newest messages only; an older message that was trimmed must not be
+    # added back on every import (it would be trimmed again, forever)
+    svc = make_svc(tmp_path)
+    lines = ["# Chat transcript - long chat\n"]
+    for i in range(6):
+        role = "Tyler" if i % 2 == 0 else "Muse"
+        lines.append(f"## 2026-10-17 1:{i:02d}:00 PM MDT - {role}\n\nmessage {i}\n")
+    long_chat = "\n".join(lines)
+    zip_path = make_zip(
+        tmp_path,
+        {"workspace/your_files/minimuse-archive/chat-transcripts/long-chat-transcript.md": long_chat},
+    )
+    globals()["_TINY_LIMIT"] = 3
+    try:
+        first = import_file(svc, zip_path, "export.zip", ImportOptions())
+        assert first["events_added"] == 6  # all six were new on the first run
+        second = import_file(svc, zip_path, "export.zip", ImportOptions())
+        assert second["events_added"] == 0
+        thread = next(t for t in svc.threads.values() if t.title)
+        assert len(thread.timeline.events) == 3
+    finally:
+        globals()["_TINY_LIMIT"] = None
+
+
+def test_api_import_copies_list_and_delete(api_server: Any, tmp_path: Path) -> None:
+    client, service = api_server
+    profile = {"counts": {"chat_transcripts_in_archive": 1, "total_transcript_messages": 4}}
+    zip_path = make_zip(
+        tmp_path,
+        {
+            "workspace/your_files/minimuse-archive/profile/muse-profile.json": json.dumps(profile),
+            "workspace/your_files/minimuse-archive/chat-transcripts/one-chat-transcript.md": ARCHIVE_TRANSCRIPT,
+        },
+    )
+    reply = client.post(
+        "/api/data/import?name=export.zip&keep_copy=true",
+        content=zip_path.read_bytes(),
+    )
+    assert reply.status_code == 200, reply.text
+    body = reply.json()
+    assert body["kept_copy"]
+    kept_name = Path(body["kept_copy"]).name
+    copies = client.get("/api/data/import/copies").json()
+    names = [c["name"] for c in copies]
+    assert kept_name in names
+    assert any(c["name"].endswith("-verify.md") and c["report"] for c in copies)
+    # a name that tries to escape the folder is refused, not resolved
+    assert client.delete("/api/data/import/copies/..%2F..%2Fsecrets.txt").status_code != 200
+    deleted = client.delete(f"/api/data/import/copies/{kept_name}")
+    assert deleted.status_code == 200
+    assert kept_name not in [c["name"] for c in client.get("/api/data/import/copies").json()]
+
+
+def test_api_import_without_keep_copy_leaves_no_original(api_server: Any, tmp_path: Path) -> None:
+    client, _service = api_server
+    zip_path = make_zip(
+        tmp_path,
+        {"workspace/your_files/minimuse-archive/chat-transcripts/one-chat-transcript.md": ARCHIVE_TRANSCRIPT},
+    )
+    reply = client.post(
+        "/api/data/import?name=export.zip&keep_copy=false",
+        content=zip_path.read_bytes(),
+    )
+    assert reply.status_code == 200, reply.text
+    assert reply.json()["kept_copy"] is None
+    assert client.get("/api/data/import/copies").json() == []

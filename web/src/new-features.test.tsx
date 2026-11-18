@@ -770,8 +770,12 @@ describe("Onboarding language, custom color, model search, local AI advisor & er
 
   it("renders single versatile Muse import prompt with export instructions and no duplicate toggle", async () => {
     expect(MUSE_PROMPT).toContain("deep-memory");
-    expect(MUSE_PROMPT).toContain("If some transcripts or files are missing");
+    expect(MUSE_PROMPT).toContain("CATCH-ALL RULE");
+    expect(MUSE_PROMPT).toContain("counts");
     expect(MUSE_PROMPT).toContain("Export data");
+    // the exact header shape the importer reads, and the delta slot for later updates
+    expect(MUSE_PROMPT).toContain("## 2026-11-05 5:49 PM MST - Tyler");
+    expect(MUSE_PROMPT).toContain("SINCE: 2026-11-18T17:42:03Z");
 
     await act(async () => {
       tree = create(createElement(ImportExport));

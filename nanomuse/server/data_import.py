@@ -103,20 +103,56 @@ TZ_OFFSETS = {
 _USER_WORDS = ("user", "you", "me", "human", "client", "person")
 _ASSISTANT_WORDS = ("muse", "assistant", "ai", "bot", "gpt", "model", "claude", "gemini")
 
+# one timestamp as the archive writes it: "2026-11-07 7:45 PM MST", "2026-10-12 12:32",
+# "2026-11-01 12:27:14 MST", "Sat 2026-10-03 14:07:48 MDT" - the clock may be 12- or
+# 24-hour, with or without seconds, with or without AM/PM, with or without the zone
+# abbreviation, with or without the weekday in front
+_TS = (
+    r"(?:[A-Za-z]{3},?\s+)?"
+    r"\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AP]M)?(?:\s+[A-Z]{2,5})?"
+)
+
 HEADER_PATTERNS = (
-    # ## User — 2026-10-17 13:18:45 MDT
+    # ## User - 2026-10-17 13:18:45 MDT
     re.compile(
-        r"^##\s+(?P<speaker>[^—\-\n]{1,60}?)\s*[—–-]\s*(?P<ts>\S[^\n]{0,60})$",
+        r"^##\s+(?P<speaker>[^\-\n]{1,60}?)\s*-\s*(?P<ts>\S[^\n]{0,60})$",
         re.MULTILINE,
     ),
     # **User - Sat Oct 10, 2026, 9:54:24 AM MDT**
     re.compile(
-        r"^\*\*\s*(?P<speaker>[^*\n]{1,60}?)\s*[—–-]\s*(?P<ts>[^*\n]{0,60}?)\s*\*\*\s*$",
+        r"^\*\*\s*(?P<speaker>[^*\n]{1,60}?)\s*-\s*(?P<ts>[^*\n]{0,60}?)\s*\*\*\s*$",
         re.MULTILINE,
     ),
-    # ### User — 2026-10-17 13:18:45 MDT (the side-chat transcripts)
+    # **Tyler is the speaker here, then Sun Oct 11, 2026, 9:15 AM MDT** (the same, em dash)
     re.compile(
-        r"^###\s+(?P<speaker>[^—\-\n]{1,60}?)\s*[—–-]\s*(?P<ts>\S[^\n]{0,60})$",
+        r"^\*\*\s*(?P<speaker>[^*\n]{1,60}?)\s*\u2014\s*(?P<ts>[^*\n]{0,60}?)\s*\*\*\s*$",
+        re.MULTILINE,
+    ),
+    # ### User - 2026-10-17 13:18:45 MDT (the side-chat transcripts)
+    re.compile(
+        r"^###\s+(?P<speaker>[^\-\n]{1,60}?)\s*-\s*(?P<ts>\S[^\n]{0,60})$",
+        re.MULTILINE,
+    ),
+    # ## User, em dash, 2026-10-17 1:18:45 PM MDT (the export prompt's own example)
+    re.compile(
+        r"^##\s+(?P<speaker>[^\u2014\n]{1,60}?)\s*\u2014\s*(?P<ts>\S[^\n]{0,60})$",
+        re.MULTILINE,
+    ),
+    # ## 2026-11-07 7:45 PM MST, em dash, Tyler: the time first, then the speaker, which is
+    # what the archive's own builder writes (em dash or hyphen, ## or ###)
+    re.compile(
+        rf"^#{{2,3}}\s+(?P<ts>{_TS})\s*(?:\u2014|-{{1,3}})\s+(?P<speaker>[^\n]{{1,60}})$",
+        re.MULTILINE,
+    ),
+    # ## [2026-11-01 12:27:14 MST] Tyler: the same, bracketed, with no dash
+    re.compile(
+        rf"^##\s+\[(?P<ts>{_TS})\]\s+(?P<speaker>[^\n]{{1,60}})$",
+        re.MULTILINE,
+    ),
+    # **[2026-11-01 06:37 MST] Tyler:** - bold, bracketed, time first, text on the next
+    # lines: the other half of what the archive's transcripts are written in
+    re.compile(
+        rf"^\*\*\[(?P<ts>{_TS})\]\s*(?P<speaker>[^*\n]{{1,60}}?):\*\*\s*$",
         re.MULTILINE,
     ),
 )
@@ -176,6 +212,9 @@ class ImportOptions:
     background_memory: bool = True
     apps: str = "both"  # "save" | "restore" | "both" | "neither"
     main_chat: str = "side"  # "side" | "replace" | "merge"
+    # Keep the uploaded file itself, byte for byte, under workspace/imports/ so the
+    # original can be re-checked (by the person or the agent) after the transfer.
+    keep_copy: bool = True
 
     def __post_init__(self) -> None:
         if self.apps not in ("save", "restore", "both", "neither"):
@@ -184,6 +223,7 @@ class ImportOptions:
             raise ValueError(f"unknown main chat option: {self.main_chat}")
 
     def key(self) -> str:
+        # the copy switch changes no content, so it is not part of the ledger identity
         return (
             f"{int(self.restore_chats)}|{int(self.background_memory)}|{self.apps}|{self.main_chat}"
         )
@@ -211,6 +251,8 @@ class ImportedApp:
     title: str
     html_rel: str  # workspace-relative path of the page to serve, "" when none
     files: int
+    # true when the page was registered as an interactive app at /apps/<slug>
+    registered: bool = False
 
 
 @dataclass
@@ -230,6 +272,24 @@ class ImportPlan:
     avatar_files: int = 0
     avatar_face: str = ""
     manifest_transcripts: set[str] = field(default_factory=set)
+    # the file this plan came from, for the verification report's name
+    source_name: str = ""
+    # the archive folder that carries its own counts (``minimuse-archive``), "" when the
+    # export has none: only members inside it are counted against the declared totals
+    archive_root: str = ""
+    # counts the archive declares about itself (profile/muse-profile.json's ``counts``)
+    declared_counts: dict[str, int] = field(default_factory=dict)
+    # what actually landed, per declared bucket, for the same comparison
+    staged_counts: dict[str, int] = field(default_factory=dict)
+    # avatar-model.json: the map from animation state to file, read for the mood copies
+    avatar_model: dict[str, Any] = field(default_factory=dict)
+    avatar_materialized: int = 0
+    # the import ledger, open for the length of this import: what has landed before, so a
+    # second run of the same archive stores nothing twice
+    ledger: ImportLedger | None = None
+    # transcripts the archive carried twice (the canonical copy under chat-transcripts/ and
+    # Muse's own working copy): one chat each, merged by the chat id written in the file
+    chats_by_id: dict[str, Conversation] = field(default_factory=dict)
 
 
 # ------------------------------------------------------------------ parsing
@@ -237,6 +297,13 @@ _TIME_FORMATS = (
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%dT%H:%M:%S",
     "%Y-%m-%d %H:%M",
+    # the archive's own headers write the clock without a leading zero and with AM/PM:
+    # "2026-11-05 5:49 PM MST"
+    "%Y-%m-%d %I:%M:%S %p",
+    "%Y-%m-%d %I:%M %p",
+    # the bracketed bold headers carry the weekday: "Sat 2026-10-03 14:07:48"
+    "%a %Y-%m-%d %H:%M:%S",
+    "%a %Y-%m-%d %H:%M",
     "%a %b %d, %Y, %I:%M:%S %p",
     "%a %b %d, %Y, %I:%M %p",
     "%b %d, %Y, %I:%M:%S %p",
@@ -378,29 +445,32 @@ def _spread(turns: list[Turn], source: str) -> None:
 
 def _pick_header_pattern(text: str) -> tuple[re.Pattern[str] | None, set[str]]:
     """The header shape this transcript is written in (the one with the most lines that
-    carry a readable time), and the speakers seen on those lines."""
+    carry a readable time), and every speaker any shape gave a readable time to. A file
+    may mix shapes - the archive's transcripts switch halfway through - so the speakers
+    are gathered from all of them, not only from the winner."""
     best: re.Pattern[str] | None = None
     best_count = 0
-    best_speakers: set[str] = set()
+    speakers: set[str] = set()
     for candidate in HEADER_PATTERNS:
         count = 0
-        speakers: set[str] = set()
         for match in candidate.finditer(text):
             if parse_timestamp(match.group("ts")):
                 count += 1
                 speakers.add(_clean_speaker(match.group("speaker")).lower())
         if count > best_count:
-            best, best_count, best_speakers = candidate, count, speakers
+            best, best_count = candidate, count
     if best is None:
         # headers whose times cannot be read at all: still headers when the speaker is a
         # known side of the chat ("## Muse - whenever")
+        known: set[str] = set()
         for candidate in HEADER_PATTERNS:
             for match in candidate.finditer(text):
                 speaker = _clean_speaker(match.group("speaker"))
-                words = _words(speaker)
-                if words & (set(_USER_WORDS) | set(_ASSISTANT_WORDS)):
-                    return candidate, {speaker.lower()}
-    return best, best_speakers
+                if _words(speaker) & (set(_USER_WORDS) | set(_ASSISTANT_WORDS)):
+                    known.add(speaker.lower())
+        if known:
+            return HEADER_PATTERNS[0], known
+    return best, speakers
 
 
 def parse_transcript(text: str, source: str = "") -> list[Turn]:
@@ -419,9 +489,25 @@ def parse_transcript(text: str, source: str = "") -> list[Turn]:
     elif pattern is not None:
         last_ts = ""
         current: dict[str, str] | None = None
+        # the file's own shape first, then the others: a transcript may switch shape
+        # halfway through (the archive's do), and every message counts
+        candidates = (pattern, *(p for p in HEADER_PATTERNS if p is not pattern))
         for line in text.splitlines():
-            match = pattern.match(line.strip())
-            if match:
+            stripped = line.strip()
+            match = None
+            for candidate in candidates:
+                found = candidate.match(stripped)
+                if found is None:
+                    continue
+                when = parse_timestamp(found.group("ts"))
+                who = _clean_speaker(found.group("speaker"))
+                known_side = bool(
+                    _words(who) & (set(_USER_WORDS) | set(_ASSISTANT_WORDS))
+                ) or who.lower() in header_speakers
+                if when or known_side:
+                    match = found
+                    break
+            if match is not None:
                 speaker = _clean_speaker(match.group("speaker"))
                 ts = parse_timestamp(match.group("ts"))
                 known_side = bool(
@@ -551,6 +637,27 @@ def _title_from_text(text: str, name: str) -> str:
 
 _FILE_EXT = re.compile(r"\.(?:md|markdown|txt|json|csv|log|html?|bak)$", re.IGNORECASE)
 
+# "- Chat ID: e7ce5fac-3702-4b7f-b7c3-466693085b81" in a transcript's metadata block
+_CHAT_ID = re.compile(r"^\s*[-*]?\s*Chat\s+ID\s*:\s*([0-9a-fA-F][0-9a-fA-F-]{5,})\s*$", re.MULTILINE)
+
+
+def _chat_id_of(text: str) -> str:
+    """The chat id a transcript carries, so two copies of one conversation are one chat."""
+    match = _CHAT_ID.search(text[:4000])
+    return match.group(1).lower() if match else ""
+
+
+def _absorb_turns(conv: Conversation, turns: list[Turn]) -> None:
+    """The messages of a second copy of a chat join the first, once each, in time order."""
+    seen = {(t.role, t.ts, t.text) for t in conv.turns}
+    for turn in turns:
+        key = (turn.role, turn.ts, turn.text)
+        if key in seen:
+            continue
+        seen.add(key)
+        conv.turns.append(turn)
+    conv.turns.sort(key=lambda t: t.ts)
+
 
 def title_from_name(name: str) -> str:
     """A title from a file name: no folders, no extension, no leading date, no
@@ -670,22 +777,40 @@ def _open_personal(db_path: Path) -> sqlite3.Connection | None:
 def index_conversation_turns(
     db_path: Path, thread_id: str, conv: Conversation, cap: int = MAX_EVENTS_PER_CONVERSATION
 ) -> int:
-    """Every imported message into ``messages_fts``, so ``deep_memory`` finds it."""
+    """Every imported message into ``messages_fts``, so ``deep_memory`` finds it.
+
+    A message already indexed for this chat (an earlier run of the same archive) is left
+    alone, so importing twice does not double every search result."""
     conn = _open_personal(db_path)
     if conn is None:
         return 0
     try:
         indexed = 0
+        existing = {
+            str(row[0]): str(row[1] or "")
+            for row in conn.execute(
+                "SELECT turn_id, content FROM messages_fts WHERE thread_id = ?", (thread_id,)
+            )
+        }
         for i, turn in enumerate(conv.turns):
             if turn.role not in ("user", "assistant") or not turn.text.strip():
                 continue
             if indexed >= cap:
                 break
+            turn_id = f"imp_{slugify(conv.title)}_{i}"
+            if turn_id in existing:
+                if existing[turn_id] == turn.text:
+                    continue  # this exact message is in the archive already
+                # a different message sits at that slot: name this one after its text
+                turn_id = f"{turn_id}-{hashlib.sha256(turn.text.encode('utf-8')).hexdigest()[:8]}"
+                if turn_id in existing:
+                    continue
             conn.execute(
                 "INSERT INTO messages_fts (turn_id, thread_id, role, created_at, content) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (f"imp_{slugify(conv.title)}_{i}", thread_id, turn.role, turn.ts, turn.text),
+                (turn_id, thread_id, turn.role, turn.ts, turn.text),
             )
+            existing[turn_id] = turn.text
             indexed += 1
         conn.commit()
         return indexed
@@ -752,18 +877,20 @@ def _sha256_file(path: Path) -> str:
 
 def _store_app_stream(
     workspace: Path,
-    slug: str,
+    root: Path,
     rel: Path,
     archive: zipfile.ZipFile,
     member: str,
     plan: ImportPlan,
 ) -> tuple[str, str]:
-    """One app file, streamed from the archive to ``workspace/apps/<slug>/`` in chunks (so
-    a file of any size costs no memory); returns ``(workspace-relative path, sha256)``.
+    """One file from the archive, streamed to ``workspace/<root>/<rel>`` in chunks (so a
+    file of any size costs no memory); returns ``(workspace-relative path, sha256)``.
     The relative path is ``""`` when nothing was written (an identical file already
     exists, or the disk refused). An existing different file keeps its name and the new
-    copy gets a numbered one."""
-    out_rel = Path("apps") / slug / rel
+    copy gets a numbered one. ``root`` is ``apps/<slug>`` for an app file or ``imported``
+    for a loose file the archive carried as itself. The status is ``"stored"``,
+    ``"duplicate"`` (the same bytes were already there) or ``"failed"``."""
+    out_rel = root / rel
     target = workspace / out_rel
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".import-part")
@@ -776,7 +903,7 @@ def _store_app_stream(
     except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
         logger.warning("could not store imported app file %s: %s", member, exc)
         tmp.unlink(missing_ok=True)
-        return "", digest.hexdigest()
+        return "", digest.hexdigest(), "failed"
     sha = digest.hexdigest()
     if target.exists():
         try:
@@ -786,23 +913,23 @@ def _store_app_stream(
         if same:
             tmp.unlink(missing_ok=True)
             plan.duplicates += 1
-            return "", sha
+            return "", sha, "duplicate"
         for n in range(2, 1000):
             alt = target.with_name(f"{target.stem}-import-{n}{target.suffix}")
             if not alt.exists():
                 target = alt
-                out_rel = Path("apps") / slug / target.name
+                out_rel = root / target.name
                 break
         else:
             tmp.unlink(missing_ok=True)
-            return "", sha
+            return "", sha, "failed"
     try:
         tmp.replace(target)
     except OSError as exc:
         logger.warning("could not store imported app file: %s", exc)
         tmp.unlink(missing_ok=True)
-        return "", sha
-    return out_rel.as_posix(), sha
+        return "", sha, "failed"
+    return out_rel.as_posix(), sha, "stored"
 
 
 def free_bytes(path: Path) -> int:
@@ -919,11 +1046,19 @@ def ingest_path(
     Conversations are held in memory; app and memory files are written straight to the
     workspace and the data directory, and the ledger is consulted so nothing overwrites
     or duplicates. Threads are not touched here: :func:`apply_plan` does that on the loop."""
-    plan = ImportPlan(option_key=options.key())
-    if zipfile.is_zipfile(path):
-        _ingest_zip(svc, path, name, options, plan, progress)
-    else:
-        _ingest_single(path, name, options, plan, svc.data_dir)
+    plan = ImportPlan(option_key=options.key(), source_name=name or "")
+    ledger = ImportLedger(svc.data_dir / "imports.db")
+    ledger.open()
+    plan.ledger = ledger
+    try:
+        if zipfile.is_zipfile(path):
+            _ingest_zip(svc, path, name, options, plan, progress)
+        else:
+            _ingest_single(path, name, options, plan, svc.data_dir)
+    finally:
+        # the connection belongs to this worker thread; apply_plan opens its own to mark
+        ledger.close()
+        plan.ledger = None
     return plan
 
 
@@ -967,7 +1102,11 @@ _INLINE_PROFILE_BLOCK = re.compile(
 
 
 def _extract_profile_dict(raw: dict[str, Any], plan: ImportPlan, data_dir: Path) -> bool:
-    """Extract profile fields, user_profile markdown, and ui_preferences from a JSON object."""
+    """Extract profile fields, user_profile markdown, and ui_preferences from a JSON object.
+
+    Accepts the flat shape the export prompt asks for and the nested one Muse's own
+    archive builder writes (``assistant.name``, ``user.call_name``, ``avatar.face_id``,
+    ``counts``); nulls are skipped, never invented."""
     matched = False
     src = raw.get("profile") if isinstance(raw.get("profile"), dict) else raw
     if isinstance(src, dict):
@@ -983,6 +1122,49 @@ def _extract_profile_dict(raw: dict[str, Any], plan: ImportPlan, data_dir: Path)
         if not plan.profile_data.get("user_name") and isinstance(src.get("user"), str):
             plan.profile_data["user_name"] = src["user"].strip()
             matched = True
+    # the nested shape: {"assistant": {...}, "user": {...}, "avatar": {...}, "counts": {...}}
+    assistant = raw.get("assistant")
+    if isinstance(assistant, dict):
+        if not plan.profile_data.get("name") and isinstance(assistant.get("name"), str):
+            plan.profile_data["name"] = assistant["name"].strip()
+            matched = True
+        if not plan.profile_data.get("style"):
+            for key in ("persona_note", "vibe", "character", "style"):
+                v = assistant.get(key)
+                if isinstance(v, str) and v.strip():
+                    plan.profile_data["style"] = v.strip()
+                    matched = True
+                    break
+        if not plan.profile_data.get("emoji") and isinstance(assistant.get("emoji"), str):
+            plan.profile_data["emoji"] = assistant["emoji"].strip()
+            matched = True
+    user = raw.get("user")
+    if isinstance(user, dict) and not plan.profile_data.get("user_name"):
+        for key in ("call_name", "full_name", "name"):
+            v = user.get(key)
+            if isinstance(v, str) and v.strip():
+                plan.profile_data["user_name"] = v.strip()
+                matched = True
+                break
+    avatar = raw.get("avatar")
+    if isinstance(avatar, dict) and isinstance(avatar.get("face_id"), str):
+        face = avatar["face_id"].strip()
+        if face:
+            plan.avatar_face = plan.avatar_face or face
+            plan.profile_data["avatar"] = face
+            matched = True
+    counts = raw.get("counts")
+    if isinstance(counts, dict):
+        for k, v in counts.items():
+            if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                plan.declared_counts[str(k)] = v
+    archive_root = raw.get("archive_root")
+    if isinstance(archive_root, str) and archive_root.strip():
+        # "workspace/your_files/minimuse-archive/" -> "minimuse-archive": the folder whose
+        # members are counted against the declared totals
+        segments = [p for p in archive_root.replace("\\", "/").split("/") if p]
+        if segments:
+            plan.archive_root = segments[-1].lower()
     if isinstance(raw.get("ui_preferences"), dict) and raw["ui_preferences"]:
         plan.ui_prefs.update(raw["ui_preferences"])
         matched = True
@@ -1068,6 +1250,13 @@ def _ingest_zip(
         names = archive.namelist()
         if len(names) > MAX_ZIP_ENTRIES:
             raise ValueError("the archive has too many entries to import safely")
+        if not plan.archive_root:
+            # the folder that carries its own counts, when the profile has not said so yet
+            for candidate in names:
+                segments = [p.lower() for p in candidate.replace("\\", "/").split("/")]
+                if "minimuse-archive" in segments:
+                    plan.archive_root = "minimuse-archive"
+                    break
         total = sum(info.file_size for info in archive.infolist())
         if MAX_ZIP_TOTAL_BYTES and total > MAX_ZIP_TOTAL_BYTES:
             raise ValueError("the archive expands to more than the import limit; split it first")
@@ -1083,8 +1272,9 @@ def _ingest_zip(
             if not parts:
                 continue
             kind = _classify(parts)
-            # only text is read into memory, so only text has a size cap; app files stream
-            if kind != "app" and info.file_size > MAX_ZIP_ENTRY_BYTES:
+            # only text is read into memory, so only text has a size cap; app and loose
+            # files stream to disk and may be as large as the disk allows
+            if kind not in ("app", "file") and info.file_size > MAX_ZIP_ENTRY_BYTES:
                 plan.skipped_files += 1
                 continue
             if kind == "manifest":
@@ -1103,11 +1293,14 @@ def _ingest_zip(
                 _read_thread_entry(archive, member, plan)
             elif kind == "memory":
                 _read_memory_entry(archive, member, data_dir, options, plan)
+            elif kind == "file":
+                _read_file_entry(svc, archive, member, parts, plan)
             elif kind == "app":
                 _read_app_entry(svc, archive, member, apps, options, plan)
             else:
                 plan.skipped_files += 1
         _finish_apps(svc, apps, options, plan)
+    _materialize_avatar_moods(svc, plan)
     if plan.manifest_transcripts:
         # the manifest already carries these chats with exact times and sides; the text copy of
         # the same chat would show up a second time
@@ -1118,15 +1311,63 @@ def _ingest_zip(
         ]
 
 
-_AVATAR_SUFFIXES = {".webp", ".png", ".jpg", ".jpeg", ".gif", ".mp4", ".webm", ".json"}
+# the bundle keeps two of its images base64-encoded beside the real ones; they are avatar
+# files too, so the archive's own avatar count adds up
+_AVATAR_SUFFIXES = {".webp", ".png", ".jpg", ".jpeg", ".gif", ".mp4", ".webm", ".json", ".b64"}
+
+# files that are the file they are - a picture, a clip, a recording, a document, a
+# database - and belong in the workspace as themselves, not parsed as text
+_MEDIA_SUFFIXES = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".avif",
+    ".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv",
+    ".mp3", ".m4a", ".wav", ".ogg", ".oga", ".flac",
+    ".pdf", ".zip", ".tar", ".gz", ".7z", ".rar",
+    ".xlsx", ".xls", ".docx", ".pptx", ".epub",
+    ".glb", ".gltf", ".fbx", ".vrm", ".obj",
+    ".db", ".sqlite", ".sqlite3",
+}
+
+# text that is not chat text: configs, skills and scripts kept as memory files
+_TEXT_EXTRA = {".yaml", ".yml", ".toml", ".ini", ".cfg", ".py", ".sh", ".js", ".ts"}
+
+
+# Muse keeps a folder of half-rendered transcript pages while it writes them; the finished
+# transcripts live elsewhere, so the fragments are never content
+_CACHE_FOLDERS = {".transcript-pages"}
+
+# copies of a file next to the file itself: kept as files, never parsed as the file
+_BACKUP_SUFFIXES = (".bak", ".old", ".orig", ".swp", ".copy", "~")
+
+
+# names that are never content: half-written uploads, editor swap files, desktop clutter
+_NOISE_NAMES = {".ds_store", "thumbs.db", ".gitkeep"}
+_NOISE_PREFIXES = (".hatch-fileserver-tmp", ".~lock")
+_NOISE_SUFFIXES = (".tmp", ".part", ".crdownload", ".download")
 
 
 def _classify(parts: list[str]) -> str:
     joined = "/".join(p.lower() for p in parts)
     filename = parts[-1].lower()
     lower_parts = [p.lower() for p in parts]
+    suffix = Path(filename).suffix.lower()
+    # half-written uploads and editor leftovers are never content; a hidden file that does
+    # carry something (a fixture, a dotfile config) is still somebody's file
+    if (
+        filename in _NOISE_NAMES
+        or filename.startswith(_NOISE_PREFIXES)
+        or filename.endswith(_NOISE_SUFFIXES)
+    ):
+        return "skip"
+    if _CACHE_FOLDERS & set(lower_parts[:-1]):
+        return "skip"
+    if filename.endswith(_BACKUP_SUFFIXES):
+        # "chat-transcript.md.bak" is a copy, not another chat
+        return "file"
     if joined == "manifest.json":
         return "manifest"
+    if filename == "manifest.md":
+        # the archive's own MANIFEST: a document about the archive, not one of its chats
+        return "memory"
     if filename in ("profile.json", "muse-profile.json", "minimuse-profile.json", "identity.json"):
         return "profile"
     if filename == "ui-prefs.json":
@@ -1142,17 +1383,27 @@ def _classify(parts: list[str]) -> str:
         return "thread"
     if _app_root(parts) is not None:
         return "app"
-    if filename.endswith((".html", ".htm")):
-        return "app"
-    if "chat-transcripts" in joined or "transcript" in filename:
+    if "chat-transcripts" in joined:
         return "transcript"
+    if any(p in ("memory", "goals", "projects", "notes", "system", "profile") for p in lower_parts):
+        # notes/, system/ and profile/: documents, skills, preferences - text into the
+        # deep archive, anything else (pictures, clips, code, databases) kept as the file
+        # it is. Checked before the transcript and html rules so a goal note whose name
+        # says "transcript", or a document that happens to be a web page, stays what it is.
+        return "memory" if (suffix in TEXT_SUFFIXES or suffix in _TEXT_EXTRA) else "file"
+    if suffix in _MEDIA_SUFFIXES:
+        return "file"
     if filename in ("memory.md", "muse-error-log.md", "muse-quotes.md"):
         return "memory"
-    if any(p.lower() in ("memory", "goals", "projects") for p in parts):
-        return "memory"
-    if Path(filename).suffix.lower() in TEXT_SUFFIXES:
+    if "transcript" in filename:
         return "transcript"
-    return "skip"
+    if filename.endswith((".html", ".htm")):
+        return "app"
+    if suffix in TEXT_SUFFIXES:
+        return "transcript"
+    # catch-all: anything else is still somebody's file - a script, a database, a build
+    # output - and goes into the workspace as itself rather than being dropped
+    return "file"
 
 
 def _app_root(parts: list[str]) -> tuple[str, ...] | None:
@@ -1252,6 +1503,12 @@ def _read_profile_md_entry(
         except OSError:
             pass
     if options.background_memory:
+        digest = hashlib.sha256(data).hexdigest()
+        plan.ledger_marks.append((digest, "memory"))
+        if plan.ledger and plan.ledger.seen(digest, "memory", plan.option_key):
+            # the same file landed in an earlier run: one copy, not a numbered one
+            plan.duplicates += 1
+            return
         rel = _safe_rel(fname)
         stored = _store_memory_file(data_dir, rel, text.strip())
         if stored:
@@ -1269,10 +1526,6 @@ def _read_avatar_entry(
     parts: list[str],
     plan: ImportPlan,
 ) -> None:
-    with archive.open(member) as handle:
-        data = handle.read(MAX_ZIP_ENTRY_BYTES)
-    if not data:
-        return
     lower = [p.lower() for p in parts]
     idx = -1
     for marker in ("avatar", "avatars", "ai_avatar", "ai-avatar"):
@@ -1284,28 +1537,116 @@ def _read_avatar_entry(
         return
     if len(rel_parts) == 1:
         face = str(plan.profile_data.get("avatar") or "imported-muse")
-        file_name = _safe_rel(rel_parts[0]).name
+        sub = _safe_rel(rel_parts[0])
     else:
         face = slugify(rel_parts[0])
-        file_name = _safe_rel(rel_parts[-1]).name
+        # frames/, options/, thumbnails/ keep their folder: the bundle stays browsable
+        sub = _safe_rel("/".join(rel_parts[1:]))
     face_dir = svc.workspace() / "avatar" / face
-    face_dir.mkdir(parents=True, exist_ok=True)
-    target = face_dir / file_name
+    target = face_dir / sub
     try:
-        target.write_bytes(data)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # streamed, because an avatar clip can be far larger than the text cap
+        with archive.open(member) as source, target.open("wb") as out:
+            while True:
+                chunk = source.read(COPY_CHUNK)
+                if not chunk:
+                    break
+                out.write(chunk)
         plan.avatar_files += 1
         if not plan.avatar_face:
             plan.avatar_face = face
+        if target.name.lower() == "avatar-model.json" and not plan.avatar_model:
+            try:
+                parsed = json.loads(target.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                plan.avatar_model = parsed
         # If an imported still is .png/.jpg/.gif for a standard mood and .webp doesn't exist yet,
         # also write <mood>.webp so the frontend's /api/files/avatar/<face>/<mood>.webp loads immediately.
-        stem_low = Path(file_name).stem.lower()
-        suf_low = Path(file_name).suffix.lower()
+        stem_low = Path(target.name).stem.lower()
+        suf_low = Path(target.name).suffix.lower()
         if stem_low in _MOOD_NAMES and suf_low in (".png", ".jpg", ".jpeg", ".gif"):
             webp_alias = face_dir / f"{stem_low}.webp"
             if not webp_alias.exists():
-                webp_alias.write_bytes(data)
+                webp_alias.write_bytes(target.read_bytes())
     except OSError as exc:
         logger.warning("could not store imported avatar file: %s", exc)
+
+
+def _materialize_avatar_moods(svc: MuseService, plan: ImportPlan) -> None:
+    """The five stills and four clips the app asks for (``<mood>.webp`` / ``<mood>.mp4``),
+    copied out of the bundle's own files using ``avatar-model.json``'s state map, so an
+    imported face changes pose exactly like a face drawn in the studio. Existing files are
+    never overwritten, and a state with no file in the bundle is simply left alone."""
+    model = plan.avatar_model
+    if not model or not plan.avatar_face:
+        return
+    face = slugify(str(model.get("face_id") or plan.avatar_face))
+    face_dir = svc.workspace() / "avatar" / face
+    if not face_dir.is_dir():
+        return
+    webps = sorted(p for p in face_dir.rglob("*.webp"))
+
+    def pick(*hints: str) -> Path | None:
+        for path in webps:
+            name = path.name.lower()
+            if all(hint in name for hint in hints):
+                return path
+        return None
+
+    active_name = str(model.get("active_image") or "")
+    active = face_dir / active_name if active_name else None
+    if active is not None and not active.is_file():
+        active = None
+    stills: dict[str, Path | None] = {
+        "idle": pick("static", "idle") or active,
+        "working": pick("static", "working"),
+        "waiting": pick("static", "making_something"),
+        "happy": pick("static", "milestone_level_up"),
+        "error": next(
+            (p for p in webps if p.name.lower().endswith("-darkmode.webp")), None
+        )
+        or active,
+    }
+    variants = model.get("animated_variants_mp4")
+    variants = variants if isinstance(variants, dict) else {}
+    clips: dict[str, Any] = {
+        "idle": variants.get("idle"),
+        "working": variants.get("working"),
+        "waiting": variants.get("waiting_for_subagents") or variants.get("waiting"),
+        "happy": variants.get("milestone_level_up") or variants.get("happy"),
+    }
+    made = 0
+    for mood, source in stills.items():
+        if source is None or not source.is_file():
+            continue
+        target = face_dir / f"{mood}.webp"
+        if target.exists():
+            continue
+        try:
+            target.write_bytes(source.read_bytes())
+            made += 1
+        except OSError as exc:
+            logger.warning("could not materialize avatar mood %s: %s", mood, exc)
+    for mood, source_name in clips.items():
+        if not isinstance(source_name, str) or not source_name:
+            continue
+        # the state map names a file, which may sit in a subfolder of the bundle
+        wanted = Path(source_name).name.lower()
+        source = next(
+            (p for p in face_dir.rglob("*") if p.is_file() and p.name.lower() == wanted), None
+        )
+        target = face_dir / f"{mood}.mp4"
+        if target.exists() or source is None:
+            continue
+        try:
+            target.write_bytes(source.read_bytes())
+            made += 1
+        except OSError as exc:
+            logger.warning("could not materialize avatar clip %s: %s", mood, exc)
+    plan.avatar_materialized += made
 
 
 def _read_thread_entry(archive: zipfile.ZipFile, member: str, plan: ImportPlan) -> None:
@@ -1349,18 +1690,40 @@ def _read_text_entry(
         plan.skipped_files += 1
         return
     turns = parse_transcript(text, member)
-    if turns:
-        plan.conversations.append(
-            Conversation(
-                title=title_from_text(text, member), kind="transcript", turns=turns, source=member
-            )
+    parts = [p for p in member.replace("\\", "/").split("/") if p]
+    if _in_archive(plan, member) and any(p.lower() == "chat-transcripts" for p in parts):
+        # counted against the archive's own transcript totals in the verification report
+        plan.staged_counts["chat_transcripts_in_archive"] = (
+            plan.staged_counts.get("chat_transcripts_in_archive", 0) + 1
         )
+        plan.staged_counts["total_transcript_messages"] = (
+            plan.staged_counts.get("total_transcript_messages", 0) + len(turns)
+        )
+    if turns:
+        chat_id = _chat_id_of(text)
+        existing = plan.chats_by_id.get(chat_id) if chat_id else None
+        if existing is not None:
+            # the same conversation, carried a second time: the messages join the one chat
+            _absorb_turns(existing, turns)
+            return
+        conv = Conversation(
+            title=title_from_text(text, member), kind="transcript", turns=turns, source=member
+        )
+        if chat_id:
+            plan.chats_by_id[chat_id] = conv
+        plan.conversations.append(conv)
         return
     if options.background_memory:
-        rel = _memory_rel([p for p in member.replace("\\", "/").split("/") if p])
-        stored = _store_memory_file(data_dir, rel, text)
-        if stored and index_memory_text(data_dir / "personal.db", stored, text):
-            plan.memory_files += 1
+        # no messages in it: it is a document, and it goes into the deep archive
+        digest = hashlib.sha256(data).hexdigest()
+        plan.ledger_marks.append((digest, "memory"))
+        if plan.ledger and plan.ledger.seen(digest, "memory", plan.option_key):
+            plan.duplicates += 1
+        else:
+            rel = _memory_rel(parts)
+            stored = _store_memory_file(data_dir, rel, text)
+            if stored and index_memory_text(data_dir / "personal.db", stored, text):
+                plan.memory_files += 1
     lowered = member.replace("\\", "/").lower()
     is_chat_file = lowered.startswith("conversations/") or "transcript" in lowered
     if options.restore_chats and is_chat_file:
@@ -1373,13 +1736,74 @@ def _read_text_entry(
 
 def _memory_rel(parts: list[str]) -> Path:
     """The path of a memory file relative to its own area: everything after the last
-    memory/goals/projects segment, so the archive's folder structure stays readable."""
+    memory/goals/projects/notes/system segment, so the archive's folder structure stays
+    readable (``notes/documents/asmr-watch/v1.txt`` lands as ``documents/asmr-watch/v1.txt``).
+    A file with no such folder keeps its own folders too, so two ``note.md`` files from
+    different places do not land on top of each other."""
     lower = [p.lower() for p in parts]
-    for marker in ("memory", "goals", "projects"):
+    for marker in ("memory", "goals", "projects", "notes", "system", "chat-transcripts", "profile"):
         if marker in lower:
             idx = len(lower) - 1 - lower[::-1].index(marker)
-            return _safe_rel("/".join(parts[idx + 1 :]))
-    return _safe_rel(parts[-1])
+            rest = parts[idx + 1 :]
+            if rest:
+                return _safe_rel("/".join(rest))
+    return _safe_rel("/".join(parts[-3:]))
+
+
+def _in_archive(plan: ImportPlan, member: str) -> bool:
+    """The member is inside the archive folder that declares its own counts, so it counts
+    against them (files outside it are still imported, just not tallied)."""
+    if not plan.archive_root:
+        return False
+    parts = [p.lower() for p in member.replace("\\", "/").split("/") if p]
+    return plan.archive_root in parts
+
+
+def _section_of(parts: list[str]) -> str:
+    """Which declared count bucket a member belongs to, or "" when it has none."""
+    lower = [p.lower() for p in parts]
+    if "documents" in lower:
+        return "document_files"
+    if "goals" in lower:
+        return "goal_files"
+    if "memory" in lower:
+        return "memory_files"
+    return ""
+
+
+def _file_rel(parts: list[str]) -> Path:
+    """Where a loose file lands under ``workspace/imported/``: the archive's own folder
+    kept (``notes/uploads/image/15/x.jpg`` -> ``uploads/image/15/x.jpg``). Muse's raw
+    stores are the same files as the archive's uploads, so their prefixes are folded onto
+    one place (``user/files/x.jpg`` and ``notes/uploads/files/x.jpg`` are one picture, not
+    two) and identical bytes are stored once."""
+    lower = [p.lower() for p in parts]
+    for marker in ("uploads", "attachments", "documents", "goals", "memory", "projects", "user"):
+        if marker in lower:
+            idx = len(lower) - 1 - lower[::-1].index(marker)
+            rest = parts[idx + 1 :]
+            if rest and rest[0].lower() in ("files", "media_library"):
+                rest = rest[1:]
+            if rest:
+                base = "uploads" if marker == "user" else marker
+                return _safe_rel("/".join([base] + rest))
+    return _safe_rel("/".join(parts[-3:]))
+
+
+def _read_file_entry(
+    svc: MuseService, archive: zipfile.ZipFile, member: str, parts: list[str], plan: ImportPlan
+) -> None:
+    """A file the archive carried as itself - a picture, a clip, a recording, a document
+    - into ``workspace/imported/`` as the file it is, streamed and deduplicated."""
+    rel = _file_rel(parts)
+    out, sha, status = _store_app_stream(svc.workspace(), Path("imported"), rel, archive, member, plan)
+    plan.ledger_marks.append((sha, "file"))
+    if status != "failed" and _in_archive(plan, member):
+        key = _section_of(parts)
+        if key:
+            plan.staged_counts[key] = plan.staged_counts.get(key, 0) + 1
+    if not out and status == "failed":
+        plan.skipped_files += 1
 
 
 def _read_memory_entry(
@@ -1387,17 +1811,31 @@ def _read_memory_entry(
 ) -> None:
     with archive.open(member) as handle:
         data = handle.read(MAX_TRANSCRIPT_CHARS * 4)
-    plan.ledger_marks.append((hashlib.sha256(data).hexdigest(), "memory"))
+    digest = hashlib.sha256(data).hexdigest()
+    plan.ledger_marks.append((digest, "memory"))
     if not options.background_memory:
         return
     text = _decode(data)
     if text is None:
         plan.skipped_files += 1
         return
-    rel = _memory_rel([p for p in member.replace("\\", "/").split("/") if p])
-    stored = _store_memory_file(data_dir, rel, text)
-    if stored and index_memory_text(data_dir / "personal.db", stored, text):
-        plan.memory_files += 1
+    parts = [p for p in member.replace("\\", "/").split("/") if p]
+    already = bool(plan.ledger and plan.ledger.seen(digest, "memory", plan.option_key))
+    stored: str | None = None
+    if already:
+        # the same bytes landed in an earlier run: they are already in the deep archive
+        plan.duplicates += 1
+    else:
+        rel = _memory_rel(parts)
+        stored = _store_memory_file(data_dir, rel, text)
+        if stored:
+            plan.memory_files += 1
+            # the search index is best-effort: a missing database must not hide the file
+            index_memory_text(data_dir / "personal.db", stored, text)
+    if (stored or already) and _in_archive(plan, member):
+        key = _section_of(parts)
+        if key:
+            plan.staged_counts[key] = plan.staged_counts.get(key, 0) + 1
 
 
 def _read_app_entry(
@@ -1411,15 +1849,18 @@ def _read_app_entry(
     if options.apps == "neither":
         plan.skipped_files += 1
         return
-    root = _app_root([p for p in member.replace("\\", "/").split("/") if p])
+    parts = [p for p in member.replace("\\", "/").split("/") if p]
+    root = _app_root(parts)
     slug = slugify(root[-1] if root is not None else Path(member).stem)
     app = apps.setdefault(
         slug,
         {"slug": slug, "title": slug.replace("-", " ").title(), "html_rel": "", "files": 0},
     )
-    parts = [p for p in member.replace("\\", "/").split("/") if p]
     lower = [p.lower() for p in parts]
-    if "apps" in lower:
+    if root is not None:
+        # everything after the app's own folder is the app's file
+        rel_parts = parts[len(root) :]
+    elif "apps" in lower:
         idx = lower.index("apps")
         rel_parts = parts[idx + 1 :]
         if rel_parts and rel_parts[0].lower() == slug:
@@ -1429,8 +1870,15 @@ def _read_app_entry(
     if not rel_parts:
         rel_parts = [Path(member).name]
     rel = _safe_rel("/".join(rel_parts))
-    out, sha = _store_app_stream(svc.workspace(), slug, rel, archive, member, plan)
+    out, sha, _status = _store_app_stream(
+        svc.workspace(), Path("apps") / slug, rel, archive, member, plan
+    )
     plan.ledger_marks.append((sha, "app"))
+    if root is not None and plan.archive_root and plan.archive_root in lower:
+        # a folder inside the archive's own apps/ - one of the folders it counts
+        app["from_archive"] = True
+    if root is not None:
+        app["rooted"] = True
     if out:
         app["files"] += 1
         low = rel.name.lower()
@@ -1449,6 +1897,10 @@ def _finish_apps(
     svc: MuseService, apps: dict[str, dict[str, Any]], options: ImportOptions, plan: ImportPlan
 ) -> None:
     register = options.apps in ("restore", "both")
+    if plan.archive_root:
+        plan.staged_counts["app_folders_in_archive"] = sum(
+            1 for a in apps.values() if a.get("from_archive")
+        )
     conn: sqlite3.Connection | None = None
     try:
         if register:
@@ -1461,15 +1913,19 @@ def _finish_apps(
         for app in apps.values():
             if app["files"] == 0:
                 continue
-            plan.apps.append(
-                ImportedApp(
-                    slug=app["slug"],
-                    title=app["title"],
-                    html_rel=app["html_rel"],
-                    files=app["files"],
-                )
+            entry = ImportedApp(
+                slug=app["slug"],
+                title=app["title"],
+                html_rel=app["html_rel"],
+                files=app["files"],
             )
+            plan.apps.append(entry)
             if register and conn is not None and app["html_rel"]:
+                # an index.html with no folder of its own is a page inside something else
+                # (a build output, a mirror of another app), not an app of its own
+                page = Path(app["html_rel"]).name.lower()
+                if not app.get("rooted") and page.startswith("index"):
+                    continue
                 now = datetime.now(UTC).isoformat(timespec="seconds")
                 conn.execute(
                     "INSERT INTO custom_apps (slug, title, description, html_path, created_at, updated_at) "
@@ -1486,6 +1942,7 @@ def _finish_apps(
                         now,
                     ),
                 )
+                entry.registered = True
         if conn is not None:
             conn.commit()
     except sqlite3.Error as exc:
@@ -1496,6 +1953,92 @@ def _finish_apps(
 
 
 # ------------------------------------------------------------------ applying to the service
+_VERIFY_BUCKETS = (
+    ("chat_transcripts_in_archive", "chat transcripts"),
+    ("total_transcript_messages", "transcript messages"),
+    ("avatar_files", "avatar files"),
+    ("app_folders_in_archive", "app folders"),
+    ("memory_files", "memory files"),
+    ("goal_files", "goal files"),
+    ("document_files", "document files"),
+)
+
+
+def _verify_import(plan: ImportPlan, options: ImportOptions) -> dict[str, Any] | None:
+    """The archive's own counts against what actually landed - the honest check behind
+    the report file. A gap stays a gap: nothing is claimed complete when it is not."""
+    if not plan.declared_counts:
+        return None
+    # buckets a switched-off option was never asked to fill: reported as notes, not gaps
+    off: set[str] = set()
+    if not options.background_memory:
+        off |= {"memory_files", "goal_files", "document_files"}
+    if options.apps == "neither":
+        off.add("app_folders_in_archive")
+    lines: list[str] = []
+    ok = True
+    for key, label in _VERIFY_BUCKETS:
+        if key not in plan.declared_counts or key in off:
+            continue
+        declared = plan.declared_counts[key]
+        staged = plan.avatar_files if key == "avatar_files" else plan.staged_counts.get(key, 0)
+        if staged == declared:
+            lines.append(f"{label}: the archive declares {declared}, this import staged {staged}")
+        elif staged > declared:
+            # more than the archive counted itself: nothing is missing, its own total was low
+            lines.append(
+                f"{label}: the archive declares {declared}, this import staged {staged}"
+                "  (more than declared, so nothing is missing)"
+            )
+        else:
+            ok = False
+            lines.append(
+                f"{label}: the archive declares {declared}, this import staged {staged}  (GAP)"
+            )
+    if not lines:
+        return None
+    if not options.background_memory:
+        lines.append(
+            "note: background memory was switched off, so memory, goal and document text was not stored"
+        )
+    if options.apps == "neither":
+        lines.append("note: apps were switched off, so no app folders were stored")
+    if plan.skipped_files:
+        lines.append(f"files the importer skipped (unreadable, unsupported, or too large): {plan.skipped_files}")
+    if plan.duplicates:
+        lines.append(f"identical files already present, not stored twice: {plan.duplicates}")
+    return {"ok": ok, "lines": lines}
+
+
+def _write_verify_report(svc: MuseService, plan: ImportPlan, verify: dict[str, Any]) -> None:
+    """The verification as a markdown file under ``workspace/imports/``, where the agent
+    can read it later next to the kept copy of the export."""
+    stamp = datetime.now(UTC).isoformat(timespec="seconds")
+    slug = slugify(Path(plan.source_name or "import").stem) or "import"
+    body = [
+        "# Import verification",
+        "",
+        f"- Source: {plan.source_name or 'unknown'}",
+        f"- Built: {stamp}",
+        f"- Result: {'every declared count matched' if verify['ok'] else 'GAPS: some declared counts did not match'}",
+        "",
+        "## Counts",
+        "",
+        *[f"- {line}" for line in verify["lines"]],
+        "",
+        "The original export (when a copy was kept) sits next to this file under"
+        " `workspace/imports/`; this report compares the archive's own declared totals"
+        " with what the import staged. Nothing here deletes anything.",
+        "",
+    ]
+    try:
+        root = svc.workspace() / "imports"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / f"{slug}-verify.md").write_text("\n".join(body), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("could not write the import verification report: %s", exc)
+
+
 def apply_plan(svc: MuseService, plan: ImportPlan, options: ImportOptions) -> dict[str, Any]:
     """Turn the staged plan into chats, on the event loop: threads are created or merged
     in time order, the agent's transcript learns the imported messages, the deep archive
@@ -1530,32 +2073,44 @@ def apply_plan(svc: MuseService, plan: ImportPlan, options: ImportOptions) -> di
         "memory_files": plan.memory_files,
         "apps_saved": sum(1 for a in plan.apps),
         "apps_registered": (
-            sum(1 for a in plan.apps if a.html_rel) if options.apps in ("restore", "both") else 0
+            sum(1 for a in plan.apps if a.registered) if options.apps in ("restore", "both") else 0
         ),
         "profile_updated": profile_updated,
         "avatar_files": plan.avatar_files,
+        "avatar_moods": plan.avatar_materialized,
         "ui_preferences": plan.ui_prefs if plan.ui_prefs else None,
         "skipped_files": plan.skipped_files,
         "duplicates": plan.duplicates,
         "note": plan.note,
+        # filled in by the caller when the uploaded file is kept under workspace/imports/
+        "kept_copy": None,
     }
     titles = {normalize_title(t.title): t.id for t in svc.threads.values() if t.title.strip()}
     personal_db = svc.data_dir / "personal.db"
     for conv in plan.conversations:
         if options.restore_chats:
             thread_id = _apply_conversation(svc, conv, options, titles, stats)
+            if thread_id:
+                # the next same-titled file merges into the chat this one just made
+                titles[normalize_title(conv.title)] = thread_id
         else:
             thread_id = f"import:{slugify(conv.title)}"
         if options.background_memory and thread_id:
             stats["messages_indexed"] += index_conversation_turns(personal_db, thread_id, conv)
-    ledger = ImportLedger(svc.data_dir / "imports.db")
-    ledger.open()
+    ledger = plan.ledger or ImportLedger(svc.data_dir / "imports.db")
+    if plan.ledger is None:
+        ledger.open()
+    plan.ledger = None
     try:
         for digest, kind in plan.ledger_marks:
             ledger.mark(digest, kind, plan.option_key, "import")
         ledger.commit()
     finally:
         ledger.close()
+    verify = _verify_import(plan, options)
+    if verify is not None:
+        stats["verify"] = verify
+        _write_verify_report(svc, plan, verify)
     return stats
 
 
@@ -1611,6 +2166,14 @@ def _apply_conversation(
         _event_hash(str(ev.get("ts") or ""), str(ev.get("type") or ""), str(ev.get("text") or ""))
         for ev in thread.timeline.events
     }
+    # a chat view keeps the newest `max_events` messages: anything older than the oldest
+    # kept one would be trimmed the moment it is added, so a second import of the same
+    # archive must not re-add it (it is in the search index either way)
+    events_cap = int(getattr(thread.timeline, "max_events", 0) or 0)
+    oldest_kept = min(
+        (str(ev.get("ts") or "") for ev in thread.timeline.events), default=""
+    )
+    full = bool(events_cap) and len(thread.timeline.events) >= events_cap
     events: list[dict[str, Any]] = []
     if conv.kind == "text" and not turns:
         # plain prose with no messages in it: shown in the chat as a note, kept in memory
@@ -1625,6 +2188,10 @@ def _apply_conversation(
         )
     for turn in turns:
         if _event_hash(turn.ts, turn.role, turn.text) in known:
+            stats["duplicates"] += 1
+            continue
+        if full and oldest_kept and turn.ts <= oldest_kept:
+            # already trimmed by the chat's own size limit: do not add it again
             stats["duplicates"] += 1
             continue
         events.append({"type": turn.role, "text": turn.text, "ts": turn.ts, "imported": True})
@@ -1692,7 +2259,15 @@ def ingest_text(svc: MuseService, text: str, name: str, options: ImportOptions) 
     if len(text.encode("utf-8", errors="replace")) > MAX_TEXT_PASTE_BYTES:
         raise ValueError("the pasted text is larger than 32 MB; import it as a file")
     plan = ImportPlan(option_key=options.key())
-    _accept_text(svc.data_dir, name or "Imported text", text, options, plan)
+    ledger = ImportLedger(svc.data_dir / "imports.db")
+    ledger.open()
+    plan.ledger = ledger
+    try:
+        _accept_text(svc.data_dir, name or "Imported text", text, options, plan)
+    finally:
+        # the connection belongs to this worker thread; apply_plan opens its own to mark
+        ledger.close()
+        plan.ledger = None
     return plan
 
 
@@ -1708,6 +2283,29 @@ def import_file(svc: MuseService, path: Path, name: str, options: ImportOptions)
     return apply_plan(svc, plan, options)
 
 
+def keep_original(svc: MuseService, staging: Path, name: str) -> str:
+    """Move the uploaded file, byte for byte, under ``workspace/imports/`` so the
+    original survives the transfer and can be re-checked later (by the person or the
+    agent); returns its workspace-relative path. The staging file is consumed."""
+    import shutil
+
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    safe = re.sub(r"[^A-Za-z0-9_. -]+", "_", Path(name).name).strip() or "import.zip"
+    root = svc.workspace() / "imports"
+    root.mkdir(parents=True, exist_ok=True)
+    dest = root / f"{stamp}-{safe}"
+    counter = 2
+    while dest.exists():
+        dest = root / f"{stamp}-{safe}-{counter}"
+        counter += 1
+    try:
+        staging.rename(dest)
+    except OSError:
+        # staging and the workspace may sit on different volumes: a copy-move then
+        shutil.move(str(staging), str(dest))
+    return dest.relative_to(svc.workspace()).as_posix()
+
+
 __all__ = [
     "IMPORT_UPLOAD_MB",
     "ImportLedger",
@@ -1717,6 +2315,7 @@ __all__ = [
     "import_text",
     "ingest_path",
     "ingest_text",
+    "keep_original",
     "looks_like_transcript",
     "parse_timestamp",
     "parse_transcript",

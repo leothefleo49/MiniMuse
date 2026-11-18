@@ -201,6 +201,14 @@ export type ImportOptions = {
   apps: "save" | "restore" | "both" | "neither";
   /** what happens to the Muse main chat */
   main_chat: "side" | "replace" | "merge";
+  /** keep the uploaded file itself under workspace/imports/ instead of deleting it */
+  keep_copy?: boolean;
+};
+
+/** The archive's own counts against what this import staged, line by line. */
+export type ImportVerify = {
+  ok: boolean;
+  lines: string[];
 };
 
 /** What an import found and did, as the runtime reports it. */
@@ -216,10 +224,23 @@ export type ImportResult = {
   apps_registered: number;
   profile_updated?: boolean;
   avatar_files?: number;
+  avatar_moods?: number;
   ui_preferences?: Record<string, string> | null;
   skipped_files: number;
   duplicates: number;
   note: string;
+  /** where the original upload was kept, when the switch was on */
+  kept_copy?: string;
+  /** declared-vs-staged counts, when the archive declared its own */
+  verify?: ImportVerify;
+};
+
+/** One file kept under workspace/imports/ after a transfer. */
+export type KeptCopy = {
+  name: string;
+  size: number;
+  modified: string;
+  report: boolean;
 };
 
 /** Where the one-tap browser install is. */
@@ -531,6 +552,7 @@ export const api = {
       background_memory: String(options.background_memory),
       apps: options.apps,
       main_chat: options.main_chat,
+      keep_copy: String(options.keep_copy ?? true),
     });
     const headers: Record<string, string> = {};
     const token = getToken();
@@ -549,6 +571,7 @@ export const api = {
       background_memory: String(options.background_memory),
       apps: options.apps,
       main_chat: options.main_chat,
+      keep_copy: String(options.keep_copy ?? true),
       background: "true",
     });
     const headers: Record<string, string> = {};
@@ -560,6 +583,13 @@ export const api = {
     return ((await res.json()) as { job: ImportJobView }).job;
   },
   importJobs: () => request<{ jobs: ImportJobView[] }>("/api/data/import/jobs", { cache: "no-store" }),
+  /** The originals kept after a transfer, newest first (reports flagged). */
+  importCopies: () => request<KeptCopy[]>("/api/data/import/copies", { cache: "no-store" }),
+  /** One kept file removed at the person's request; the imported data is untouched. */
+  deleteImportCopy: (name: string) =>
+    request<{ ok: boolean; name: string }>(`/api/data/import/copies/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
   /** Paste text straight into the import (transcripts, notes, anything readable). */
   importText: async (text: string, name: string, options: ImportOptions): Promise<ImportResult> => {
     const params = new URLSearchParams({

@@ -101,12 +101,14 @@ so run it once. When Muse is done, export your data in Muse's settings, and impo
 ZIP on the page.
 
 The import accepts a Muse export ZIP, a nanoMuse export ZIP, a transcript file, or text
-pasted straight in, up to 4 GB. Four switches decide what happens:
+pasted straight in, up to 4 GB. Five switches decide what happens:
 
 - **Restore chats as conversations** makes each imported chat a chat here. A chat whose
-  title matches an existing one merges into it, message by message, in time order.
-  Nothing already in nanoMuse is deleted, and a chat is never overwritten: a name
-  collision on a file gets a numbered copy.
+  title matches an existing one merges into it, message by message, in time order, and a
+  conversation carried twice in the same archive (the archive's own copy and Muse's
+  working copy) is recognized by its chat id and kept as one chat. Nothing already in
+  nanoMuse is deleted, and a chat is never overwritten: a name collision on a file gets a
+  numbered copy.
 - **Keep chat history in background memory** writes every imported message into the
   archive the agent searches with `deep_memory`, so later chats can look it up even when
   the conversation is not restored.
@@ -115,9 +117,33 @@ pasted straight in, up to 4 GB. Four switches decide what happens:
 - **The Muse main chat** becomes a side chat (the safe pick), takes over as the main
   chat while the current main chat is set aside as a side chat, untouched, or merges
   into the current main chat with both histories interleaved by message time.
+- **Keep the original archive** stores the uploaded ZIP, byte for byte, under
+  `workspace/imports/` next to a report of what the import found, so the agent can check
+  the source later. Delete either file from the same screen; the imported chats do not
+  depend on it.
 
-Imports are idempotent: the runtime remembers what it has already imported, so sending
-the same archive again adds nothing twice. Credentials are never part of an import.
+Every section of a Muse archive is read: the profile and user details, the avatar bundle
+plus the stills and clips the app animates, the transcripts, the apps with their own data,
+notes, goals, documents, uploads, and the system folder with preferences and schedules.
+
+Imports are idempotent: the runtime remembers what it has already imported by content, so
+sending the same archive again stores no memory file twice, does not double the search
+index, and adds no message that is already in the chat. Credentials are never part of an
+import.
+
+When the archive carries its own counts (`counts` in `profile/muse-profile.json`), the
+import compares them with what it actually staged and shows the result, section by section.
+A section with fewer files than the archive promised is named as a gap instead of being
+called complete; more files than promised is reported as such, since nothing is missing.
+
+## Update a Muse export instead of rebuilding it
+
+A second transfer does not have to repeat the first. After an import, paste the transfer
+code (a timestamp) above the prompt as `SINCE: <code>`, and Muse sends only what changed
+after it. The importer treats the result as an update: files whose bytes it already has are
+skipped, changed transcripts merge into their existing chat, and the verification compares
+against the delta counts. Deletions are not synced yet: a file removed in Muse stays here
+until it is deleted here.
 
 ## Check the result
 

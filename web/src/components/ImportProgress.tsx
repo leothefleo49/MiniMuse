@@ -45,6 +45,8 @@ export function ImportProgress() {
           if (job.phase === "done" && job.result) {
             toast(t("Import finished: {summary}", { summary: summaryOf(job.result, t) }));
             if (job.result.profile_updated || job.result.avatar_files) void refreshSettings().catch(() => undefined);
+            // the kept original and its report are on disk by now: the import screen refreshes
+            window.dispatchEvent(new Event("nanomuse:import-finished"));
           } else {
             toast(t("Import failed: {error}", { error: job.error }));
           }

@@ -1,6 +1,6 @@
-import { Check, Copy, Download, FileUp, Loader2, Sparkles, TextCursorInput } from "lucide-react";
-import { useRef, useState } from "react";
-import { api, type ImportOptions, type ImportResult } from "../api";
+import { Check, Copy, Download, FileUp, Loader2, Sparkles, TextCursorInput, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { api, type ImportOptions, type ImportResult, type KeptCopy } from "../api";
 import { useT } from "../i18n";
 import { useStore } from "../store";
 import { MuseCaption, MuseCard, MuseDivider, MuseRow, MuseSectionLabel, MuseSwitchRow } from "./MuseList";
@@ -17,41 +17,97 @@ import { MuseCaption, MuseCard, MuseDivider, MuseRow, MuseSectionLabel, MuseSwit
  */
 
 /** The prompt to send Muse, unchanged, in a chat. It stays in English: Muse reads it. */
-export const MUSE_PROMPT = `Please prepare a complete, up-to-date export archive of everything we have worked on together inside your persistent workspace/deep-memory storage (the files that get included when I export my Muse data), so I can transfer or sync everything cleanly into MiniMuse.
+export const MUSE_PROMPT = `Please prepare a complete, up-to-date export archive of EVERYTHING in your persistent workspace / deep-memory storage (the files that get included when I export my Muse data), so I can transfer or sync it cleanly into MiniMuse.
 
-First, check what is already saved in your workspace/deep-memory export files:
-- If most of our chats, transcripts, memories, or apps are NOT saved there in the format below yet, create all of them now.
-- If some transcripts or files are missing, outdated, incomplete, or saved in an inconsistent format while others already exist, go ahead and update/rebuild everything cleanly across the whole archive so nothing is stale, partial, or left behind. Replace any outdated or partial copies rather than leaving duplicates.
+STEP 0 - Inventory first, then build
+Before writing anything, scan your ENTIRE persistent storage and list every kind of data that exists about me or our work together: chats, transcripts, memories, notes, goals, documents, files I uploaded, media you generated, apps and their data, avatar assets, settings, schedules, connectors, and anything else. Build the archive from what you actually find, not only from the list below. If a kind of data exists that this prompt does not name, give it its own clearly named folder and describe it in the MANIFEST.
 
-Work through each section systematically:
+CATCH-ALL RULE, the most important rule here: plus any files or data not listed here that you can find anywhere in your storage. If it exists and it is about me, my life, or our work together, include it.
 
-1. Save or update my Profile, User Details & AI Identity:
-   - Write "profile/muse-profile.json" into your workspace containing:
-     {"name": "<your AI name>", "user_name": "<what you call me>", "tagline": "<your one-line tagline>", "color": "<your hex accent color>", "emoji": "<your emoji>", "avatar": "<your avatar face id>", "tone": "<formal|casual|playful|concise>", "communication": "<short|detailed|bullets>", "style": "<detailed description of your personality, voice, habits, and how you talk to me>"}
-   - Write "profile/USER.md" with everything you know about me (name, background, preferences, contacts, recurring routines/tasks, and life context).
-   - Write "profile/IDENTITY.md" with your complete persona, instructions, and style rules.
-   - Copy any custom AI avatar icons, still poses (idle, working, waiting, happy, error), or animations (.webp, .png, .mp4, .webm) into "avatar/<face_id>/" in your workspace.
+NEVER INVENT. Every value comes from a real file or record. If something cannot be sourced, write null (or "unknown") and note it in the MANIFEST. Do not fill gaps with plausible-sounding details.
 
-2. Save or update ALL Chat Transcripts (oldest to newest):
-   - Go through EVERY past chat and side conversation we have had. Make sure each chat is saved or updated under "chat-transcripts/YYYY-MM-DD-<title>-chat-transcript.md" inside the workspace/deep-memory export directory.
-   - Format every message in order with a markdown heading above each turn using exact date, time, and speaker name, e.g.:
-     ## User — 2026-10-17 1:18:45 PM MDT
-     (or 24h timestamp + timezone) and ## Muse — ...
-   - Include my messages and your replies word for word, noting any images, files, links, or code inline where they appeared. If an existing transcript file is missing recent turns or used an incomplete summary, rewrite/update the whole file cleanly.
+NEVER COPY SECRETS. No passwords, API keys, tokens or one-time codes. Replace each one in place with [REDACTED] and note it in the MANIFEST.
 
-3. Save or update the Main Chat transcript:
-   - Write or update the full main-chat transcript using the exact same turn-by-turn format with speaker and timestamp above every message, ensuring all recent messages are included.
+ONE ARCHIVE FOLDER. Build everything inside a single folder named minimuse-archive/ in your exportable workspace, with exactly the sections below. Do not scatter the same data across other folders: if a source lives elsewhere, move the content into the archive instead of keeping a second copy. If you cannot move it, copy it once and say so in the MANIFEST.
 
-4. Save or update every App, Tool, Webpage, Game & Code Project:
-   - Under "apps/" in your workspace, save the COMPLETE current source code for every app/tool/script you built for me (every HTML, CSS, JS, TS, Python, or config file with its proper folder structure, not summaries). Update outdated versions in place.
+1. profile/
+- profile/muse-profile.json, every field you can actually source:
+  {"assistant": {"name": "<your AI name>", "tagline": "<one line>", "color": "<hex>", "emoji": "<emoji>", "tone": "<formal|casual|playful|concise>", "communication": "<short|detailed|bullets>", "style": "<your personality and voice>"},
+   "user": {"call_name": "<what you call me>", "full_name": "<my name>", "timezone": "<IANA zone>"},
+   "avatar": {"face_id": "<your avatar folder>"},
+   "archive_root": "workspace/your_files/minimuse-archive/",
+   "built_at": "YYYY-MM-DD",
+   "scope": "full",
+   "counts": {"chat_transcripts_in_archive": 0, "total_transcript_messages": 0, "chats_total": 0, "app_folders_in_archive": 0, "avatar_files": 0, "memory_files": 0, "goal_files": 0, "document_files": 0}}
+  The counts block is required and must equal what you actually wrote (see VERIFICATION).
+- profile/USER.md: everything you know about me, my background, people, preferences, routines and goals.
+- profile/IDENTITY.md: your complete persona, instructions and style rules. If the stored file is blank or a template, say so in the MANIFEST and write the fullest honest version from your real configuration and behaviour.
 
-5. Save or update Memories, Notes, Plans, Goals & Documents:
-   - Ensure all long-term memories, daily notes, people/group notes, goals, and key documents are stored as Markdown/JSON files in your exported workspace/deep-memory storage.
+2. avatar/<face_id>/
+- Every file of your avatar folder: frames, stills, candidates, animations. Formats .webp .png .jpg .mp4 .webm. Keep the folder structure and the original file names.
+- avatar/<face_id>/avatar-model.json: {"face_id": "...", "active_image": "<file>", "animated_variants_mp4": {"idle": "<file>", "working": "<file>", "waiting": "<file>"}, "moods": {"idle": "<file>", "working": "<file>", "waiting": "<file>", "happy": "<file>", "error": "<file>"}}
+- If no 3D model files (.glb .gltf .fbx .vrm .obj) exist, say so in the MANIFEST instead of implying they were included.
 
-6. Confirm & Give Export Steps:
-   - Paste a \`\`\`muse-profile ... \`\`\` JSON block in your reply with my profile & AI identity fields.
-   - List what you created or updated and confirm everything is saved inside your workspace/deep-memory export storage.
-   - Tell me clearly how to export and send it to MiniMuse: open Muse Settings -> Export data (or Data Controls -> Export), download the exported .zip file, and upload that .zip inside MiniMuse under Settings -> Import & export.`;
+3. chat-transcripts/
+- One file per conversation: the main chat, every side chat, every voice call and every archived thread, at chat-transcripts/YYYY-MM-DD-<title>-chat-transcript.md (the date is the chat's first message).
+- Write every message word for word, oldest first, with one heading above each turn in exactly this shape:
+  ## 2026-11-05 5:49 PM MST - Tyler
+  ## 2026-11-05 5:50 PM MST - Muse
+  The time is the message's own local time, with AM/PM and the zone abbreviation. Use the speaker names we actually use. No other header shape, no merged turns, no summaries.
+- Note images, files, links, voice notes and code inline, where they appeared.
+- Put a short metadata block at the top of each file (title, chat id, date range, message count), then the turns.
+- Never write a summary transcript. If an existing file is partial or a summary, replace it with the full verbatim version.
+
+4. apps/
+- One folder per app, tool, game or code project, with its complete current source: every HTML, CSS, JS, TS, Python and config file, in the real folder structure. Never summaries or excerpts.
+- Include each app's own data (its database file or a data export) inside that app's folder, so the app can actually run again.
+- Leave out installed dependencies and build caches: node_modules, .venv, venv, __pycache__, .cache, .bun-cache, dist, .next. They are not your work. List them as excluded in the MANIFEST with a count, so the numbers add up.
+- Update files in place on later runs, and delete files that no longer exist in the source, so no stale code is left behind.
+
+5. notes/
+- notes/memory/ long-term memory, daily logs, people and group notes, standing rules
+- notes/goals/ every goal with its own notes and workspace files
+- notes/documents/ plans, reports, spreadsheets, decks, schedules, reminders
+- notes/uploads/ the files I uploaded to you and the media you generated for me, as the real files
+- Keep the folder structure you actually use inside each of these.
+
+6. system/
+- Preferences and standing instructions, including proactive and notification settings
+- Custom skills and connector docs, with credentials removed
+- Scheduled and recurring jobs: name, schedule, what each does, where it delivers
+- Anything else that shapes how you work for me
+
+7. MANIFEST.md at the archive root
+- Every section, with the number of files in it
+- For transcripts: the file count and the total message count
+- The date of this build, the method used, and one dated changelog entry per run (append, never rewrite)
+- Every gap, exclusion, redaction and limitation, named honestly
+- The same counts block as profile/muse-profile.json, so the two can be compared
+
+VERIFICATION, before you report back
+- Count what you actually wrote and compare it with the counts block. The two must match.
+- Check every transcript file: the number of turn headings must equal the message count you report for that chat.
+- Validate every JSON file you wrote.
+- If a check fails, or something could not be retrieved, say exactly what and why. Never call the archive complete when it is not.
+
+ON EVERY RUN, first or repeat
+- If no archive exists, build it complete, including any kind of data this prompt does not name.
+- If it exists, update it in place: append new messages, refresh changed files, add new chats, apps and data, remove files that no longer exist. Keep the same paths and folder names.
+- Never write a second copy of anything (no -copy, -v2, -final files, no duplicates under another folder).
+- Append one dated entry to the MANIFEST changelog.
+
+UPDATES ONLY, when I paste a transfer code
+- If my message contains a line like SINCE: 2026-11-18T17:42:03Z, this is an update, not a rebuild.
+- Include only what is new or changed since that time: chats with newer messages, and notes, goals, documents, files and app folders whose files changed after it. Use message timestamps and file modification times, and add a 10 minute safety margin.
+- Set "scope": "delta" and "since_code": "<the code>" in profile/muse-profile.json, and make the counts block describe only this delta.
+- Paths, header formats, the MANIFEST fields and everything else stay exactly the same. Files that did not change are not re-sent.
+
+REPORT BACK
+- Paste a muse-profile JSON block with the profile fields and the counts.
+- List what you created or updated, with the verified totals per section, plus every gap and redaction.
+- Confirm everything is saved inside your exportable workspace.
+- Tell me how to send it: Muse Settings -> Data controls -> Export data, download the .zip file, then upload it in MiniMuse under Settings -> Import & export.`;
+
 
 type AppsChoice = ImportOptions["apps"];
 type MainChoice = ImportOptions["main_chat"];
@@ -99,6 +155,7 @@ export function summaryOf(result: ImportResult, t: (key: string, vars?: Record<s
   const bits: string[] = [];
   if (result.profile_updated) bits.push(t("AI profile & user details linked"));
   if (result.avatar_files) bits.push(t("{n} avatar icons & animations", { n: String(result.avatar_files) }));
+  if (result.avatar_moods) bits.push(t("{n} avatar moods ready", { n: String(result.avatar_moods) }));
   if (result.threads_created) bits.push(t("{n} new chats", { n: String(result.threads_created) }));
   if (result.threads_merged) bits.push(t("{n} chats merged", { n: String(result.threads_merged) }));
   if (result.events_added) bits.push(t("{n} messages added", { n: String(result.events_added) }));
@@ -126,8 +183,11 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
   const [backgroundMemory, setBackgroundMemory] = useState(true);
   const [apps, setApps] = useState<AppsChoice>("both");
   const [mainChat, setMainChat] = useState<MainChoice>("side");
+  const [keepCopy, setKeepCopy] = useState(true);
   const [busy, setBusy] = useState<"file" | "text" | "export" | "bundle" | "">("");
   const [result, setResult] = useState<ImportResult | null>(null);
+  const [copies, setCopies] = useState<KeptCopy[]>([]);
+  const [removing, setRemoving] = useState("");
   const [copied, setCopied] = useState(false);
   const [copiedBundle, setCopiedBundle] = useState(false);
   const prompt = MUSE_PROMPT;
@@ -137,7 +197,35 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
     background_memory: backgroundMemory,
     apps,
     main_chat: mainChat,
+    keep_copy: keepCopy,
   });
+
+  // the originals kept from earlier transfers: listed so they can be read again or deleted
+  const reloadCopies = () => {
+    api
+      .importCopies()
+      .then(setCopies)
+      .catch(() => setCopies([]));
+  };
+
+  useEffect(() => {
+    reloadCopies();
+    const kick = () => reloadCopies();
+    window.addEventListener("nanomuse:import-finished", kick);
+    return () => window.removeEventListener("nanomuse:import-finished", kick);
+  }, []);
+
+  const removeCopy = async (name: string) => {
+    setRemoving(name);
+    try {
+      await api.deleteImportCopy(name);
+      setCopies((list) => list.filter((c) => c.name !== name));
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setRemoving("");
+    }
+  };
 
   const run = async (what: () => Promise<ImportResult>, kind: "file" | "text") => {
     setBusy(kind);
@@ -290,6 +378,40 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
         <MuseCaption className="pb-1">
           {t("A side chat is the safe pick. Becomes the main chat sets the current main chat aside as a side chat, untouched. Merges into the main chat interleaves both histories by message time.")}
         </MuseCaption>
+        <MuseDivider inset={52} />
+        <MuseSwitchRow label={t("Keep the original archive")} checked={keepCopy} onChange={setKeepCopy} />
+        <MuseDivider inset={16} />
+        <MuseCaption>
+          {t("The .zip you send stays in the workspace, exactly as it arrived, next to a report of what the import found. That lets the agent re-check the original later. Delete it whenever you like; the imported chats do not depend on it.")}
+        </MuseCaption>
+        {copies.length > 0 && (
+          <div className="px-4 pb-2 pt-1">
+            {copies.map((copy) => (
+              <div key={copy.name} className="flex items-center gap-2 border-t border-border/60 py-2 first:border-t-0">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] text-fg/90">{copy.name}</p>
+                  <p className="text-[11.5px] text-muted">
+                    {(copy.size / (1024 * 1024)).toFixed(1)} MB
+                    {copy.report ? ` · ${t("verification report")}` : ""}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label={t("Delete {name}", { name: copy.name })}
+                  disabled={removing === copy.name}
+                  onClick={() => void removeCopy(copy.name)}
+                  className="shrink-0 rounded-full p-1.5 text-muted transition active:bg-surface-2 disabled:opacity-50"
+                >
+                  {removing === copy.name ? (
+                    <Loader2 size={15} className="animate-spin" />
+                  ) : (
+                    <Trash2 size={15} />
+                  )}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="px-4 pb-4 pt-1">
           <button
             type="button"
@@ -340,6 +462,27 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
           <span className="text-accent">{summaryOf(result, t)}</span>
           {result.note ? ` ${result.note}` : ""}
         </MuseCaption>
+      )}
+      {result?.verify && (
+        <MuseCard className="mt-2">
+          <div className="px-4 py-3">
+            <p className="text-[13.5px] text-fg/90">
+              {result.verify.ok
+                ? t("Everything the archive declares is here: every section matched.")
+                : t("Some sections did not match what the archive declares. The gaps are named below.")}
+            </p>
+            <ul className="mt-1.5 space-y-0.5">
+              {result.verify.lines.map((line) => (
+                <li key={line} className="text-[12px] leading-[17px] text-muted">
+                  {line}
+                </li>
+              ))}
+            </ul>
+            <p className="pt-2 text-[12px] text-muted">
+              {t("The same report is saved in the workspace, next to the kept original.")}
+            </p>
+          </div>
+        </MuseCard>
       )}
 
       {/* ---- Export (the Settings page only) ---- */}

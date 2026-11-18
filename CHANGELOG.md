@@ -3,6 +3,17 @@
 All notable changes to nanoMuse. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Unreleased changes are on `main`.
 
 ## [Unreleased]
+### Added
+- Import & export: a **Keep the original archive** switch. The uploaded ZIP is stored byte for byte under `workspace/imports/`, next to a verification report, and both are listed on the same screen with a delete button. The agent can re-read the source later; the imported chats never depend on it.
+- Muse import reads the new export archive completely: the profile and user details, the avatar bundle (every file, subfolders kept) plus the idle / working / waiting / happy / error stills and clips the app animates, transcripts in every header shape Muse writes, apps with their own data, notes, goals, documents, uploads, and the system folder.
+- Muse import verifies itself: when the archive declares its own `counts`, the result names each section, what the archive promised and what actually landed, and writes the same report to the workspace. A section short of its declared count is reported as a gap instead of being called complete.
+- The Muse prompt was rewritten for the new archive format: inventory before building, a catch-all rule, one exact transcript header shape, a required counts block, no dependency or build-cache folders, `null` instead of invented values, and an update mode for later transfers (`SINCE: <code>`).
+
+### Fixed
+- Muse import: a conversation carried twice in one archive (the archive's own copy and Muse's working copy) is recognized by its chat id and kept as one chat, with any extra messages kept.
+- Muse import: a second run of the same archive stores no memory file twice and no longer doubles the search index.
+- Muse import: goal notes whose filename contains "transcript" are notes, not chats; documents that happen to be HTML are documents, not junk apps; hidden files that carry content (a fixture, a dotfile config) are no longer dropped, while half-written uploads and caches still are.
+- Muse import: avatar clips are streamed instead of being cut off at the text cap, and the mood stills/clips are found even when the bundle keeps them in subfolders.
 
 ## [1.2.4] - 2026-11-17
 ### Added

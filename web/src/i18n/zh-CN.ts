@@ -2356,6 +2356,17 @@ const zhCN: Record<string, string> = {
   "Merges into the main chat": "合并进主聊天",
   "A side chat is the safe pick. Becomes the main chat sets the current main chat aside as a side chat, untouched. Merges into the main chat interleaves both histories by message time.":
     "作为侧聊是最稳妥的选择。成为主聊天会把当前主聊天原封不动地放到一边变成侧聊。合并进主聊天会按消息时间把两段历史交错排在一起。",
+  "Keep the original archive": "保留原始压缩包",
+  "The .zip you send stays in the workspace, exactly as it arrived, next to a report of what the import found. That lets the agent re-check the original later. Delete it whenever you like; the imported chats do not depend on it.":
+    "你发来的 .zip 会原样留在工作区里，旁边还有一份导入结果的核对报告，方便智能体以后重新检查原件。你随时可以删掉它，导入的聊天不依赖它。",
+  "verification report": "核对报告",
+  "{n} avatar moods ready": "{n} 个形象表情已就绪",
+  "Everything the archive declares is here: every section matched.":
+    "压缩包声明的内容都在：每个部分都对上了。",
+  "Some sections did not match what the archive declares. The gaps are named below.":
+    "有些部分和压缩包声明的不一致，差距列在下面。",
+  "The same report is saved in the workspace, next to the kept original.":
+    "同一份报告也保存在工作区里，就在保留的原件旁边。",
   "Adding to your chats...": "正在添加到你的聊天...",
   "Import failed": "导入失败",
   "Import failed: {error}": "导入失败：{error}",

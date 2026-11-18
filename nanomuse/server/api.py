@@ -50,6 +50,8 @@
     GET  /api/data/export                 the agent's data as one zip
     POST /api/data/import?name=           import a file (Muse export zip, transcript, nanoMuse export): the bytes as the body
     POST /api/data/import/text?name=      import pasted text: the text as the body
+    GET  /api/data/import/copies          the originals kept under workspace/imports/ after a transfer
+    DELETE /api/data/import/copies/{name} one kept file removed at the person's request
     GET  /api/update (?refresh=1)         installed and latest release (nanomuse.cn/dl first, GitHub second; a day's cache)
     GET  /api/avatar                      the avatar studio: can a face be drawn, the session under way
     POST /api/avatar/begin {description, style?}  a session: the card with the cost in the chat
@@ -77,6 +79,7 @@ import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -4425,11 +4428,14 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         background_memory: bool = Query(True),
         apps: str = Query("both"),
         main_chat: str = Query("side"),
+        keep_copy: bool = Query(True),
         background: bool = Query(False),
     ) -> dict[str, Any]:
         """Import one file (a Muse export zip, a nanoMuse export zip, or a transcript):
         the bytes as the request body (no multipart), the file name in ``name``. The four
         switches are the Import & export screen's; the reply says what was found and done.
+        ``keep_copy`` moves the upload itself to ``workspace/imports/`` instead of
+        deleting it after the transfer, so the original can be re-checked later.
         Large archives are streamed to a staging file and read there, never held in memory."""
         try:
             options = data_import.ImportOptions(
@@ -4437,6 +4443,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                 background_memory=background_memory,
                 apps=apps,
                 main_chat=main_chat,
+                keep_copy=keep_copy,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -4483,6 +4490,17 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                         )
                         job.phase = "applying"
                         job.result = data_import.apply_plan(svc, plan, options)
+                        if keep_copy:
+                            try:
+                                job.result["kept_copy"] = await asyncio.to_thread(
+                                    data_import.keep_original, svc, staging, name
+                                )
+                            except OSError as exc:
+                                logger.warning("could not keep the import copy: %s", exc)
+                                job.result["note"] = (
+                                    str(job.result.get("note") or "")
+                                    + f" The original could not be kept: {exc}"
+                                ).strip()
                         job.phase = "done"
                     except Exception as exc:  # the job reports it; the server keeps running
                         logger.warning("background import failed: %s", exc)
@@ -4502,7 +4520,18 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             plan = await asyncio.to_thread(
                 data_import.ingest_path, svc, staging, name, options
             )
-            return data_import.apply_plan(svc, plan, options)
+            result = data_import.apply_plan(svc, plan, options)
+            if keep_copy:
+                try:
+                    result["kept_copy"] = await asyncio.to_thread(
+                        data_import.keep_original, svc, staging, name
+                    )
+                except OSError as exc:
+                    logger.warning("could not keep the import copy: %s", exc)
+                    result["note"] = (
+                        str(result.get("note") or "") + f" The original could not be kept: {exc}"
+                    ).strip()
+            return result
         finally:
             if not staging_kept:
                 staging.unlink(missing_ok=True)
@@ -4519,6 +4548,49 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         if job is None:
             raise HTTPException(404, "no such import")
         return job.view()
+
+    @app.get("/api/data/import/copies", dependencies=dep)
+    async def import_copies() -> list[dict[str, Any]]:
+        """The originals kept under ``workspace/imports/`` after a transfer, newest
+        first, each with its verification report flagged - nothing here was deleted."""
+        root = svc.workspace() / "imports"
+        out: list[dict[str, Any]] = []
+        if root.is_dir():
+            for path in root.iterdir():
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                if not path.is_file():
+                    continue
+                out.append(
+                    {
+                        "name": path.name,
+                        "size": stat.st_size,
+                        "modified": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(
+                            timespec="seconds"
+                        ),
+                        "report": path.name.endswith("-verify.md"),
+                    }
+                )
+        out.sort(key=lambda entry: entry["modified"], reverse=True)
+        return out
+
+    @app.delete("/api/data/import/copies/{name}", dependencies=dep)
+    async def delete_import_copy(name: str) -> dict[str, Any]:
+        """One kept file removed at the person's request - the imported data itself is
+        never touched by this. The name must be a plain file name inside imports/."""
+        if not name or Path(name).name != name:
+            raise HTTPException(400, "bad file name")
+        root = (svc.workspace() / "imports").resolve()
+        target = (root / name).resolve()
+        if target.parent != root or not target.is_file():
+            raise HTTPException(404, "no such kept file")
+        try:
+            target.unlink()
+        except OSError as exc:
+            raise HTTPException(500, f"could not delete the file: {exc}") from exc
+        return {"ok": True, "name": name}
 
     @app.post("/api/data/import/text", dependencies=dep)
     async def import_text(
