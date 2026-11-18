@@ -20,7 +20,16 @@ BUILTIN_NOTES: dict[str, dict[str, Any]] = {
     "1.2.4": {
         "title": "The watch looks like Muse again",
         "added": [
-            "Watch home: the agent
+            "Watch home: the agent's face full-bleed with round call / chat / voice buttons",
+            "Watch chat: indigo bubbles, keyboard + mic row, approvals in the conversation",
+            "The agent's avatar travels to the watch via /api/watch/state + the files API",
+        ],
+        "improved": [],
+        "fixed": [
+            "The watch no longer shows a plain button list: it now matches the original Muse watch app",
+        ],
+    },
+    "1.2.3": {
         "title": "Google sign-in simplified",
         "added": [],
         "improved": [
