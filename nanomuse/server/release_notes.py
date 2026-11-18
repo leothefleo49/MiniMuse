@@ -17,7 +17,10 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
-    "1.2.3": {
+    "1.2.4": {
+        "title": "The watch looks like Muse again",
+        "added": [
+            "Watch home: the agent
         "title": "Google sign-in simplified",
         "added": [],
         "improved": [

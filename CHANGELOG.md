@@ -4,6 +4,12 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-11-17
+### Added
+- The watch app now looks like the original Muse watch: the agent's face fills the round screen, with round call / chat / voice buttons at the bottom, a glowing status, and a blue arc while the agent connects or works.
+- A chat screen on the watch: indigo message bubbles, a keyboard + mic row, approvals and quick actions right in the conversation.
+- The server sends the agent's avatar to the watch, which fetches the face through the files API.
+
 ## [1.2.3] - 2026-11-17
 ### Changed
 - Google sign-in: the client id and secret fields are now behind an 'Advanced' toggle; a default public client id ships with the app so most users never need them.
