@@ -222,6 +222,17 @@ export function DevicesScreen() {
           <p className="px-1 pt-3 text-[12.5px] leading-[18px] text-muted">{t("A chat addressed to a device runs there; you see every step here and answer its approvals.")}</p>
         </div>
 
+        {state.syncProgress && (
+          <div className="px-4 pt-4">
+            <div className="flex items-center gap-2 rounded-2xl bg-accent/12 px-3 py-2 text-[12.5px] text-accent">
+              <Loader2 size={13} className="animate-spin" />
+              {t("Syncing with {peer}: {n} messages so far...", {
+                peer: state.syncProgress.peer,
+                n: String(state.syncProgress.applied),
+              })}
+            </div>
+          </div>
+        )}
         {peers.length > 0 && (
           <div className="px-4 pt-4">
             <SectionLabel>{t("Paired directly")}</SectionLabel>

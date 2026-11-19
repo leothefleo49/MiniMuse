@@ -1692,8 +1692,35 @@ class ConversationSync:
 
         self._peer_task = loop.create_task(_run(), name="sync-peers")
 
+    def _refresh_peer_urls(self) -> None:
+        """A phone's Wi-Fi address changes; its beacon keeps the same device id. Take the
+        address from the beacon so a paired device that is clearly on the Wi-Fi is not stuck
+        'offline' at an address it no longer has."""
+        nearby = self.discovery.list_nearby()
+        if not nearby:
+            return
+        by_id = {str(n.get("id") or ""): n for n in nearby if n.get("id")}
+        changed = False
+        for peer in self.peers:
+            pid = str(peer.get("id") or "")
+            found = by_id.get(pid)
+            if not found:
+                continue
+            urls = found.get("urls") or []
+            new = str((urls[0] if urls else found.get("url")) or "").strip().rstrip("/")
+            old = str(peer.get("url") or "").strip().rstrip("/")
+            if new and new != old:
+                peer["url"] = new
+                changed = True
+        if changed:
+            from nanomuse.sync.peer import save_pairs
+
+            save_pairs(self.svc.data_dir, self.peers)
+            self.reload_peers()
+
     async def sync_peers(self) -> dict[str, Any]:
         """Bidirectionally pull, merge, and push with every paired device in pairs.json."""
+        self._refresh_peer_urls()
         self.reload_peers()
         self.mirror_local_now()
         if not self.enabled or not self.peers:
@@ -1728,18 +1755,22 @@ class ConversationSync:
         cur = peer_cursors.setdefault(pkey, {"in": 0, "out": 0})
         in_seq = int(cur.get("in") or 0)
         out_seq = int(cur.get("out") or 0)
-        client = SyncClient(CloudClient(peer["url"]))
-        client.cloud.api_key = peer.get("token") or ""
-        applied = 0
-        pushed = 0
+        peer_name = str(peer.get("name") or peer.get("id") or "device")
         # Ensure peer's sync store is turned on
         try:
             await client.set_enabled(True)
         except Exception:
             pass
-        # 1. Pull missed changes from peer in seq order
-        for _ in range(MAX_ROUNDS):
-            out = await client.changes(in_seq, PAGE, scope=self.scope)
+        # 1. Pull missed changes from peer in seq order. The first pass of a device that
+        # has never synced (or has just been re-paired) asks for the tail first, so the
+        # newest chats and messages land before the older history: a list that only ever
+        # grew from the oldest entry was never readable. A tail pass returns cursor 0 for
+        # the next round, which then walks the whole history.
+        first_round = True
+        for _round in range(MAX_ROUNDS):
+            tail = TAIL if (first_round and in_seq == 0 and not cur.get("tail_done")) else 0
+            first_round = False
+            out = await client.changes(in_seq, PAGE, scope=self.scope, tail=tail)
             # a different store behind the same peer (paired again, or the other app now
             # uses another data folder) has a new sequence space: a saved cursor that
             # points into the old one would silently skip everything
@@ -1753,6 +1784,7 @@ class ConversationSync:
                     out_seq = 0
                     cur["in"] = 0
                     cur["out"] = 0
+                    cur["tail_done"] = False
                     self._save()
             convs = [c for c in out.get("conversations") or [] if isinstance(c, dict)]
             msgs = [m for m in out.get("messages") or [] if isinstance(m, dict)]
@@ -1769,11 +1801,31 @@ class ConversationSync:
             finally:
                 self._applying = False
             self._mirror_pulled_into_local_store(convs, msgs)
-            in_seq = max(in_seq, int(out.get("cursor") or 0))
+            if tail:
+                cur["tail_done"] = True
+                in_seq = 0
+            else:
+                in_seq = max(in_seq, int(out.get("cursor") or 0))
             cur["in"] = in_seq
             self._save()
+            if getattr(self.svc, "bus", None):
+                self.svc.bus.publish(
+                    {
+                        "kind": "sync_progress",
+                        "peer": peer_name,
+                        "applied": applied,
+                        "done": False,
+                    }
+                )
             if not out.get("more"):
+                if tail:
+                    continue
                 break
+        if getattr(self.svc, "bus", None):
+            self.svc.bus.publish(
+                {"kind": "sync_progress", "peer": peer_name, "applied": applied, "done": True}
+            )
+
         # 2. Push local deltas from local_store to peer (including retries on main_exists)
         self.mirror_local_now()
         device_id = self.svc.hub.device_id

@@ -17,6 +17,16 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.12": {
+        "title": "The imported avatar shows up instead of a broken image",
+        "added": [
+            "The files route falls back to normal authentication when a signed link no longer matches, so a stale avatar link still loads",
+        ],
+        "improved": [
+            "A profile avatar whose signed link had expired now loads through the session instead of showing a broken image",
+        ],
+        "fixed": [],
+    },
     "1.2.11": {
         "title": "The real message count on long imported chats",
         "added": [

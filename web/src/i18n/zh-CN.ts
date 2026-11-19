@@ -3175,6 +3175,8 @@ const zhCN: Record<string, string> = {
   "Paired with {peer}. Syncing...": "已与 {peer} 配对，正在同步...",
   "Linked to {peer}. You can finish setup.": "已连接到 {peer}，可以完成设置了。",
   "another device": "另一台设备",
+  "Synced {n} messages with {peer}.": "已与 {peer} 同步 {n} 条消息。",
+  "Syncing with {peer}: {n} messages so far...": "正在与 {peer} 同步：已同步 {n} 条消息...",
   "Uploading {name}: {n}%": "正在上传 {name}：{n}%",
   "Upload done. Reading the archive...": "上传完成，正在读取压缩包...",
   "Pair with your PC or phone right now to copy your models, API keys, profile, AI avatar/animations, and chats — no need to enter them twice.": "立即与你的电脑或手机配对，一键复制模型、API 密钥、档案、AI 形象/动画及对话，无需重复输入。",

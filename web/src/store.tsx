@@ -211,6 +211,8 @@ export interface AppState {
   firstrun: FirstRunView | null;
   trashCount: number;
   sync: SyncState | null;
+  /** A sync pass is in flight with a paired device: how many messages have landed so far. */
+  syncProgress: { peer: string; applied: number; done: boolean } | null;
   appUpdate: AppUpdateLiveState | null;
   /**
    * `?ui=lite`: the app as it is shown inside the simulated phone of the showcase
@@ -324,6 +326,7 @@ export const initial: AppState = {
   firstrun: null,
   trashCount: 0,
   sync: null,
+  syncProgress: null,
   appUpdate: null,
 };
 
@@ -660,6 +663,24 @@ function applyWs(state: AppState, msg: WsMessage): AppState {
       return { ...state, trashCount: msg.count };
     case "sync":
       return { ...state, sync: msg.sync };
+    case "sync_progress":
+      if (msg.done) {
+        const n = Number(msg.applied ?? 0);
+        const peer = String(msg.peer ?? "");
+        return {
+          ...state,
+          syncProgress: null,
+          toast: n > 0 ? t("Synced {n} messages with {peer}.", { n: String(n), peer }) : state.toast,
+        };
+      }
+      return {
+        ...state,
+        syncProgress: {
+          peer: String(msg.peer ?? ""),
+          applied: Number(msg.applied ?? 0),
+          done: false,
+        },
+      };
     case "paired":
       return { ...state, toast: t("Paired with {peer}.", { peer: msg.name }) };
     case "app_update":

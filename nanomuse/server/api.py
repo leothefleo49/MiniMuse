@@ -1025,12 +1025,22 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
 
     def auth_or_signed(request: Request) -> None:
         """A header as everywhere — or, for the bytes an ``<img>``/``<video>``/``<iframe>``
-        fetches, a link the client signed with its token (:mod:`nanomuse.server.tickets`)."""
+        fetches, a link the client signed with its token (:mod:`nanomuse.server.tickets`).
+
+        A signed link that has expired (or was signed with a stale token) falls back to
+        normal authentication instead of a hard 401: the browser caches the link's text for
+        hours, so a stale one must still load for an authenticated session, not show a
+        broken image."""
         query = request.query_params
         if svc.token and "sig" in query and "authorization" not in request.headers:
             if tickets.check(svc.token, request.scope["path"], query.get("exp"), query.get("sig")):
                 return
-            raise HTTPException(status_code=401, detail="this link has expired")
+            # expired or mismatched signature: try the session like any other request
+            try:
+                auth(request)
+                return
+            except HTTPException:
+                raise HTTPException(status_code=401, detail="this link has expired") from None
         auth(request)
 
     def sync_auth(request: Request) -> None:
