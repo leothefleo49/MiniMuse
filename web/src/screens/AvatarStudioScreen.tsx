@@ -1,8 +1,9 @@
 import { Check, Loader2, MoreHorizontal, RefreshCw, Sparkles, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, fileUrl } from "../api";
-import { DRAGON, dragonClipUrl, dragonUrl, isDragon, studioClipUrl, studioUrl } from "../avatars";
-import { AVATAR_STYLES } from "../components/AvatarPicker";
+import { DRAGON, isDragon } from "../avatars";
+import { Avatar } from "../components/Avatar";
+import { AVATAR_STYLES, AvatarPicker, type AvatarChoice } from "../components/AvatarPicker";
 import { PageBar } from "../components/BackBar";
 import { MuseRoundButton } from "../components/MuseHeader";
 import { primaryBtn, secondaryBtn } from "../components/Form";
@@ -11,7 +12,7 @@ import { useMenuKeys } from "../components/useMenuKeys";
 import { getLocale, useT } from "../i18n";
 import { regionOf, unavailableLine } from "../providers";
 import { useStore } from "../store";
-import type { StudioSession, StudioView } from "../types";
+import type { Profile, Status, StudioSession, StudioView } from "../types";
 import { cx } from "../util";
 
 const MOODS = ["idle", "working", "waiting", "happy", "error"] as const;
@@ -138,7 +139,29 @@ export function AvatarStudioScreen() {
   })();
 
   const styleLabel = (id: string | null | undefined) => AVATAR_STYLES.find((s) => s.id === id)?.label;
-  const provider = view?.cloud ? "MiniMuse Cloud" : providerName(view?.host ?? "", t);
+  const provider = view?.cloud ? "nanoMuse Cloud" : providerName(view?.host ?? "", t);
+
+  const saveAvatarChoice = async (next: AvatarChoice) => {
+    try {
+      await api.updateSettings({
+        profile: {
+          avatar: next.avatar,
+          emoji: next.emoji,
+          color: next.color,
+          avatar_bg_mode: next.avatar_bg_mode,
+          avatar_bg_color: next.avatar_bg_color,
+          avatar_bg_image: next.avatar_bg_image,
+          avatar_border_mode: next.avatar_border_mode,
+          avatar_border_color: next.avatar_border_color,
+          avatar_border_glow: next.avatar_border_glow,
+          avatar_situation_clips: next.avatar_situation_clips,
+        },
+      });
+      await refreshSettings();
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -194,7 +217,7 @@ export function AvatarStudioScreen() {
       <div className="flex-1 overflow-y-auto px-4 pb-8 space-y-5">
         {/* the face as it is */}
         <div className="flex flex-col items-center pt-2 text-center">
-          <FacePreview avatar={profile?.avatar} emoji={profile?.emoji} color={profile?.color} name={name} />
+          <FacePreview profile={profile} name={name} />
           {drawn && (
             <div className="mt-0.5 max-w-sm text-[12.5px] text-muted">
               {[drawn.description, styleLabel(drawn.style) && t(styleLabel(drawn.style) as string)].filter(Boolean).join(" · ")}
@@ -234,6 +257,28 @@ export function AvatarStudioScreen() {
 
         {/* the face is done: a moment of delight, and the one fair ask for a star here (once) */}
         {stage === "done" && poseErrors === 0 && <StarNudgeOnce moment="new_look" />}
+
+        {/* Direct appearance, background, border glow, situation animations & 3D model import */}
+        {profile && (
+          <section className="rounded-3xl border border-border/70 bg-surface p-4 shadow-sm space-y-3">
+            <h2 className="text-[17px] font-semibold">{t("Customize avatar, background & animations")}</h2>
+            <AvatarPicker
+              value={{
+                avatar: profile.avatar ?? DRAGON,
+                emoji: profile.emoji ?? "✨",
+                color: profile.color ?? "#0064d4",
+                avatar_bg_mode: profile.avatar_bg_mode ?? "theme",
+                avatar_bg_color: profile.avatar_bg_color ?? "",
+                avatar_bg_image: profile.avatar_bg_image ?? "",
+                avatar_border_mode: profile.avatar_border_mode ?? "theme",
+                avatar_border_color: profile.avatar_border_color ?? "",
+                avatar_border_glow: typeof profile.avatar_border_glow === "number" ? profile.avatar_border_glow : 60,
+                avatar_situation_clips: profile.avatar_situation_clips ?? {},
+              }}
+              onChange={(next) => void saveAvatarChoice(next)}
+            />
+          </section>
+        )}
 
         {/* describe a new one */}
         <section className="rounded-3xl border border-border/70 bg-surface p-4 shadow-sm space-y-3">
@@ -442,52 +487,41 @@ function MenuItem({ label, onClick, danger = false }: { label: string; onClick: 
 }
 
 /**
- * The face, large, cycling through its moods so you see what you have — idle a little
- * longer, the others two seconds each; a clip where the face has one, the still otherwise.
+ * The face, large, using the real <Avatar> component (with the user's background & soft radial
+ * border glow) and clickable situation pills so the preview stays steady instead of flashing
+ * between poses on a timer.
  */
-function FacePreview({ avatar, emoji, color, name }: { avatar?: string; emoji?: string; color?: string; name: string }) {
+function FacePreview({ profile, name }: { profile: Profile | null; name: string }) {
   const t = useT();
-  const [index, setIndex] = useState(0);
-  const mood = MOODS[index % MOODS.length];
-  const timer = useRef<number>(0);
-  useEffect(() => {
-    timer.current = window.setTimeout(() => setIndex((i) => (i + 1) % MOODS.length), mood === "idle" ? 2600 : 2000);
-    return () => window.clearTimeout(timer.current);
-  }, [index, mood]);
-  const dragon = isDragon(avatar);
-  const studio = !dragon && avatar ? avatar : null;
-  const still = dragon ? dragonUrl(mood) : studio ? studioUrl(studio, mood) : "";
-  const clip = dragon ? dragonClipUrl(mood) : studio ? studioClipUrl(studio, mood) : null;
-  const [broken, setBroken] = useState<Set<string>>(() => new Set());
-  const playable = clip && !broken.has(clip) ? clip : null;
+  const [previewState, setPreviewState] = useState<Status["state"]>("idle");
+  const status: Status = { state: previewState, detail: "", thread: "main" };
   return (
     <>
-      <div
-        key={avatar}
-        className="avatar-pop h-[148px] w-[148px] overflow-hidden rounded-full"
-        style={still ? { background: "#f1efeb" } : { background: `linear-gradient(135deg, ${color ?? "#0064d4"}, color-mix(in srgb, ${color ?? "#0064d4"} 60%, #ffffff))` }}
-      >
-        {playable ? (
-          <video
-            key={playable}
-            src={playable}
-            poster={still}
-            autoPlay
-            loop
-            muted
-            playsInline
-            disablePictureInPicture
-            onError={() => setBroken((s) => new Set(s).add(playable))}
-            className="h-full w-full object-cover"
-          />
-        ) : still ? (
-          <img src={still} alt="" draggable={false} className="h-full w-full object-cover" />
-        ) : (
-          <span className="flex h-full w-full items-center justify-center text-[64px] leading-none">{emoji ?? "✨"}</span>
-        )}
+      <div className="p-2 overflow-visible">
+        <Avatar profile={profile} status={status} size={148} />
       </div>
-      <div className="mt-3 text-[20px] font-semibold tracking-tight">{name}</div>
-      <div className="mt-1 text-[13px] text-muted">{t(MOOD_LABEL[mood])}</div>
+      <div className="mt-2 text-[20px] font-semibold tracking-tight">{name}</div>
+      <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5">
+        {(
+          [
+            { id: "idle", label: MOOD_LABEL.idle },
+            { id: "working", label: MOOD_LABEL.working },
+            { id: "waiting", label: MOOD_LABEL.waiting },
+          ] as const
+        ).map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            onClick={() => setPreviewState(m.id)}
+            className={cx(
+              "rounded-full border px-3 py-1 text-[12px] transition-colors",
+              previewState === m.id ? "border-accent bg-accent/10 text-accent font-medium" : "border-border text-muted hover:text-fg",
+            )}
+          >
+            {t(m.label)}
+          </button>
+        ))}
+      </div>
     </>
   );
 }

@@ -771,7 +771,7 @@ interface StoreValue {
   state: AppState;
   dispatch: (a: Action) => void;
   send: (thread: string, text: string, files?: string[], model?: string) => Promise<void>;
-  /** *Use MiniMuse Cloud this time*: the words again, one turn on the account's model; rejects with the runtime's sentence */
+  /** *Use nanoMuse Cloud this time*: the words again, one turn on the account's model; rejects with the runtime's sentence */
   sendViaCloud: (thread: string, text: string, files?: string[]) => Promise<void>;
   decide: (id: string, approved: boolean, scope?: string) => Promise<void>;
   loadEvents: (thread: string, before?: string) => Promise<void>;

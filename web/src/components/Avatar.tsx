@@ -9,12 +9,11 @@ import { cx } from "../util";
 /**
  * The agent's face: the dragon (posed by what the agent is doing), a face drawn in the avatar
  * studio or an emoji on a colour. The dragon and a studio face play a short looping clip per
- * mood where there is one — a head shake at rest, headphones and a laptop while working, a
- * crystal ball while waiting, a star when pleased, the same clips the phone plays — and show
- * the still otherwise: small sizes, lists and pickers, a face without clips, or a clip that is
- * still syncing. Supports matching the active app theme (light/dark/custom), a custom background
- * colour, or a custom background image (with real-time border-connected flood-fill keying of
- * the studio backdrop), plus a separate border color & glow setting.
+ * mood where there is one — and show the still otherwise. Supports:
+ * - Avatar background: Match theme, Classic disc (original studio), Custom color, or Custom image
+ *   (with smooth, aspect-preserving, border-connected studio-white keying on a composited canvas)
+ * - Separate Border color & soft radial glow (never a harsh straight ring): Match theme,
+ *   Custom border color, or No border, with adjustable glow intensity.
  */
 
 /** Below this the clip is not worth the bytes: the still shows. */
@@ -58,12 +57,32 @@ function resolveBgImageUrl(raw: string | undefined): string {
   return fileUrl(s);
 }
 
+/** Draw an image or video onto a square canvas with true CSS `object-cover` center-cropping (never squished). */
+function drawObjectCover(
+  ctx: CanvasRenderingContext2D,
+  source: HTMLVideoElement | HTMLImageElement,
+  dim: number,
+): boolean {
+  const sw = source instanceof HTMLVideoElement ? source.videoWidth : source.naturalWidth;
+  const sh = source instanceof HTMLVideoElement ? source.videoHeight : source.naturalHeight;
+  if (!sw || !sh) return false;
+  const side = Math.min(sw, sh);
+  const sx = (sw - side) / 2;
+  const sy = (sh - side) / 2;
+  ctx.drawImage(source, sx, sy, side, side, 0, 0, dim, dim);
+  return true;
+}
+
 /**
- * Border-connected flood-fill background keyer: removes the contiguous studio backdrop
- * connected to the outer perimeter of the frame while keeping interior white/light details
- * (such as chest emblems, eyes, and highlights) 100% opaque.
+ * Smooth, flicker-free studio-white border-connected keyer.
+ * - Checks ONLY the top studio backdrop points (top-left, top-center, top-right) so the moving
+ *   character/aura near the bottom/sides never disturbs backdrop detection.
+ * - Only keys if at least 2 of 3 top points are genuine bright studio white (min > 210, chroma < 26).
+ *   Dark-background or custom-colored clips are untouched (returns false so the raw video shows).
+ * - Uses a continuous smooth alpha ramp over lightness & chroma (no binary threshold cliff) so
+ *   H.264 MP4 compression noise never flickers grainy black/white pixels.
  */
-function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean {
+function keyWhiteStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean {
   let imgData: ImageData;
   try {
     imgData = ctx.getImageData(0, 0, dim, dim);
@@ -71,32 +90,27 @@ function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean 
     return false;
   }
   const data = imgData.data;
-  const sampleCoords = [
-    [2, 2],
-    [dim - 3, 2],
-    [2, dim - 3],
-    [dim - 3, dim - 3],
-    [dim >> 1, 2],
-    [2, dim >> 1],
-    [dim - 3, dim >> 1],
+
+  const topSamples = [
+    (2 * dim + 2) * 4,
+    (2 * dim + (dim >> 1)) * 4,
+    (2 * dim + (dim - 3)) * 4,
   ];
-  let sumR = 0;
-  let sumG = 0;
-  let sumB = 0;
-  let count = 0;
-  for (const [sx, sy] of sampleCoords) {
-    const idx = (sy * dim + sx) * 4;
-    if (data[idx + 3] < 40) continue;
-    sumR += data[idx];
-    sumG += data[idx + 1];
-    sumB += data[idx + 2];
-    count++;
+  let brightWhiteCount = 0;
+  for (const idx of topSamples) {
+    const r = data[idx];
+    const g = data[idx + 1];
+    const b = data[idx + 2];
+    const a = data[idx + 3];
+    if (a < 40) return true; // already transparent PNG/WebP
+    const mn = Math.min(r, g, b);
+    const mx = Math.max(r, g, b);
+    if (mn >= 208 && mx - mn <= 26) brightWhiteCount++;
   }
-  if (count === 0) return true; // already transparent
-  const bgR = Math.round(sumR / count);
-  const bgG = Math.round(sumG / count);
-  const bgB = Math.round(sumB / count);
-  const isBrightWhiteBg = bgR > 205 && bgG > 205 && bgB > 205;
+  if (brightWhiteCount < 2) {
+    // Not a bright white studio backdrop (e.g. dark or custom-scene clip) — do not key
+    return false;
+  }
 
   const total = dim * dim;
   const visited = new Uint8Array(total);
@@ -104,23 +118,20 @@ function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean 
   let head = 0;
   let tail = 0;
 
-  const isBackdropPixel = (p: number): boolean => {
+  const isStudioCandidate = (p: number): boolean => {
     const i = p * 4;
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
-    const dist = Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB);
-    if (dist <= 76) return true;
-    if (isBrightWhiteBg && r > 192 && g > 192 && b > 192) {
-      const spread = Math.max(r, g, b) - Math.min(r, g, b);
-      if (spread <= 28) return true;
-    }
-    return false;
+    const lum = (r + g + b) * 0.333333;
+    if (lum < 190) return false;
+    const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+    return chroma <= 42;
   };
 
   const tryEnqueue = (p: number) => {
     if (visited[p] !== 0) return;
-    if (isBackdropPixel(p)) {
+    if (isStudioCandidate(p)) {
       visited[p] = 1;
       queue[tail++] = p;
     } else {
@@ -128,19 +139,32 @@ function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean 
     }
   };
 
-  // Seed perimeter pixels
+  // Seed top edge, plus upper/full left & right edges (avoiding bottom edge where body/desk sits)
   for (let x = 0; x < dim; x++) {
     tryEnqueue(x);
-    tryEnqueue((dim - 1) * dim + x);
   }
-  for (let y = 1; y < dim - 1; y++) {
+  for (let y = 1; y < dim; y++) {
     tryEnqueue(y * dim);
     tryEnqueue(y * dim + (dim - 1));
   }
 
   while (head < tail) {
     const p = queue[head++];
-    data[p * 4 + 3] = 0;
+    const i = p * 4;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const lum = (r + g + b) * 0.333333;
+    const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+
+    // Smooth continuous alpha ramp: pure studio white (lum >= 234, chroma <= 16) -> 0,
+    // transitioning smoothly through anti-aliased edge pixels down to lum=190 / chroma=42.
+    const lumT = Math.max(0, Math.min(1, (234 - lum) / 44));
+    const chT = Math.max(0, Math.min(1, (chroma - 16) / 26));
+    const keep = Math.max(lumT, chT);
+    const alpha = Math.round(keep * keep * 255);
+    data[i + 3] = alpha;
+
     const x = p % dim;
     const y = (p - x) / dim;
     if (x > 0) tryEnqueue(p - 1);
@@ -149,16 +173,17 @@ function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean 
     if (y < dim - 1) tryEnqueue(p + dim);
   }
 
-  // Soften 1px silhouette boundary pixels to eliminate any white halo fringe
+  // Soften 1px immediate boundary around character silhouette so edges blend smoothly
   for (let p = 0; p < total; p++) {
     if (visited[p] === 2) {
       const i = p * 4;
       const r = data[i];
       const g = data[i + 1];
       const b = data[i + 2];
-      const dist = Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB);
-      if (dist < 135) {
-        const factor = Math.max(0.15, dist / 135);
+      const lum = (r + g + b) * 0.333333;
+      const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+      if (lum > 170 && chroma < 54) {
+        const factor = Math.max(0.35, Math.min(1, (225 - lum) / 55));
         data[i + 3] = Math.round(data[i + 3] * factor);
       }
     }
@@ -166,6 +191,44 @@ function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean 
 
   ctx.putImageData(imgData, 0, 0);
   return true;
+}
+
+/** Paint the chosen opaque backdrop (theme, custom color, or custom image) onto the composite canvas. */
+function paintBackdrop(
+  ctx: CanvasRenderingContext2D,
+  dim: number,
+  bgMode: string,
+  bgColor: string,
+  isDark: boolean,
+  bgImg: HTMLImageElement | null,
+): void {
+  if (bgMode === "image" && bgImg && bgImg.complete && bgImg.naturalWidth > 0) {
+    drawObjectCover(ctx, bgImg, dim);
+    return;
+  }
+  if (bgMode === "color" && bgColor) {
+    const grad = ctx.createLinearGradient(0, 0, dim, dim);
+    grad.addColorStop(0, bgColor);
+    grad.addColorStop(1, isDark ? "#0f172a" : "#ffffff");
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(0, 0, dim, dim);
+    ctx.globalAlpha = 0.28;
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, dim, dim);
+    ctx.globalAlpha = 1;
+    return;
+  }
+  // Match theme
+  const grad = ctx.createRadialGradient(dim * 0.5, dim * 0.38, dim * 0.08, dim * 0.5, dim * 0.5, dim * 0.72);
+  if (isDark) {
+    grad.addColorStop(0, "#262933");
+    grad.addColorStop(1, "#121318");
+  } else {
+    grad.addColorStop(0, "#ffffff");
+    grad.addColorStop(1, "#eae6df");
+  }
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, dim, dim);
 }
 
 export function Avatar({
@@ -190,6 +253,8 @@ export function Avatar({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const offCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const bgImgRef = useRef<HTMLImageElement | null>(null);
   const [canvasReady, setCanvasReady] = useState(false);
 
   const mood = useMood(status);
@@ -202,7 +267,7 @@ export function Avatar({
   const borderMode = profile?.avatar_border_mode ?? "theme";
   const borderColor =
     borderMode === "color" ? profile?.avatar_border_color || color : "var(--accent, #6366f1)";
-  const borderGlowPct = Math.max(0, Math.min(100, profile?.avatar_border_glow ?? 55));
+  const borderGlowPct = Math.max(0, Math.min(100, profile?.avatar_border_glow ?? 60));
 
   // the dragon is the default: no profile yet, or a profile that names it (or a retired face)
   const dragon = !profile || isDragon(profile.avatar);
@@ -245,31 +310,64 @@ export function Avatar({
       : "";
 
   const shouldKeyBackdrop = (dragon || studio) && bgMode !== "default";
-  const canvasDim = Math.min(168, Math.max(72, Math.round(size * 1.6)));
+  const canvasDim = Math.min(180, Math.max(76, Math.round(size * 1.8)));
+
+  // Preload custom background image when bgMode === "image"
+  useEffect(() => {
+    if (bgMode !== "image" || !bgImageUrl || typeof Image === "undefined") {
+      bgImgRef.current = null;
+      return;
+    }
+    const im = new Image();
+    im.crossOrigin = "anonymous";
+    im.src = bgImageUrl;
+    bgImgRef.current = im;
+  }, [bgMode, bgImageUrl]);
 
   const paintKeyedSource = useCallback(
     (source: HTMLVideoElement | HTMLImageElement | null) => {
       if (!shouldKeyBackdrop || !source) return;
       const canvas = canvasRef.current;
       if (!canvas) return;
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      const ctx = canvas.getContext("2d");
       if (!ctx) return;
+
+      if (!offCanvasRef.current && typeof document !== "undefined") {
+        offCanvasRef.current = document.createElement("canvas");
+      }
+      const off = offCanvasRef.current;
+      if (!off) return;
+      if (off.width !== canvasDim || off.height !== canvasDim) {
+        off.width = canvasDim;
+        off.height = canvasDim;
+      }
+      const offCtx = off.getContext("2d", { willReadFrequently: true });
+      if (!offCtx) return;
+
       try {
-        ctx.clearRect(0, 0, canvasDim, canvasDim);
-        ctx.drawImage(source, 0, 0, canvasDim, canvasDim);
-        if (keyStudioBackdrop(ctx, canvasDim)) {
-          setCanvasReady(true);
+        offCtx.clearRect(0, 0, canvasDim, canvasDim);
+        if (!drawObjectCover(offCtx, source, canvasDim)) return;
+        const keyed = keyWhiteStudioBackdrop(offCtx, canvasDim);
+        if (!keyed) {
+          // Non-white/dark custom video: let raw object-cover video show directly without flicker
+          setCanvasReady(false);
+          return;
         }
+        // Composite chosen opaque backdrop + keyed character onto the visible canvas in one shot
+        ctx.clearRect(0, 0, canvasDim, canvasDim);
+        paintBackdrop(ctx, canvasDim, bgMode, bgColor, isDark, bgImgRef.current);
+        ctx.drawImage(off, 0, 0);
+        setCanvasReady(true);
       } catch {
-        /* ignore cross-origin or incomplete frame */
+        /* ignore incomplete frame or security error */
       }
     },
-    [shouldKeyBackdrop, canvasDim],
+    [shouldKeyBackdrop, canvasDim, bgMode, bgColor, isDark],
   );
 
   useEffect(() => {
-    setCanvasReady(false);
-  }, [clip, stillUrl, shouldKeyBackdrop]);
+    if (!shouldKeyBackdrop) setCanvasReady(false);
+  }, [shouldKeyBackdrop, studio, dragon]);
 
   useEffect(() => {
     if (!shouldKeyBackdrop || !clip) return;
@@ -284,7 +382,7 @@ export function Avatar({
     let lastDraw = 0;
     const tick = (now: number) => {
       const v = videoRef.current;
-      if (v && v.readyState >= 2 && now - lastDraw >= 32) {
+      if (v && v.readyState >= 2 && now - lastDraw >= 33) {
         lastDraw = now;
         paintKeyedSource(v);
       }
@@ -294,23 +392,29 @@ export function Avatar({
     return () => window.cancelAnimationFrame(rafId);
   }, [shouldKeyBackdrop, clip, paintKeyedSource]);
 
-  const borderStyles: CSSProperties = (() => {
-    if (borderMode === "none") return {};
-    const g = borderGlowPct / 100;
-    const outerBlur = Math.max(4, Math.round(size * 0.22 * (0.45 + g)));
-    const outerSpread = Math.max(1, Math.round(size * 0.045 * (0.4 + g)));
-    const innerBlur = Math.max(3, Math.round(size * 0.14 * (0.4 + g)));
-    const outerAlpha = Math.round(28 + g * 54);
-    const innerAlpha = Math.round(24 + g * 48);
-    const ringAlpha = Math.round(45 + g * 50);
-    return {
-      border: `${size >= 56 ? 2 : 1.5}px solid color-mix(in srgb, ${borderColor} ${ringAlpha}%, transparent)`,
-      boxShadow:
-        g > 0
-          ? `0 0 ${outerBlur}px ${outerSpread}px color-mix(in srgb, ${borderColor} ${outerAlpha}%, transparent), inset 0 0 ${innerBlur}px color-mix(in srgb, ${borderColor} ${innerAlpha}%, transparent)`
-          : undefined,
-    };
-  })();
+  // Also repaint immediately when still image is shown and theme/bg changes
+  useEffect(() => {
+    if (!shouldKeyBackdrop || clip) return;
+    if (imgRef.current && imgRef.current.complete && imgRef.current.naturalWidth > 0) {
+      paintKeyedSource(imgRef.current);
+    }
+  }, [shouldKeyBackdrop, clip, paintKeyedSource]);
+
+  // Soft radial inner border glow + gentle outer ambient glow (matching v1.2.14's feathered glow,
+  // slightly stronger, NEVER a hard straight ring!)
+  const hasGlow = borderMode !== "none" && borderGlowPct > 0;
+  const g = borderGlowPct / 100;
+  const outerGlowStyle: CSSProperties = hasGlow
+    ? {
+        boxShadow: `0 0 ${Math.max(8, Math.round(size * (0.14 + g * 0.22)))}px ${Math.max(1, Math.round(size * 0.03 * g))}px color-mix(in srgb, ${borderColor} ${Math.round(28 + g * 46)}%, transparent)`,
+      }
+    : {};
+  const innerFeatherGlowStyle: CSSProperties | null = hasGlow
+    ? {
+        background: `radial-gradient(circle, transparent ${Math.round(62 - g * 12)}%, color-mix(in srgb, ${borderColor} ${Math.round(18 + g * 28)}%, transparent) ${Math.round(80 - g * 6)}%, color-mix(in srgb, ${borderColor} ${Math.round(52 + g * 42)}%, transparent) 100%)`,
+        boxShadow: `inset 0 0 ${Math.max(6, Math.round(size * (0.11 + g * 0.14)))}px color-mix(in srgb, ${borderColor} ${Math.round(40 + g * 48)}%, transparent)`,
+      }
+    : null;
 
   const discStyle: CSSProperties = (() => {
     let base: CSSProperties;
@@ -340,13 +444,13 @@ export function Avatar({
     } else if (bgMode === "theme") {
       base = {
         background: isDark
-          ? "radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--surface-2, #23252b) 88%, #334155), var(--bg, #111215))"
-          : "radial-gradient(circle at 50% 38%, #ffffff, var(--surface-2, #ebe8e2))",
+          ? "radial-gradient(circle at 50% 38%, #262933, #121318)"
+          : "radial-gradient(circle at 50% 38%, #ffffff, #eae6df)",
       };
     } else {
       base = { background: "#f1efeb" };
     }
-    return { ...base, ...borderStyles };
+    return { ...base, ...outerGlowStyle };
   })();
 
   const label = t("{name}'s avatar", { name: profile?.name ?? "MiniMuse" });
@@ -377,9 +481,11 @@ export function Avatar({
             onError={() => {
               noClipUntil.set(clip, Date.now() + NO_CLIP_TTL_MS);
               bump((n) => n + 1);
-              window.setTimeout(() => bump((n) => n + 1), NO_CLIP_TTL_MS + 100);
+              if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
+                window.setTimeout(() => bump((n) => n + 1), NO_CLIP_TTL_MS + 100);
+              }
             }}
-            className={cx("h-full w-full object-cover", shouldKeyBackdrop && canvasReady && "opacity-0")}
+            className="h-full w-full object-cover"
           />
         ) : dragon || studio ? (
           <img
@@ -388,7 +494,7 @@ export function Avatar({
             alt=""
             draggable={false}
             onLoad={(e) => paintKeyedSource(e.currentTarget)}
-            className={cx("h-full w-full object-cover", shouldKeyBackdrop && canvasReady && "opacity-0")}
+            className="h-full w-full object-cover"
           />
         ) : (
           <span className="flex h-full w-full items-center justify-center leading-none drop-shadow-sm" style={{ fontSize: size * 0.5 }}>
@@ -401,9 +507,16 @@ export function Avatar({
             width={canvasDim}
             height={canvasDim}
             className={cx(
-              "pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-75",
+              "pointer-events-none absolute inset-0 h-full w-full rounded-full",
               canvasReady ? "opacity-100" : "opacity-0",
             )}
+          />
+        )}
+        {innerFeatherGlowStyle && (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 rounded-full"
+            style={innerFeatherGlowStyle}
           />
         )}
       </span>

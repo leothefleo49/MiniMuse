@@ -326,7 +326,7 @@ export function ModelCard({
     popular: string[];
     image: string[];
     video: string[];
-    // MiniMuse Cloud, for a member: the menu and the other models under the Cloud key, grouped
+    // nanoMuse Cloud, for a member: the menu and the other models under the Cloud key, grouped
     menu: string[];
     catalog: string[];
     imageCatalog: string[];
@@ -350,7 +350,7 @@ export function ModelCard({
   });
   // true once the user edits the model field by hand in this session: that value is never replaced
   const [typed, setTyped] = useState(false);
-  // a member on MiniMuse Cloud picks from the grouped list; this flips the field to typing an id
+  // a member on nanoMuse Cloud picks from the grouped list; this flips the field to typing an id
   const [typingModel, setTypingModel] = useState(false);
   const [applyingDefaults, setApplyingDefaults] = useState(false);
   const [showDefaultTasks, setShowDefaultTasks] = useState(false);
@@ -724,7 +724,7 @@ export function ModelCard({
   const locale = getLocale();
   const lacks = (cap: Capability) => !!catalogueEntry && !catalogueEntry.user_capabilities && !catalogueEntry.capabilities.includes(cap);
   // the hands with nothing set here (the Models contract §3): the account's hands model
-  // on MiniMuse Cloud; an own provider's own hands model when it sees; the account's when
+  // on nanoMuse Cloud; an own provider's own hands model when it sees; the account's when
   // it cannot and the account is signed in; else the chat model
   const cloudPreset = presets[CLOUD_PRESET];
   const handsDefault = p?.cloud
@@ -745,8 +745,8 @@ export function ModelCard({
     ]),
   ).filter(Boolean);
   // the hands picker's one group: this provider's models that see, the catalogue's hands
-  // default first (the relay's recommended one on MiniMuse Cloud), folded past eight
-  const handsProviderLabel = p?.cloud ? "MiniMuse Cloud" : ep ? endpointLabel(ep) : catalogueEntry ? providerName(catalogueEntry, locale) : hostOf(effectiveUrl) || preset;
+  // default first (the relay's recommended one on nanoMuse Cloud), folded past eight
+  const handsProviderLabel = p?.cloud ? "nanoMuse Cloud" : ep ? endpointLabel(ep) : catalogueEntry ? providerName(catalogueEntry, locale) : hostOf(effectiveUrl) || preset;
   const handsPreset = p?.cloud ? ((models.gui ?? [])[0] ?? p.gui_model ?? "") : (catalogueEntry?.defaults?.hands ?? p?.gui_model ?? "");
   // ... and one group per other endpoint of the list, which lends the hands its address and key (#294)
   const handsGroups: ModelGroup[] = [
@@ -765,7 +765,7 @@ export function ModelCard({
       title={t("Chat model")}
       summary={
         data.llm.cloud
-          ? `MiniMuse Cloud · ${data.llm.model || t("No model yet")}`
+          ? `nanoMuse Cloud · ${data.llm.model || t("No model yet")}`
           : currentEndpoint
             ? `${data.llm.model || t("No model yet")} · ${endpointLabel(currentEndpoint)}`
             : `${data.llm.model || t("No model yet")}${data.llm.base_url ? ` · ${hostOf(data.llm.base_url)}` : ""}`
@@ -1433,7 +1433,7 @@ export function ModelCard({
       {!p?.cloud && !adding && data.llm.proxy !== undefined && (
         <Field
           label={t("Proxy (optional)")}
-          hint={t("Only this provider's requests go through it. MiniMuse Cloud never does.")}
+          hint={t("Only this provider's requests go through it. nanoMuse Cloud never does.")}
         >
           <input
             className={inputCls}
@@ -2282,7 +2282,7 @@ function EndpointCard({
  * One of the two media rows of the Models contract — *Making pictures* (`[image]`) and
  * *Making clips* (`[video]`). The value is `<provider> · <model>` as the runtime resolves it:
  * an explicit choice, else the chat provider's own model, else the account's. The picker
- * offers MiniMuse Cloud when signed in, the chat model's provider when it has the capability,
+ * offers nanoMuse Cloud when signed in, the chat model's provider when it has the capability,
  * and every catalogue provider that has it (a key to add); nothing without it.
  */
 export function MediaSlotCard({
@@ -2337,7 +2337,7 @@ export function MediaSlotCard({
   const own = endpoints.find((e) => endpointChoice(e.id) === choice) ?? null;
   const endpointUrl = choice === CLOUD_ID ? cloudBaseUrl : own ? own.base_url : choice === CUSTOM_ID ? baseUrl.trim() : (edition?.base_url ?? "");
   // the key the slot would use: one typed here, the one saved for this very provider, the
-  // chat model's on its own host, the account's on MiniMuse Cloud
+  // chat model's on its own host, the account's on nanoMuse Cloud
   const keySaved = current === choice && current !== "" && (info.key_source === "vault" || info.key_source === "config");
   const needsKey = !!chosen?.needsKey && !key && !keySaved;
   const defaultModel = choice === CLOUD_ID ? (models.list[0] ?? "") : (entry?.defaults[slot] ?? "");
@@ -2474,7 +2474,7 @@ export function MediaSlotCard({
       {choice && (
         <StudioModelPick
           label={slot === "image" ? t("Picture model") : t("Clip model")}
-          provider={choice === CLOUD_ID ? "MiniMuse Cloud" : choice === CUSTOM_ID ? hostOf(baseUrl) || t("Other OpenAI-compatible endpoint") : (chosen?.label ?? choice)}
+          provider={choice === CLOUD_ID ? "nanoMuse Cloud" : choice === CUSTOM_ID ? hostOf(baseUrl) || t("Other OpenAI-compatible endpoint") : (chosen?.label ?? choice)}
           value={model}
           options={models.list}
           more={models.more}
@@ -5677,7 +5677,7 @@ const OTHER_MODEL = "\u0000other";
 /**
  * A model from the list, or one typed by its id when `other` (the list's last entry opens
  * the field). The list is the picker of the Models contract (`ModelPicker`): one group
- * named after the provider with its catalogue default first, or on MiniMuse Cloud the menu
+ * named after the provider with its catalogue default first, or on nanoMuse Cloud the menu
  * and the account's other models as two groups; each folds past eight rows, and a search
  * field appears once the rows pass eight in all.
  */
@@ -5696,7 +5696,7 @@ function StudioModelPick({
   provider: string;
   value: string;
   options: string[];
-  /** a second group — on MiniMuse Cloud, the other models under the Cloud key a member may use */
+  /** a second group — on nanoMuse Cloud, the other models under the Cloud key a member may use */
   more?: string[];
   onChange: (v: string) => void;
   other?: boolean;

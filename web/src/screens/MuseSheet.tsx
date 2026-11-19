@@ -57,9 +57,8 @@ type Pane = 0 | 1 | 2 | 3;
  * soul & memory.
  */
 export function MuseSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { state, setTab, draft, toast } = useStore();
+  const { state, setTab, toast } = useStore();
   const [pane, setPane] = useState<Pane>(0);
-  const [pen, setPen] = useState(false);
   const [share, setShare] = useState(false);
   const [stopping, setStopping] = useState(false);
   const name = state.profile?.name ?? "MiniMuse";
@@ -69,7 +68,6 @@ export function MuseSheet({ open, onClose }: { open: boolean; onClose: () => voi
   useEffect(() => {
     if (open) {
       setPane(pending > 0 ? 1 : 0);
-      setPen(false);
       setShare(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -122,38 +120,16 @@ export function MuseSheet({ open, onClose }: { open: boolean; onClose: () => voi
         </button>
         <div className="relative">
           <Avatar profile={state.profile} status={state.status} size={72} />
-          {/* the pen badge, bottom-right of the face: the look, the name, the studio */}
+          {/* the pen badge, bottom-right of the face: straight to Avatar Studio */}
           <button
             type="button"
             aria-label={t("Edit")}
-            aria-expanded={pen}
-            onClick={() => setPen((v) => !v)}
+            title={t("Avatar studio")}
+            onClick={() => go("avatar")}
             className="absolute -bottom-0.5 -right-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-surface text-fg shadow-[0_1px_4px_rgba(0,0,0,0.18)] hover:bg-surface-2 dark:border dark:border-border"
           >
             <Pencil size={13} />
           </button>
-          {pen && (
-            <div className="absolute left-1/2 top-full z-20 mt-2 w-56 -translate-x-1/2 overflow-hidden rounded-2xl border border-border/70 bg-surface py-1 text-left text-[14px] shadow-lg">
-              <button
-                type="button"
-                onClick={() => {
-                  // the phone's "Change avatar": the sentence is put in the chat box to finish
-                  draft(t("Change your avatar to "));
-                  onClose();
-                  setTab("chat");
-                }}
-                className="block w-full px-4 py-2.5 text-left hover:bg-surface-2"
-              >
-                {t("Change avatar")}
-              </button>
-              <button type="button" onClick={() => go("you", "who")} className="block w-full px-4 py-2.5 text-left hover:bg-surface-2">
-                {t("Edit name")}
-              </button>
-              <button type="button" onClick={() => go("avatar")} className="block w-full px-4 py-2.5 text-left text-muted hover:bg-surface-2">
-                {t("Avatar studio…")}
-              </button>
-            </div>
-          )}
         </div>
         <div className="mt-2.5 text-[21px] font-semibold leading-[26px]">{name}</div>
         <div className={cx("mt-0.5 flex items-center gap-1.5 text-[14px]", working || pending > 0 ? "text-fg" : "text-muted")}>

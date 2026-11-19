@@ -39,7 +39,7 @@ export interface UserEvent extends BaseEvent {
   /** a synced message written on another device of the account */
   via_device?: string;
   via_device_name?: string;
-  /** *Use MiniMuse Cloud this time*: the model id this one turn ran on */
+  /** *Use nanoMuse Cloud this time*: the model id this one turn ran on */
   model_used?: string;
   /** the agent's emoji on this message (its `react` tool), up to three */
   reactions?: string[];
@@ -51,7 +51,7 @@ export interface AssistantEvent extends BaseEvent {
   reasoning?: string;
   /** A background pass that found nothing worth interrupting you for. */
   quiet?: boolean;
-  /** *Use MiniMuse Cloud this time*: the model id this reply came from */
+  /** *Use nanoMuse Cloud this time*: the model id this reply came from */
   model_used?: string;
   /** the device whose Muse said this (a chat addressed to a device) */
   device?: string;
@@ -157,7 +157,7 @@ export interface NoticeEvent extends BaseEvent {
   code?: string;
   /** the raw exception, for bug reports */
   detail?: string;
-  /** the failed turn ran on *Use MiniMuse Cloud this time* already: the model id */
+  /** the failed turn ran on *Use nanoMuse Cloud this time* already: the model id */
   model_used?: string;
   /** values for the {placeholders} in `text` */
   vars?: Record<string, string | number>;
@@ -318,10 +318,14 @@ export interface AvatarLibraryAsset {
 export interface AvatarLibraryFace {
   id: string;
   name: string;
-  style: string;
-  preview: string;
+  style?: string;
+  preview?: string;
+  description?: string;
   situations: Record<string, string>;
-  assets: AvatarLibraryAsset[];
+  assets?: AvatarLibraryAsset[];
+  clips?: Array<{ file: string; label?: string }>;
+  stills?: string[];
+  has_clips?: boolean;
 }
 
 export interface AvatarLibraryView {
@@ -493,7 +497,7 @@ export interface SyncState {
   side_chats?: boolean;
   /** C9: the other devices' turns under way on synced chats */
   working?: WorkingPresence[];
-  /** signed in to MiniMuse Cloud or paired with at least one peer */
+  /** signed in to nanoMuse Cloud or paired with at least one peer */
   available: boolean;
   cloud_available?: boolean;
   peer_mode?: boolean;
@@ -563,7 +567,7 @@ export interface CloudAccount {
   is_model: boolean;
   /** this runtime insists on an account (self-hosters may turn it off) */
   required?: boolean;
-  /** the account's models as a source (*Use MiniMuse Cloud models*); false leaves them out of the automatic order and the listings */
+  /** the account's models as a source (*Use nanoMuse Cloud models*); false leaves them out of the automatic order and the listings */
   models?: boolean;
   has_password?: boolean;
   /** on the operator's list: no spend limit */
@@ -1243,11 +1247,11 @@ export interface SettingsView {
   trash_retention_days?: number;
   /** The sticky model pick, one value for every device ("" = the configured model). */
   model_choice?: string;
-  /** How AI & sync route across local vs. MiniMuse Cloud ("local", "hybrid", "cloud"). */
+  /** How AI & sync route across local vs. nanoMuse Cloud ("local", "hybrid", "cloud"). */
   cloud_mode?: "local" | "hybrid" | "cloud";
   /** Per-feature routing when cloud_mode === "hybrid". */
   cloud_slots?: { chat?: "local" | "cloud"; media?: "local" | "cloud"; sync?: "local" | "cloud" };
-  /** Whether unsolicited MiniMuse Cloud sign-in cards/prompts appear across tabs. */
+  /** Whether unsolicited nanoMuse Cloud sign-in cards/prompts appear across tabs. */
   cloud_prompts?: boolean;
   /** Current app lock summary for Settings preview and safety prompt. */
   app_lock?: LockView;
@@ -1315,7 +1319,7 @@ export interface ProviderPreset {
   /** the fallback catalogue; the live list comes from /api/llm/models */
   models?: string[];
   no_key?: boolean;
-  /** the MiniMuse Cloud account as the provider: the account key is the key, saved through /api/cloud/use-as-model */
+  /** the nanoMuse Cloud account as the provider: the account key is the key, saved through /api/cloud/use-as-model */
   cloud?: boolean;
   /** a key may be left empty (a gateway or local server without one) */
   key_optional?: boolean;
@@ -1325,7 +1329,7 @@ export interface ProviderPreset {
   key_hint?: string;
   /** the hands model the preset suggests beside its chat model (contract C4): one that sees */
   gui_model?: string;
-  /** the account's hands models, recommended first (the MiniMuse Cloud preset) */
+  /** the account's hands models, recommended first (the nanoMuse Cloud preset) */
   gui_models?: string[];
   /** "cn": the vendor only signs up accounts from mainland China (contract C5) */
   region?: string;
@@ -1505,7 +1509,7 @@ export interface ConnectionsData {
     /** vault = key entered in the app; config = from config.toml / env; missing = referenced but not set. */
     key_source: "vault" | "config" | "missing" | "none";
     from_app: boolean;
-    /** the model is the MiniMuse Cloud account's */
+    /** the model is the nanoMuse Cloud account's */
     cloud?: boolean;
     /** the avatar studio's picture model at the same host; "" = the runtime's pick */
     image_model?: string;

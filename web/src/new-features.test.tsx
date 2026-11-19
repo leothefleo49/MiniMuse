@@ -207,7 +207,7 @@ describe("Local-first SignInGate & Mobile setup header layout", () => {
     const text = textOf(tree!);
     expect(text).toContain("Recommended · Local & Private");
     expect(text).toContain("Continue with Local Setup");
-    expect(text).toContain("Run strictly local (keep MiniMuse Cloud turned off)");
+    expect(text).toContain("Run strictly local (keep nanoMuse Cloud turned off)");
 
     const cloudToggle = tree!.root.findAll((n) => n.type === "button" && n.props["aria-expanded"] !== undefined)[0];
     expect(cloudToggle.props["aria-expanded"]).toBe(false);

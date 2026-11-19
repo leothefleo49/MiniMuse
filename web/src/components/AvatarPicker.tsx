@@ -92,6 +92,39 @@ export function AvatarPicker({
   const libraryFaces = library?.faces ?? [];
   const knownFaceIds = new Set(libraryFaces.map((f) => f.id));
   const activeStudioFace = libraryFaces.find((f) => f.id === otherStudio) || (libraryFaces.length > 0 ? libraryFaces[0] : null);
+  // Defensively handle both new `assets` array and legacy `clips`/`stills` shapes so `.length` never crashes
+  const activeFaceAssets = (() => {
+    if (!activeStudioFace) return [];
+    if (Array.isArray(activeStudioFace.assets) && activeStudioFace.assets.length > 0) {
+      return activeStudioFace.assets;
+    }
+    const fallback: Array<{ file: string; path: string; kind: "video" | "image"; label: string; size: number; canonical: boolean }> = [];
+    for (const c of activeStudioFace.clips ?? []) {
+      if (c?.file) {
+        fallback.push({
+          file: c.file,
+          path: `avatar/${activeStudioFace.id}/${c.file}`,
+          kind: "video",
+          label: c.label || c.file,
+          size: 0,
+          canonical: false,
+        });
+      }
+    }
+    for (const s of activeStudioFace.stills ?? []) {
+      if (s) {
+        fallback.push({
+          file: s,
+          path: `avatar/${activeStudioFace.id}/${s}`,
+          kind: "image",
+          label: s,
+          size: 0,
+          canonical: false,
+        });
+      }
+    }
+    return fallback;
+  })();
 
   const handleUploadBg = async (file: File) => {
     setUploadingBg(true);
@@ -491,7 +524,7 @@ export function AvatarPicker({
             )}
           </div>
 
-          {activeStudioFace && activeStudioFace.assets.length > 0 && (
+          {activeStudioFace && activeFaceAssets.length > 0 && (
             <div className="space-y-2 pt-1">
               <div className="flex items-center justify-between text-[11.5px] font-medium text-muted">
                 <span>
@@ -513,7 +546,7 @@ export function AvatarPicker({
                         onChange={(e) => void handleSituationChange(sit.id, e.target.value)}
                         className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-[12px] text-fg outline-none"
                       >
-                        {activeStudioFace.assets.map((asset) => (
+                        {activeFaceAssets.map((asset) => (
                           <option key={asset.file} value={asset.file}>
                             {asset.label} ({asset.kind === "video" ? "3D video" : "still"} — {asset.file.slice(0, 34)})
                           </option>

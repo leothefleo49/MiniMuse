@@ -309,13 +309,13 @@ const json = (body: unknown): RequestInit => ({ method: "POST", body: JSON.strin
 
 export const api = {
   state: () => request<StateSnapshot>("/api/state"),
-  // ---- MiniMuse Cloud (the account) and the hub (the other devices)
+  // ---- nanoMuse Cloud (the account) and the hub (the other devices)
   cloud: () => request<CloudAccount>("/api/cloud"),
   cloudCode: (identifier: string) => request<{ ok: boolean }>("/api/cloud/code", json({ identifier })),
   cloudVerify: (identifier: string, code: string, invite = "") =>
     request<CloudAccount>("/api/cloud/verify", json(invite ? { identifier, code, invite } : { identifier, code })),
   cloudSignOut: () => request<CloudAccount>("/api/cloud/sign-out", json({})),
-  /** *Use MiniMuse Cloud models*: the account's models as a source, on or off; `409 chat_on_cloud` while the chat model is the account's */
+  /** *Use nanoMuse Cloud models*: the account's models as a source, on or off; `409 chat_on_cloud` while the chat model is the account's */
   cloudModels: (on: boolean) => request<CloudAccount>("/api/cloud/models", json({ on })),
   cloudLogin: (identifier: string, password: string) => request<CloudAccount>("/api/cloud/login", json({ identifier, password })),
   /** set or change the password; "" with the current one removes it */
@@ -457,7 +457,7 @@ export const api = {
       `/api/threads/${thread}/events?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ""}`,
     ),
   /** `language` is the locale of this console's screens; the reply is written in it. `via: "cloud"` is
-   * *Use MiniMuse Cloud this time*: this one turn on the account's model (401 `signed_out` when signed out).
+   * *Use nanoMuse Cloud this time*: this one turn on the account's model (401 `signed_out` when signed out).
    * `model` is the composer pill's pick for this one message (`flash`, `pro`, `local`, `gemini`); "" keeps the configured model. */
   send: (thread: string, text: string, files: string[] = [], language = "", via = "", id = "", model = "") => {
     const payload: { text: string; files: string[]; language: string; via?: string; id?: string; model?: string } = { text, files, language };
@@ -814,7 +814,7 @@ export const api = {
       recommended_defaults?: import("./types").RecommendedDefaultSet;
       image_models?: string[];
       video_models?: string[];
-      // MiniMuse Cloud, relay 0.10: the chat models on the menu and the other usable ones under
+      // nanoMuse Cloud, relay 0.10: the chat models on the menu and the other usable ones under
       // the operator's key (a member's list), likewise for pictures / clips; which chat models read pictures
       menu?: string[];
       catalog?: string[];

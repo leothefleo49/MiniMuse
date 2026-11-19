@@ -780,7 +780,7 @@ export function Onboarding() {
                 body={
                   modelReady
                     ? conn?.llm.cloud
-                      ? `MiniMuse Cloud · ${conn.llm.model}`
+                      ? `nanoMuse Cloud · ${conn.llm.model}`
                       : `${conn?.llm.model} · ${hostOf(conn?.llm.base_url ?? "")}`
                     : t("OpenRouter, Ollama, LM Studio, or your own API key (recommended).")
                 }
@@ -818,7 +818,7 @@ export function Onboarding() {
               <p className="mt-1 text-[14px] text-muted">
                 {modelReady
                   ? conn?.llm.cloud
-                    ? t("MiniMuse Cloud is currently active. Add your own key or local Ollama below anytime.")
+                    ? t("nanoMuse Cloud is currently active. Add your own key or local Ollama below anytime.")
                     : t("Model ready ({model}). Add additional OpenRouter / provider keys or switch below.", { model: conn?.llm.model ?? "" })
                   : t("OpenRouter (many models, one key), Ollama / LM Studio (offline), or direct Anthropic / OpenAI / Gemini keys. Stored encrypted in your local vault.")}
               </p>
@@ -855,7 +855,7 @@ export function Onboarding() {
                           {cloudBusy ? <Loader2 size={17} className="animate-spin" /> : <Cloud size={17} />}
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="block text-[13.5px] font-medium">{t("Or use MiniMuse Cloud model")}</span>
+                          <span className="block text-[13.5px] font-medium">{t("Or use nanoMuse Cloud model")}</span>
                           <span className="block text-[12px] text-muted">{t("Signed in as {hint}", { hint: state.hub.account.hint })}</span>
                         </span>
                         <ChevronRight size={15} className="shrink-0 text-muted" />
@@ -870,7 +870,7 @@ export function Onboarding() {
                           <div className="flex items-center gap-2.5">
                             <Cloud size={16} className="text-muted" />
                             <div>
-                              <div className="text-[13.5px] font-medium">{t("Optional: MiniMuse Cloud")}</div>
+                              <div className="text-[13.5px] font-medium">{t("Optional: nanoMuse Cloud")}</div>
                               <div className="text-[11.5px] text-muted">{t("Prefer not to use your own key yet? Sign in for the free starter allowance.")}</div>
                             </div>
                           </div>

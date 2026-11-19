@@ -195,7 +195,7 @@ export function SettingsScreen() {
       { id: "behavior", title: t("Agent behavior"), group: t("General & Usage"), icon: <Bot size={15} /> },
 
       { id: "model", title: t("Model"), group: t("Models & Devices"), icon: <TerminalSquare size={15} /> },
-      { id: "cloud", title: t("MiniMuse Cloud"), group: t("Models & Devices"), icon: <Cloud size={15} /> },
+      { id: "cloud", title: t("nanoMuse Cloud"), group: t("Models & Devices"), icon: <Cloud size={15} /> },
       { id: "notifications", title: t("Notifications"), group: t("Models & Devices"), icon: <Bell size={15} /> },
       { id: "watch", title: t("Smartwatch (Wear OS)"), group: t("Models & Devices"), icon: <Watch size={15} /> },
       { id: "assistant", title: t("Default assistant"), group: t("Models & Devices"), icon: <Sparkles size={15} /> },
@@ -236,7 +236,7 @@ export function SettingsScreen() {
       { id: "watch-main", sectionId: "watch", sectionTitle: t("Smartwatch (Wear OS)"), label: t("Watch APK install & wireless ADB pairing"), description: t("Discover Wear OS watches over Wi-Fi, install MiniMuse-wear.apk, and generate 6-digit pairing codes."), keywords: ["wear", "watch", "apk", "adb", "pair", "sideload"] },
       { id: "notifications-main", sectionId: "notifications", sectionTitle: t("Notifications"), label: t("Push & background notifications"), description: t("Enable alerts for approvals, questions, and finished background tasks."), keywords: ["push", "alerts", "test notification"] },
       ...(keepRunningStatus() ? [{ id: "keep-running-main", sectionId: "keep-running" as const, sectionTitle: t("Keep it running"), label: t("Battery optimization, overlay & boot start"), description: t("Keep Android background services alive, configure exact alarms, and export crash logs."), keywords: ["battery", "alarms", "boot", "logs"] }] : []),
-      { id: "cloud-main", sectionId: "cloud", sectionTitle: t("MiniMuse Cloud"), label: t("Local / Hybrid / Cloud routing"), description: t("Switch between strictly local mode, custom slot routing, or MiniMuse Cloud."), keywords: ["relay", "local", "hybrid", "sync"] },
+      { id: "cloud-main", sectionId: "cloud", sectionTitle: t("nanoMuse Cloud"), label: t("Local / Hybrid / Cloud routing"), description: t("Switch between strictly local mode, custom slot routing, or nanoMuse Cloud."), keywords: ["relay", "local", "hybrid", "sync"] },
       { id: "model-main", sectionId: "model", sectionTitle: t("Model"), label: t("Provider, active model & API keys"), description: t("Inspect your active LLM, configure OpenRouter/DeepSeek/Gemini/Ollama, and manage keys."), keywords: ["llm", "api key", "provider", "ollama", "openrouter"] },
       { id: "appearance-bg", sectionId: "appearance", sectionTitle: t("Appearance"), label: t("Background & theme"), description: t("Choose white, dark, or custom canvas colors."), keywords: ["theme", "dark mode", "white", "background"] },
       { id: "appearance-scale", sectionId: "appearance", sectionTitle: t("Appearance"), label: t("UI scale"), description: t("Resize interface text, icons, and spacing cleanly on this device."), keywords: ["zoom", "font size", "scale"] },
@@ -652,9 +652,9 @@ export function SettingsScreen() {
           </Section>
         )}
 
-        {/* MiniMuse Cloud */}
+        {/* nanoMuse Cloud */}
         {show("cloud") && (
-        <Section title={t("MiniMuse Cloud")} id="cloud" plain={!wide}>
+        <Section title={t("nanoMuse Cloud")} id="cloud" plain={!wide}>
           <SettingBlock id="cloud-main" highlightedId={highlightedId}>
             <CloudModeSelector
               cloudMode={s?.cloud_mode ?? "hybrid"}
@@ -666,7 +666,7 @@ export function SettingsScreen() {
             />
             {s && (s.cloud_mode ?? "hybrid") !== "local" && (
               <button type="button" onClick={() => setTab("account")} className="w-full text-[13.5px] flex items-center justify-between pt-2">
-                <span className="text-muted">{t("MiniMuse Cloud account")}</span>
+                <span className="text-muted">{t("nanoMuse Cloud account")}</span>
                 <span className="text-[12.5px] text-accent flex items-center gap-1">
                   {state.hub?.account.signed_in ? (state.hub.account.hint || t("Signed in")) : t("Sign in")} <ChevronRight size={14} />
                 </span>
@@ -687,7 +687,7 @@ export function SettingsScreen() {
                 onClick={() => openSection("cloud")}
                 className="w-full text-[13.5px] flex items-center justify-between"
               >
-                <span className="text-muted">{t("MiniMuse Cloud")}</span>
+                <span className="text-muted">{t("nanoMuse Cloud")}</span>
                 <span className="text-[12.5px] flex items-center gap-1">
                   {s.cloud_mode === "local"
                     ? t("Off (Nothing)")
@@ -1212,18 +1212,18 @@ function CloudModeSelector({
   const modes: Array<{ id: "local" | "hybrid" | "cloud"; title: string; desc: string }> = [
     {
       id: "local",
-      title: "Nothing (MiniMuse Cloud off)",
-      desc: "Use nothing from MiniMuse Cloud. Runs locally without cloud models, cloud sync, or sign-in prompts.",
+      title: "Nothing (nanoMuse Cloud off)",
+      desc: "Use nothing from nanoMuse Cloud. Runs locally without cloud models, cloud sync, or sign-in prompts.",
     },
     {
       id: "hybrid",
       title: "Custom (Choose manually)",
-      desc: "Choose individually what can and cannot use MiniMuse Cloud, including whether sign-in prompts appear.",
+      desc: "Choose individually what can and cannot use nanoMuse Cloud, including whether sign-in prompts appear.",
     },
     {
       id: "cloud",
-      title: "Everything (All MiniMuse Cloud)",
-      desc: "Enable MiniMuse Cloud for chat intelligence, vision & media, and multi-device relay sync.",
+      title: "Everything (All nanoMuse Cloud)",
+      desc: "Enable nanoMuse Cloud for chat intelligence, vision & media, and multi-device relay sync.",
     },
   ];
 
@@ -1303,7 +1303,7 @@ function CloudModeSelector({
           <div className="flex items-center justify-between gap-3 pt-2 border-t border-border/50 text-[13px]">
             <div className="min-w-0 flex-1">
               <div className="font-medium text-[12.5px]">{t("Sign-in prompts & banners")}</div>
-              <div className="text-[11px] text-muted">{t("Show MiniMuse Cloud sign-in cards when signed out")}</div>
+              <div className="text-[11px] text-muted">{t("Show nanoMuse Cloud sign-in cards when signed out")}</div>
             </div>
             <div className="flex rounded-xl bg-surface p-1 border border-border/60">
               <button
@@ -1797,7 +1797,7 @@ function SettingsHome({
   const cloudMode = s?.cloud_mode ?? "hybrid";
   const cloudModeLabel = cloudMode === "local" ? t("Off (Nothing)") : cloudMode === "cloud" ? t("Everything") : t("Custom");
   const cloudValue = cloudMode === "local" ? t("Off (Nothing)") : hub?.account.signed_in ? (hub.account.hint || t("Signed in")) : cloudModeLabel;
-  const modelSubtitle = s ? `${cloudModeLabel} · ${s.llm.cloud && cloudMode !== "local" ? "MiniMuse Cloud" : s.llm.provider}` : t("Add a provider and pick its models");
+  const modelSubtitle = s ? `${cloudModeLabel} · ${s.llm.cloud && cloudMode !== "local" ? "nanoMuse Cloud" : s.llm.provider}` : t("Add a provider and pick its models");
   const homeSearching = queryWords(query).length > 0;
   const catalogHits = searchSettingsCatalog(catalog, query);
   const onHomeSearchKey = (event: React.KeyboardEvent) => {
@@ -1936,7 +1936,7 @@ function SettingsHome({
             <span className="text-[14px] font-medium text-accent">{t("Change")}</span>
           </button>
           <MuseDivider />
-          <MuseRow icon={<Cloud size={22} />} label="MiniMuse Cloud" value={cloudValue} onClick={() => onOpen("cloud")} />
+          <MuseRow icon={<Cloud size={22} />} label="nanoMuse Cloud" value={cloudValue} onClick={() => onOpen("cloud")} />
           <MuseDivider />
           <MuseRow
             icon={<Clapperboard size={22} />}

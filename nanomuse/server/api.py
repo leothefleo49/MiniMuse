@@ -2518,15 +2518,91 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             if extra_k and extra_v and extra_k not in situations:
                 situations[str(extra_k)] = str(extra_v)
 
+        assets: list[dict[str, Any]] = []
+        for rel in display_mp4s:
+            fp = face_dir / rel
+            assets.append(
+                {
+                    "file": rel,
+                    "path": f"avatar/{face_id}/{rel}",
+                    "kind": "video",
+                    "label": _friendly_clip_label(rel),
+                    "size": fp.stat().st_size if fp.is_file() else 0,
+                    "canonical": Path(rel).name.lower() in canonical_mp4s,
+                }
+            )
+        for rel in all_stills[:40]:
+            fp = face_dir / rel
+            assets.append(
+                {
+                    "file": rel,
+                    "path": f"avatar/{face_id}/{rel}",
+                    "kind": "image",
+                    "label": _friendly_clip_label(rel),
+                    "size": fp.stat().st_size if fp.is_file() else 0,
+                    "canonical": Path(rel).name.lower() in {"idle.webp", "working.webp", "waiting.webp", "happy.webp", "error.webp"},
+                }
+            )
+        preview_rel = "idle.webp" if (face_dir / "idle.webp").is_file() else (all_stills[0] if all_stills else "")
+
         return {
             "id": face_id,
             "name": str(face_meta.get("description") or model.get("visual_description") or f"3D Avatar {face_id}")[:72],
+            "style": str(face_meta.get("style") or model.get("style") or "muse"),
+            "preview": f"avatar/{face_id}/{preview_rel}" if preview_rel else "",
             "description": str(model.get("visual_description") or face_meta.get("description") or ""),
             "clips": [{"file": rel, "label": _friendly_clip_label(rel)} for rel in display_mp4s],
             "stills": all_stills[:40],
+            "assets": assets,
             "situations": situations,
             "has_clips": len(all_mp4s) > 0,
         }
+
+    def _heal_face_canonical_clips(face_dir: Path) -> None:
+        """Auto-heal canonical idle/working/waiting/happy .mp4 clips if an older build
+        accidentally copied a portrait call-dark-idle (7x12) or darkmode -attempt- video into them."""
+        if not face_dir.is_dir():
+            return
+        face_id = face_dir.name
+        custom_sits = svc.profile.avatar_situation_clips if svc.profile.avatar == face_id else {}
+        if (face_dir / "avatar-model.json").is_file():
+            with contextlib.suppress(Exception):
+                raw = json.loads((face_dir / "avatar-model.json").read_text(encoding="utf-8"))
+                if isinstance(raw, dict) and isinstance(raw.get("situation_clips"), dict):
+                    custom_sits = {**raw["situation_clips"], **custom_sits}
+        bad_sizes: set[int] = set()
+        for p in face_dir.glob("*.mp4"):
+            low = p.name.lower()
+            if "call-" in low or "darkmode" in low or "-attempt-" in low:
+                with contextlib.suppress(OSError):
+                    bad_sizes.add(p.stat().st_size)
+        if not bad_sizes:
+            return
+        canonical_sources: dict[str, tuple[str, ...]] = {
+            "idle": (f"avatar-{face_id}-1.mp4", f"avatar-{face_id}.mp4"),
+            "working": (f"avatar-{face_id}-1-working.mp4",),
+            "waiting": (f"avatar-{face_id}-1-making_something.mp4",),
+            "happy": (f"avatar-{face_id}-1-milestone_level_up.mp4",),
+        }
+        for mood, src_names in canonical_sources.items():
+            # Respect explicit user situation override
+            if custom_sits.get(mood):
+                continue
+            dst = face_dir / f"{mood}.mp4"
+            if not dst.is_file():
+                continue
+            try:
+                dst_sz = dst.stat().st_size
+            except OSError:
+                continue
+            if dst_sz not in bad_sizes:
+                continue
+            for sname in src_names:
+                src = face_dir / sname
+                if src.is_file() and src.stat().st_size not in bad_sizes:
+                    with contextlib.suppress(OSError):
+                        dst.write_bytes(src.read_bytes())
+                    break
 
     @app.get("/api/avatar/library", dependencies=dep)
     async def get_avatar_library() -> dict[str, Any]:
@@ -2537,8 +2613,20 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             for d in sorted(root.iterdir()):
                 if d.is_dir() and not d.name.startswith("."):
                     if any(d.glob("*.webp")) or any(d.glob("*.mp4")) or (d / "avatar-model.json").is_file():
+                        _heal_face_canonical_clips(d)
                         faces.append(_inspect_avatar_face(d))
-        return {"faces": faces, "active": svc.profile.avatar}
+        return {
+            "faces": faces,
+            "active": svc.profile.avatar,
+            "situations": [
+                {"id": "idle", "label": "Idle / At rest"},
+                {"id": "working", "label": "Working / Thinking"},
+                {"id": "waiting", "label": "Waiting / Making something"},
+                {"id": "happy", "label": "Happy / Milestone"},
+                {"id": "call", "label": "Live Voice Call"},
+                {"id": "error", "label": "Error / Alert"},
+            ],
+        }
 
     @app.put("/api/avatar/{face_id}/situations", dependencies=dep)
     async def put_avatar_situations(face_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -2586,7 +2674,13 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             model_file.write_text(json.dumps(model_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
         svc.update_profile({"avatar": clean_face, "avatar_situation_clips": model_data["situation_clips"]})
-        return {"ok": True, "face": _inspect_avatar_face(face_dir), "profile": svc.profile.to_dict()}
+        return {
+            "ok": True,
+            "face_id": clean_face,
+            "situations": model_data["situation_clips"],
+            "face": _inspect_avatar_face(face_dir),
+            "profile": svc.profile.to_dict(),
+        }
 
     @app.post("/api/avatar/{face_id}/upload", dependencies=dep)
     async def upload_avatar_clip_or_model(
@@ -5137,9 +5231,9 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     }
 
     def _resolve_avatar_fallback(path: str, target: Path) -> Path:
-        """When an avatar mood file (e.g. avatar/<face>/idle.mp4 or dark-idle.mp4) has not
-        been materialized yet, find the matching light or dark variant in face_dir and
-        materialize or return it."""
+        """When an avatar mood file (e.g. avatar/<face>/idle.mp4) has not been materialized yet,
+        find the canonical light-studio variant in face_dir (strictly excluding portrait call-*
+        and darkmode -attempt- clips for non-call moods) and materialize it."""
         parts = Path(path).parts
         if len(parts) < 3 or parts[0] != "avatar":
             return target
@@ -5154,25 +5248,47 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         mood = target.stem.lower()
         if is_dark:
             mood = mood[5:]
+        face_id = face_dir.name
+
+        # 1. For canonical idle/working/waiting/happy/call, check exact Muse canonical filenames first
+        if not is_dark and ext == ".mp4":
+            exact_map: dict[str, tuple[str, ...]] = {
+                "idle": (f"avatar-{face_id}-1.mp4", f"avatar-{face_id}.mp4"),
+                "working": (f"avatar-{face_id}-1-working.mp4",),
+                "waiting": (f"avatar-{face_id}-1-making_something.mp4",),
+                "happy": (f"avatar-{face_id}-1-milestone_level_up.mp4",),
+            }
+            for exact_name in exact_map.get(mood, ()):
+                cand = face_dir / exact_name
+                if cand.is_file():
+                    with contextlib.suppress(OSError):
+                        target.write_bytes(cand.read_bytes())
+                        return target
+                    return cand
+
         hints_map: dict[str, tuple[str, ...]] = {
-            "idle": ("idle",),
+            "idle": ("-1.mp4", "idle"),
             "working": ("working",),
             "waiting": ("making_something", "waiting"),
             "happy": ("milestone_level_up", "happy"),
-            "error": ("error", "darkmode", "idle"),
+            "call": ("call-light", "call-"),
+            "error": ("error", "idle"),
         }
         hints = hints_map.get(mood, (mood, "idle"))
         candidates = sorted(p for p in face_dir.rglob(f"*{ext}") if p.is_file())
         for hint in hints:
             for cand in candidates:
                 cn = cand.name.lower()
+                # NEVER pick a 7x12 portrait call clip for idle/working/waiting/happy!
+                if mood != "call" and ("call-" in cn or "7x12" in cn):
+                    continue
                 if is_dark and "darkmode" in cn and hint in cn:
                     try:
                         target.write_bytes(cand.read_bytes())
                         return target
                     except OSError:
                         return cand
-                if not is_dark and "darkmode" not in cn and hint in cn:
+                if not is_dark and "darkmode" not in cn and "-attempt-" not in cn and hint in cn:
                     try:
                         target.write_bytes(cand.read_bytes())
                         return target
@@ -5183,6 +5299,11 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             fb = face_dir / fallback_name
             if fb.is_file():
                 return fb
+        # Final fallback: prefer non-call, non-darkmode candidates
+        for cand in candidates:
+            cn = cand.name.lower()
+            if "call-" not in cn and "darkmode" not in cn and "-attempt-" not in cn:
+                return cand
         if candidates:
             return candidates[0]
         return target
@@ -5193,6 +5314,8 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             target = svc.resolve_workspace_path(path)
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from exc
+        if target.is_file() and target.suffix.lower() == ".mp4" and len(Path(path).parts) >= 3 and Path(path).parts[0] == "avatar":
+            _heal_face_canonical_clips(target.parent)
         if not target.is_file():
             target = _resolve_avatar_fallback(path, target)
         if not target.is_file():

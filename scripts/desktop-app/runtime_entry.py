@@ -149,15 +149,39 @@ def _app_url(port: int, data_dir: object | None = None) -> str:
 
 def _focus_existing_window() -> bool:
     """On Windows, bring an already-open MiniMuse window to the foreground instead of
-    opening a second WebView2 against the same storage_dir (which throws 0x8007139F)."""
+    opening a second WebView2 against the same storage_dir (which throws 0x8007139F / 0x800700AA).
+    Matches both 'MiniMuse' and dynamic document titles like 'Sir Diddlage · MiniMuse'."""
     if sys.platform != "win32":
         return False
     try:
         import ctypes
+        from ctypes import wintypes
 
         user32 = ctypes.windll.user32
-        hwnd = user32.FindWindowW(None, "MiniMuse")
-        if hwnd:
+        own_pid = os.getpid()
+        found_hwnds: list[int] = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def _enum_cb(hwnd: int, _lparam: int) -> bool:
+            if not user32.IsWindow(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            title = buf.value.strip()
+            if title == "MiniMuse" or title.endswith("· MiniMuse") or title.endswith("- MiniMuse"):
+                pid = wintypes.DWORD(0)
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value != own_pid:
+                    found_hwnds.append(hwnd)
+                    return False
+            return True
+
+        user32.EnumWindows(_enum_cb, 0)
+        if found_hwnds:
+            hwnd = found_hwnds[0]
             user32.ShowWindow(hwnd, 9)  # SW_RESTORE
             user32.SetForegroundWindow(hwnd)
             return True
@@ -926,15 +950,27 @@ def _app_mode() -> None:
 
     taken = port_taken(host, port)
     storage_dir = settings.data_dir / "webview"
+    # Clean up any stale secondary WebView2 session folders from earlier launches
+    try:
+        import shutil
+
+        for old_dir in settings.data_dir.glob("webview-session-*"):
+            if old_dir.is_dir():
+                shutil.rmtree(old_dir, ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        pass
+
     if taken in (f"nanoMuse {__version__}", f"MiniMuse {__version__}"):
         # The same release is already serving on this port: focus its window if open,
-        # otherwise open a native window with an unlocked storage path.
+        # otherwise open a native window with an unlocked per-PID storage path so WebView2
+        # never hits 0x800700AA (resource in use) and shows a blank white window.
         _log(f"{taken} is already running on {host}:{port}; activating window")
         if _focus_existing_window():
             raise SystemExit(0)
         _wait_for_health(port, wait=10.0)
         url = _app_url(port, data_dir=settings.data_dir)
-        if not _run_native_window(url, storage_dir=storage_dir):
+        unlocked_dir = settings.data_dir / f"webview-session-{os.getpid()}"
+        if not _run_native_window(url, storage_dir=unlocked_dir):
             _open_the_app(port, wait=2.0, data_dir=settings.data_dir)
         raise SystemExit(0)
     if taken:

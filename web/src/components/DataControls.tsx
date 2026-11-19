@@ -101,10 +101,10 @@ export function DataControls({ me: given, onChanged, flush = false }: { me?: Clo
       </MuseCard>
       <MuseCaption>
         {t(
-          "While this is on, the text of your chats with the MiniMuse Cloud models (what you wrote, what it answered and the tools it chose to call) is kept on the relay to train the community's own open model. Not your memory or SOUL (the system prompt), not what tools returned, not pictures, and never next to who you are. Your own API key never passes through the relay.",
+          "While this is on, the text of your chats with the nanoMuse Cloud models (what you wrote, what it answered and the tools it chose to call) is kept on the relay to train the community's own open model. Not your memory or SOUL (the system prompt), not what tools returned, not pictures, and never next to who you are. Your own API key never passes through the relay.",
         )}{" "}
         {!signedIn
-          ? t("Sign in to MiniMuse Cloud to use it.")
+          ? t("Sign in to nanoMuse Cloud to use it.")
           : ct.default_on !== undefined && (ct.default_on ? t("New accounts start with it on.") : t("New accounts start with it off."))}{" "}
         {signedIn && samples > 0 && t("{n} turns kept so far.", { n: String(samples) })}{" "}
         <a href={privacy} target="_blank" rel="noopener noreferrer" className="text-accent underline-offset-2 hover:underline">
@@ -353,14 +353,14 @@ export function SyncControls({
           <MuseCaption>
             {hasPeers && !signedIn
               ? t(
-                  "Connected directly to {n} paired device(s) without MiniMuse Cloud. Offline chats and edits save locally and merge automatically when online.",
+                  "Connected directly to {n} paired device(s) without nanoMuse Cloud. Offline chats and edits save locally and merge automatically when online.",
                   { n: String(peers.length) },
                 )
               : t(
-                  "Sync keeps your chats aligned across your paired devices (directly over Wi-Fi or Tailscale, or via MiniMuse Cloud if signed in). Files stay local.",
+                  "Sync keeps your chats aligned across your paired devices (directly over Wi-Fi or Tailscale, or via nanoMuse Cloud if signed in). Files stay local.",
                 )}{" "}
             {!canSync
-              ? t("Pair another device below (no Cloud needed), or sign in to MiniMuse Cloud.")
+              ? t("Pair another device below (no Cloud needed), or sign in to nanoMuse Cloud.")
               : sync?.paused
                 ? t("Paused: sign in again to continue.")
                 : stored && t("{c} chats, {m} messages kept on Cloud.", { c: String(counts.conversations), m: String(counts.messages) })}
@@ -391,7 +391,7 @@ export function SyncControls({
               />
               <MuseDivider inset={16} />
               <MuseCaption className="px-4 pb-2.5 pt-2">
-                {t("Removes what MiniMuse Cloud stores for this account; the chats on each device stay, and the switch stays on.")}
+                {t("Removes what nanoMuse Cloud stores for this account; the chats on each device stay, and the switch stays on.")}
               </MuseCaption>
             </MuseCard>
           )}
@@ -717,9 +717,9 @@ export function SyncControls({
         }
         body={
           confirmAction?.kind === "off"
-            ? t("Turning off deletes the copy on MiniMuse Cloud. Local chats stored on each device stay safe.")
+            ? t("Turning off deletes the copy on nanoMuse Cloud. Local chats stored on each device stay safe.")
             : confirmAction?.kind === "wipe"
-              ? t("Synced conversations are removed from MiniMuse Cloud. The local chats on each device stay.")
+              ? t("Synced conversations are removed from nanoMuse Cloud. The local chats on each device stay.")
               : t("This stops direct syncing with {peer}. Your existing chats stay on both devices.", {
                   peer: confirmAction?.kind === "unpair" ? confirmAction.peer.name || confirmAction.peer.url : "",
                 })
@@ -738,7 +738,7 @@ export function SyncControls({
           setConfirmAction(null);
           if (!act) return;
           if (act.kind === "off") {
-            void run(() => api.syncSetState(false), t("Off. Nothing is kept on MiniMuse Cloud any more."));
+            void run(() => api.syncSetState(false), t("Off. Nothing is kept on nanoMuse Cloud any more."));
           } else if (act.kind === "wipe") {
             void run(() => api.syncDelete(), t("Synced conversations deleted."));
           } else {

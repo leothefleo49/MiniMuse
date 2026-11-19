@@ -485,7 +485,7 @@ function noticeText(event: NoticeEvent): string {
 }
 
 /**
- * A line from the runtime. `onCloudRetry` is *Use MiniMuse Cloud this time* under a failed
+ * A line from the runtime. `onCloudRetry` is *Use nanoMuse Cloud this time* under a failed
  * turn of one's own model (the own-key models contract, section 4): the same words again,
  * one turn on the account's model, the next back on the own key. The chat screen passes it
  * when the person is signed in, the chat is not the account's and the failed turn was not
@@ -550,7 +550,7 @@ export function Notice({ event, onCloudRetry }: { event: NoticeEvent; onCloudRet
               onClick={retryOnCloud}
               className="rounded-full bg-accent/12 px-3 py-1 text-[12px] font-medium text-accent disabled:opacity-50"
             >
-              {t("Use MiniMuse Cloud this time")}
+              {t("Use nanoMuse Cloud this time")}
             </button>
             {cloudError && <div className="text-[12px] text-rose-700 dark:text-rose-300">{cloudError}</div>}
           </div>

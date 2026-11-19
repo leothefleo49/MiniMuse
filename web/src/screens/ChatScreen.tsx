@@ -282,7 +282,7 @@ export function ChatScreen() {
   // the steps (tool chips) stay out of the chat unless asked for; everything else always shows
   const steps = useShowSteps();
   const shown = useMemo(() => (steps ? events : events.filter((e) => e.type !== "tool")), [events, steps]);
-  // *Use MiniMuse Cloud this time* under a failed turn of one's own model (see cloud-retry.ts)
+  // *Use nanoMuse Cloud this time* under a failed turn of one's own model (see cloud-retry.ts)
   const cloudRetryCtx = { signedIn: Boolean(state.hub?.account.signed_in), chatOnCloud: Boolean(state.settings?.llm.cloud), deviceChat: Boolean(thread?.device) };
   const cloudRetryFor = (i: number): (() => Promise<void>) | undefined => {
     const target = cloudRetryTarget(shown, i, cloudRetryCtx);
@@ -613,7 +613,7 @@ const EventView = memo(function EventView({
   onOpenFile: (path: string) => void;
   onOpenBrowser: (id: string) => void;
   files: readonly string[];
-  /** a failed turn's *Use MiniMuse Cloud this time*, when it applies */
+  /** a failed turn's *Use nanoMuse Cloud this time*, when it applies */
   onCloudRetry?: () => Promise<void>;
   /** the chat this list is of, and the reply the thumbs go under (none while a run is on) */
   thread?: string;
@@ -1402,7 +1402,7 @@ const AssistantBubble = memo(function AssistantBubble({
   files?: readonly string[];
   /** said aloud on a call rather than written */
   spoken?: boolean;
-  /** *Use MiniMuse Cloud this time*: the account's model this reply came from */
+  /** *Use nanoMuse Cloud this time*: the account's model this reply came from */
   modelUsed?: string;
   /** the lightest feedback: two thumbs under the newest reply, the mark kept on one voted on */
   thumbs?: { thread: string; eventId: string; vote: "up" | "down" | ""; newest: boolean };
@@ -1474,7 +1474,7 @@ const AssistantBubble = memo(function AssistantBubble({
             <span className="inline-block w-1.5 h-4 align-middle bg-accent/70 animate-pulse rounded-sm" />
           </div>
         )}
-        {modelUsed && !streaming && <div className="ml-1 text-[11px] text-muted">{t("Answered by MiniMuse Cloud this time ({model})", { model: modelUsed })}</div>}
+        {modelUsed && !streaming && <div className="ml-1 text-[11px] text-muted">{t("Answered by nanoMuse Cloud this time ({model})", { model: modelUsed })}</div>}
         {!streaming && (text || onDelete) && (
           <div className="flex items-center justify-between gap-2 mt-1">
             <MessageActions text={text} eventId={eventId} onReply={onReply} onDelete={onDelete} align="left" open={gesture.revealed} />

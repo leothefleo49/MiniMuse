@@ -350,11 +350,19 @@ def test_avatar_library_situations_border_glow_and_ip_healing(tmp_path: Path) ->
     app = create_app(svc.settings, service=svc)
     tc = TestClient(app)
 
-    # 1. Avatar library lists face and assets
+    # 1. Avatar library lists face and unified assets array (preventing undefined.length crashes)
+    #    Also test auto-healing if idle.mp4 was previously corrupted with a 7x12 call-dark-idle clip.
+    (face_dir / "avatar-1791236806916264653-1.mp4").write_bytes(b"CANONICAL_SQUARE_IDLE_MP4")
+    (face_dir / "avatar-1791236806916264653-1-call-dark-idle-7x12.mp4").write_bytes(b"BAD_PORTRAIT_CALL_DARK_MP4_999")
+    (face_dir / "idle.mp4").write_bytes(b"BAD_PORTRAIT_CALL_DARK_MP4_999")
+
     r_lib = tc.get("/api/avatar/library")
     assert r_lib.status_code == 200
     lib = r_lib.json()
-    assert any(f["id"] == "1791236806916264653" for f in lib["faces"])
+    face_entry = next(f for f in lib["faces"] if f["id"] == "1791236806916264653")
+    assert isinstance(face_entry["assets"], list) and len(face_entry["assets"]) > 0
+    # Corrupted idle.mp4 must have been auto-healed back to canonical square avatar-*-1.mp4
+    assert (face_dir / "idle.mp4").read_bytes() == b"CANONICAL_SQUARE_IDLE_MP4"
 
     # 2. Customize situation animation mapping
     r_sit = tc.put(

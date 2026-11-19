@@ -15,7 +15,7 @@ import type { CloudAccount, CloudEvent, CloudMe, CloudSession, PersonalCloudStat
 import { cx, relativeSeconds } from "../util";
 
 /**
- * Your MiniMuse Cloud account: who you are signed in as, what has been used (by kind — chat,
+ * Your nanoMuse Cloud account: who you are signed in as, what has been used (by kind — chat,
  * pictures, clips — and by model), the password, every device signed in, and the
  * way out (sign out here, everywhere, or delete the account). Everything the relay knows
  * about you is on this one screen; what the relay keeps of your chats is one switch away, under
@@ -745,7 +745,7 @@ function SignOut({ account, onDone }: { account: CloudAccount | null; onDone: ()
   const run = async (what: "here" | "all" | "delete") => {
     const ask =
       what === "here"
-        ? t("Sign out of MiniMuse Cloud on this device? The hub and the Cloud model stop working here until you sign in again.")
+        ? t("Sign out of nanoMuse Cloud on this device? The hub and the Cloud model stop working here until you sign in again.")
         : what === "all"
           ? t("Sign out on every device, including this one?")
           : t("Delete the account? The relay forgets your identifier, your devices and your usage. This cannot be undone.");

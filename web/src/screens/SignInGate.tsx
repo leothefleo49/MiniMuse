@@ -16,7 +16,7 @@ export const STARTUP_LANG_SEEN_KEY = "minimuse_startup_lang_seen";
 
 /**
  * Opening door: Local setup is the primary hero choice (OpenRouter, own API keys, Ollama /
- * LM Studio, encrypted local vault, theme & avatar customization). MiniMuse Cloud and
+ * LM Studio, encrypted local vault, theme & avatar customization). nanoMuse Cloud and
  * Sync from Another Device sit neatly alongside so first-time users can either set up locally
  * or clone an existing device's setup in one tap.
  */
@@ -213,7 +213,7 @@ export function SignInGate() {
                 className="mt-2.5 w-full rounded-2xl border border-border/70 px-4 py-2.5 text-[13px] font-medium text-fg/80 transition hover:bg-surface-2"
                 data-testid="sign-in-local-only"
               >
-                {t("Run strictly local (keep MiniMuse Cloud turned off)")}
+                {t("Run strictly local (keep nanoMuse Cloud turned off)")}
               </button>
             </div>
 
@@ -221,7 +221,7 @@ export function SignInGate() {
           </div>
           </div>
 
-          {/* Secondary Side Options: Pair & Sync Another Device + MiniMuse Cloud */}
+          {/* Secondary Side Options: Pair & Sync Another Device + nanoMuse Cloud */}
           <aside className="mt-6 space-y-3 wide:mt-16">
             {/* Pair & Sync from another device right during setup */}
             <div className="rounded-[24px] border border-border/70 bg-surface-2/40 p-4 wide:p-5">
@@ -306,7 +306,7 @@ export function SignInGate() {
                     <Cloud size={17} />
                   </span>
                   <div className="min-w-0">
-                    <div className="text-[14px] font-semibold text-fg">{t("MiniMuse Cloud (optional)")}</div>
+                    <div className="text-[14px] font-semibold text-fg">{t("nanoMuse Cloud (optional)")}</div>
                     <div className="truncate text-[12px] text-muted">{t("Cross-device relay & starter model allowance")}</div>
                   </div>
                 </div>
@@ -317,7 +317,7 @@ export function SignInGate() {
                 <div className="mt-4 border-t border-border/60 pt-4">
                   <SignIn
                     onSignedIn={async () => {
-                      toast(t("Signed in to MiniMuse Cloud."));
+                      toast(t("Signed in to nanoMuse Cloud."));
                       await Promise.all([refreshSettings(), refreshHub()]);
                     }}
                   />
@@ -332,7 +332,7 @@ export function SignInGate() {
               )}
             </div>
             <p className="mt-2.5 px-1 text-center text-[11.5px] leading-relaxed text-muted wide:text-left">
-              {t("You can enable, switch, or turn off MiniMuse Cloud anytime in Settings.")}
+              {t("You can enable, switch, or turn off nanoMuse Cloud anytime in Settings.")}
             </p>
             <CommunityNotice compact className="mt-5 wide:hidden" />
           </aside>

@@ -722,8 +722,8 @@ function EmptyDevices({ hub, signedIn, cloudMode }: { hub: HubView | undefined; 
               ? inAndroid
                 ? t("Only this phone is active. Scan a PC's QR code above to pair with your computer.")
                 : cloudMode === "local"
-                  ? t("MiniMuse Cloud is turned off. Phones paired directly over your local network will appear here.")
-                  : t("No other devices paired yet. Connect on your local network or turn on MiniMuse Cloud in Settings.")
+                  ? t("nanoMuse Cloud is turned off. Phones paired directly over your local network will appear here.")
+                  : t("No other devices paired yet. Connect on your local network or turn on nanoMuse Cloud in Settings.")
               : !ready
                 ? hubStateLabel(hub?.state ?? "", t)
                 : hub?.account.hint
