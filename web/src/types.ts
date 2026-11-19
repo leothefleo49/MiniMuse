@@ -343,6 +343,7 @@ export interface ThreadMeta {
 export interface SyncPeerInfo {
   id: string;
   name: string;
+  kind?: string;
   url: string;
   online: boolean;
   last_sync_at: string | null;

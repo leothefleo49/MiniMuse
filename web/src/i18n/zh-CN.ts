@@ -3534,6 +3534,19 @@ const zhCN: Record<string, string> = {
   "Log a trip, or let MiniMuse add one from your travels, and the routes you drive most appear here.": "记录一次行程，或让 MiniMuse 根据你的出行自动添加，你最常开的路线就会显示在这里。",
   "Somewhere": "某处",
   "Routes go from place to place. Road-by-road stats need tracked trips, which are not recorded yet.": "路线是从一个地点到另一个地点。逐条道路的统计需要记录行车轨迹，目前尚未记录。",
+  "All devices are up to date.": "所有设备已是最新状态。",
+  "Connected · syncing directly": "已连接 · 正在直连同步",
+  "Pair & sync": "配对与同步",
+  "Paired · catches up automatically when online": "已配对 · 在线时会自动同步",
+  "Synced ({a} received, {p} sent).": "已同步（接收 {a} 条，发送 {p} 条）。",
+  "Synced · {when}": "已同步 · {when}",
+  "Syncing…": "同步中…",
+  "Fullscreen": "全屏",
+  "Exit full": "退出全屏",
+  "Fullscreen (F11)": "全屏模式 (F11)",
+  "Exit fullscreen (F11)": "退出全屏 (F11)",
+  "Fullscreen mode": "全屏模式",
+  "Fills the entire monitor without window borders or title bar. Press F11 anytime to toggle.": "铺满整个显示器，隐藏窗口边框与标题栏。随时可按 F11 切换。",
 };
 
 export default zhCN;

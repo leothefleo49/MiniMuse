@@ -126,13 +126,35 @@ class HubService:
 
     def _ensure_identity(self) -> None:
         hub = dict(self.data.get("hub") or {})
-        if not self.settings.hub.device_id:
-            device_id = str(hub.get("device_id") or "") or "pc-" + uuid.uuid4().hex[:12]
-            self.settings.hub.device_id = device_id
-            if hub.get("device_id") != device_id:
-                hub["device_id"] = device_id
-                self.data["hub"] = hub
-                self._save()
+        is_android = os.environ.get("NANOMUSE_DEVICE", "").strip().lower() == "android"
+        prefix = "phone-" if is_android else "pc-"
+        device_id = str(self.settings.hub.device_id or hub.get("device_id") or "").strip()
+
+        # Auto-heal identity collision: an earlier bug copied app-settings.hub.device_id
+        # inside the setup bundle from PC -> phone, giving both devices the same pc-* id.
+        # If this runtime is Android and its id collides with a paired peer in pairs.json
+        # (or starts with pc- while paired to a peer carrying the same id), mint a fresh
+        # phone-* id so peer sync never mistakes the other device's rows for its own.
+        if device_id and is_android and device_id.startswith("pc-"):
+            try:
+                from nanomuse.sync.peer import load_pairs
+
+                peer_ids = {str(p.get("id") or "").strip() for p in load_pairs(self.svc.data_dir)}
+                if device_id in peer_ids or not peer_ids:
+                    # Only mint a new id when it actually collides with a paired peer,
+                    # OR when paired to a computer whose id was copied into our hub config.
+                    if device_id in peer_ids:
+                        device_id = ""
+            except Exception:
+                pass
+
+        if not device_id:
+            device_id = prefix + uuid.uuid4().hex[:12]
+        self.settings.hub.device_id = device_id
+        if hub.get("device_id") != device_id:
+            hub["device_id"] = device_id
+            self.data["hub"] = hub
+            self._save()
 
     @property
     def device_id(self) -> str:
@@ -140,7 +162,26 @@ class HubService:
 
     @property
     def device_name(self) -> str:
-        return (self.settings.hub.name or socket.gethostname() or "computer")[:60]
+        explicit = str(self.settings.hub.name or "").strip()
+        if explicit and explicit.lower() != "localhost":
+            return explicit[:60]
+        if os.environ.get("NANOMUSE_DEVICE", "").strip().lower() == "android":
+            raw_model = os.environ.get("NANOMUSE_DEVICE_MODEL", "").strip()
+            if raw_model:
+                friendly = getattr(self.svc, "_friendly_device_model", None)
+                if callable(friendly):
+                    try:
+                        name = str(friendly(raw_model, f"Android {raw_model}".strip()) or "").strip()
+                        if name and name.lower() != "localhost":
+                            return name[:60]
+                    except Exception:
+                        pass
+                return raw_model[:60]
+            return "Android phone"
+        host = str(socket.gethostname() or "").strip()
+        if host and host.lower() != "localhost":
+            return host[:60]
+        return "computer"
 
     def _extra_actions(self) -> tuple[str, ...]:
         from nanomuse.coding.service import ACTIONS as CODING_ACTIONS

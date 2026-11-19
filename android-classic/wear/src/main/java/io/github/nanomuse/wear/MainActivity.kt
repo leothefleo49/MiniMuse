@@ -12,6 +12,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -87,8 +88,29 @@ class MainActivity : AppCompatActivity() {
     private lateinit var client: WatchClient
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var rootFrame: FrameLayout? = null
+    private var backdropLayer: FrameLayout? = null
     private var rootScroll: ScrollView? = null
     private var rootCol: LinearLayout? = null
+    private var bezelScrollbar: BezelScrollbarView? = null
+    private var volumeArcView: VolumeArcView? = null
+    private var homeChromeOverlay: View? = null
+    private var heroAvatarContainer: View? = null
+    private var chromeVisible = true
+    private var chromeHideRunnable: Runnable? = null
+    private var volumeHideRunnable: Runnable? = null
+
+    // Horizontal swipe pages: Swipe L->R for Chats/Side Menu, Home in center, R->L for MiniMuse Apps -> Settings
+    private enum class WatchPage { CHATS, HOME, APPS, SETTINGS }
+    private var activePage = WatchPage.HOME
+    private var selectedThreadId = "main"
+    private var activeMiniApp: WatchMiniApp? = null
+
+    // Touch swipe tracking (works alongside ScrollView and rotating bezel)
+    private var touchDownX = 0f
+    private var touchDownY = 0f
+    private var touchDownTime = 0L
+    private var swipeConsumed = false
 
     private var currentState: WatchState? = null
     private var discoveredServers: List<DiscoveredServer> = emptyList()
@@ -202,9 +224,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val scroll = ScrollView(this).apply {
+        val frame = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
+        }
+        val backdrop = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+        }
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
             isFillViewport = true
+            isVerticalScrollBarEnabled = false
             // the home hero wears the whole round screen: children may paint over the padding
             clipToPadding = false
             clipChildren = false
@@ -226,9 +255,44 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ),
         )
+        val scrollbar = BezelScrollbarView(this).apply { visibility = View.GONE }
+        val volArc = VolumeArcView(this).apply { visibility = View.GONE }
+        scroll.setOnScrollChangeListener { _, _, scrollY, _, _ ->
+            // 1. Update right-edge curved bezel scrollbar
+            val contentH = col.height
+            val viewH = scroll.height
+            val range = (contentH - viewH).coerceAtLeast(0)
+            if (range > dp(16) && (chatOpen || activePage != WatchPage.HOME)) {
+                val frac = (scrollY.toFloat() / range.toFloat()).coerceIn(0f, 1f)
+                val thumb = (viewH.toFloat() / contentH.toFloat()).coerceIn(0.16f, 0.55f)
+                scrollbar.updateScroll(frac, thumb)
+                scrollbar.visibility = View.VISIBLE
+            } else {
+                scrollbar.visibility = View.GONE
+            }
+            // 2. On Home, scrolling up smoothly shrinks the AI character (as requested)
+            if (activePage == WatchPage.HOME && !chatOpen && callPhase == CallPhase.OFF) {
+                heroAvatarContainer?.let { av ->
+                    val maxShrink = (resources.displayMetrics.widthPixels * 0.48f).coerceAtLeast(1f)
+                    val t = (scrollY.toFloat() / maxShrink).coerceIn(0f, 1f)
+                    val scale = 1f - 0.42f * t
+                    av.scaleX = scale
+                    av.scaleY = scale
+                    av.alpha = 1f - 0.35f * t
+                }
+            }
+        }
+        frame.addView(backdrop, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        frame.addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        frame.addView(scrollbar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        frame.addView(volArc, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        rootFrame = frame
+        backdropLayer = backdrop
         rootScroll = scroll
         rootCol = col
-        setContentView(scroll)
+        bezelScrollbar = scrollbar
+        volumeArcView = volArc
+        setContentView(frame)
 
         handleAutoPairIntent(intent)
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -484,17 +548,18 @@ class MainActivity : AppCompatActivity() {
     private fun fingerprint(st: WatchState): String = buildString {
         append(st.agentName).append('|').append(st.busy).append('|')
         append(st.avatarId).append('|').append(st.avatarEmoji).append('|')
+        append(st.threadId).append('|').append(st.threads.size).append('|').append(st.apps.size).append('|')
         append(st.approvals.joinToString { it.id + it.summary }).append('|')
-        append(st.recent.joinToString { it.role + it.text }).append('|')
+        append(st.recent.joinToString { it.role + it.text + it.reactions.joinToString("") }).append('|')
         append(st.actions.joinToString { it.label + it.prompt }).append('|')
         append(st.cards.joinToString { it.title + it.body }).append('|')
-        append(statusNotice).append('|').append(chatOpen).append(chatInputOpen)
+        append(statusNotice).append('|').append(chatOpen).append(chatInputOpen).append('|').append(activePage.name)
     }
 
     private fun refreshState(silent: Boolean = false) {
         if (!config.isPaired) return
         lifecycleScope.launch {
-            val res = client.fetchState()
+            val res = client.fetchState(selectedThreadId)
             res.onSuccess { st ->
                 currentState = st
                 lastStateError = ""
@@ -525,23 +590,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Find the same server at a new address and keep using it (a stale IP is the usual
-     *  reason a paired watch sits on "Connecting..." forever). */
+     *  reason a paired watch sits on "Connecting..." forever). Also probes loopback (127.0.0.1)
+     *  for Bluetooth/ADB-bridged phone links when watch Wi-Fi is off. */
     private fun maybeHealAddress() {
         val now = System.currentTimeMillis()
         if (now - healAttemptAtMs < 30_000L) return
         healAttemptAtMs = now
         lifecycleScope.launch {
             val found = LanDiscovery.scan(this@MainActivity, timeoutMs = 3000L)
-            if (found.isEmpty()) return@launch
             val saved = WatchConfig.normalizeUrl(config.serverUrl)
-            for (srv in found) {
-                val url = WatchConfig.normalizeUrl(srv.url)
-                if (url == saved) continue
+            val candidates = LinkedHashSet<String>()
+            found.forEach { candidates.add(WatchConfig.normalizeUrl(it.url)) }
+            candidates.add("http://127.0.0.1:8787")
+            for (url in candidates) {
+                if (url.isBlank() || url == saved) continue
                 val previous = config.serverUrl
                 config.serverUrl = url
-                val res = client.fetchState()
+                val res = client.fetchState(selectedThreadId)
                 if (res.isSuccess) {
-                    discoveredServers = found
+                    if (found.isNotEmpty()) discoveredServers = found
                     stateFailures = 0
                     lastStateError = ""
                     currentState = res.getOrNull()
@@ -637,11 +704,11 @@ class MainActivity : AppCompatActivity() {
         statusNotice = "Sending..."
         render()
         lifecycleScope.launch {
-            val res = client.ask(text)
+            val res = client.ask(text, threadId = selectedThreadId)
             res.onSuccess {
-                statusNotice = "Sent to ${config.agentName}"
-                render()
-                delay(1200L)
+                statusNotice = ""
+                refreshState(silent = false)
+                delay(1400L)
                 refreshState(silent = true)
             }.onFailure { err ->
                 statusNotice = err.message ?: "Send failed"
@@ -777,11 +844,137 @@ class MainActivity : AppCompatActivity() {
 
     private var volumeCarry = 0f
 
-    /** The rotating bezel: scrolls the page, and during a live call turns the call volume up and down. */
+    /** Horizontal swipe gestures for watch navigation (L->R: Chats/Side menu, R->L: Apps -> Settings)
+     *  and tap-to-wake for the auto-hiding Home buttons. */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                touchDownX = ev.x
+                touchDownY = ev.y
+                touchDownTime = System.currentTimeMillis()
+                swipeConsumed = false
+                if (activePage == WatchPage.HOME && !chatOpen && callPhase == CallPhase.OFF) {
+                    wakeHomeChrome()
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                val dx = ev.x - touchDownX
+                val dy = ev.y - touchDownY
+                val dt = System.currentTimeMillis() - touchDownTime
+                val minSwipe = dp(52).toFloat()
+                if (!swipeConsumed && dt < 700L && kotlin.math.abs(dx) > minSwipe && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.35f) {
+                    if (handleHorizontalSwipe(rightward = dx > 0f)) {
+                        swipeConsumed = true
+                        return true
+                    }
+                }
+            }
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun handleHorizontalSwipe(rightward: Boolean): Boolean {
+        if (!config.isPaired || voiceAskActive) return false
+        if (webShellOpen || activeMiniApp != null) {
+            if (rightward) {
+                webShellOpen = false
+                activeMiniApp = null
+                buzz(Buzz.TICK)
+                render()
+                return true
+            }
+            return false
+        }
+        if (chatOpen) {
+            if (rightward) {
+                chatOpen = false
+                chatInputOpen = false
+                statusNotice = ""
+                buzz(Buzz.TICK)
+                render()
+                return true
+            }
+            return false
+        }
+        if (callPhase != CallPhase.OFF) {
+            // During a live call, swipe right-to-left opens live transcript chat overlay
+            if (!rightward) {
+                chatOpen = true
+                buzz(Buzz.TICK)
+                render()
+                return true
+            }
+            return false
+        }
+        val next = when (activePage) {
+            WatchPage.CHATS -> if (!rightward) WatchPage.HOME else null
+            WatchPage.HOME -> if (rightward) WatchPage.CHATS else WatchPage.APPS
+            WatchPage.APPS -> if (rightward) WatchPage.HOME else WatchPage.SETTINGS
+            WatchPage.SETTINGS -> if (rightward) WatchPage.APPS else null
+        } ?: return false
+        activePage = next
+        buzz(Buzz.TICK)
+        rootScroll?.scrollTo(0, 0)
+        render()
+        return true
+    }
+
+    private fun wakeHomeChrome() {
+        cancelHomeChromeHide()
+        if (!chromeVisible) {
+            chromeVisible = true
+            homeChromeOverlay?.animate()?.alpha(1f)?.setDuration(220L)?.start()
+        }
+        scheduleHomeChromeHide()
+    }
+
+    private fun cancelHomeChromeHide() {
+        chromeHideRunnable?.let { mainHandler.removeCallbacks(it) }
+        chromeHideRunnable = null
+    }
+
+    private fun scheduleHomeChromeHide() {
+        cancelHomeChromeHide()
+        if (!config.autoHideHomeChrome) return
+        if (activePage != WatchPage.HOME || chatOpen || callPhase != CallPhase.OFF || voiceAskActive) return
+        val st = currentState ?: return
+        if (st.busy || statusNotice.isNotBlank() || availableWatchUpdate != null || st.approvals.isNotEmpty()) return
+        val r = Runnable {
+            if (activePage == WatchPage.HOME && !chatOpen && callPhase == CallPhase.OFF && !voiceAskActive && currentState?.busy != true) {
+                chromeVisible = false
+                homeChromeOverlay?.animate()?.alpha(0f)?.setDuration(420L)?.start()
+            }
+        }
+        chromeHideRunnable = r
+        mainHandler.postDelayed(r, 4500L)
+    }
+
+    private fun showVolumeArc(stream: Int) {
+        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val max = audio.getStreamMaxVolume(stream).coerceAtLeast(1)
+        val cur = audio.getStreamVolume(stream).coerceIn(0, max)
+        val frac = cur.toFloat() / max.toFloat()
+        volumeArcView?.let { v ->
+            v.setLevel(frac)
+            v.visibility = View.VISIBLE
+            v.alpha = 1f
+        }
+        volumeHideRunnable?.let { mainHandler.removeCallbacks(it) }
+        val r = Runnable {
+            volumeArcView?.animate()?.alpha(0f)?.setDuration(300L)?.withEndAction {
+                volumeArcView?.visibility = View.GONE
+            }?.start()
+        }
+        volumeHideRunnable = r
+        mainHandler.postDelayed(r, 2400L)
+    }
+
+    /** The rotating bezel: scrolls the page, and during a live call turns the call volume up and down
+     *  with the left-bezel curved cyan volume arc (matching the original Muse watch app). */
     override fun onGenericMotionEvent(ev: MotionEvent): Boolean {
         if (ev.action == MotionEvent.ACTION_SCROLL && ev.isFromSource(InputDevice.SOURCE_ROTARY_ENCODER)) {
             val axis = ev.getAxisValue(MotionEvent.AXIS_SCROLL)
-            if (callPhase != CallPhase.OFF) {
+            if (callPhase != CallPhase.OFF && !chatOpen) {
                 val (steps, carry) = Bezel.volumeSteps(axis, volumeCarry)
                 volumeCarry = carry
                 if (steps != 0) {
@@ -789,6 +982,7 @@ class MainActivity : AppCompatActivity() {
                     val stream = if (callMode == "realtime") AudioManager.STREAM_VOICE_CALL else AudioManager.STREAM_MUSIC
                     val dir = if (steps > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
                     repeat(kotlin.math.abs(steps)) { audio.adjustStreamVolume(stream, dir, 0) }
+                    showVolumeArc(stream)
                     buzz(Buzz.TICK)
                 }
             } else {
@@ -1073,37 +1267,72 @@ class MainActivity : AppCompatActivity() {
 
     private fun render() {
         stopHaloAnimation()
+        cancelHomeChromeHide()
+        homeChromeOverlay = null
+        heroAvatarContainer = null
         val col = rootCol ?: return
         col.removeAllViews()
+        backdropLayer?.removeAllViews()
+        bezelScrollbar?.visibility = View.GONE
         currentState?.let { renderedFingerprint = fingerprint(it) }
 
         if (!config.isPaired) {
             webShellOpen = false
+            activeMiniApp = null
             renderPairScreen(col)
-        } else if (webShellOpen) {
+        } else if (webShellOpen || activeMiniApp != null) {
             renderWebAppShell(col)
-        } else if (callPhase != CallPhase.OFF) {
-            renderLiveCallScreen(col)
         } else if (voiceAskActive) {
             renderVoiceAskScreen(col)
         } else if (chatOpen) {
+            // Keep the living animated character softly dimmed behind the chat bubbles (just like Muse watch OS)
+            backdropLayer?.let { bg ->
+                val screenW = resources.displayMetrics.widthPixels
+                val av = avatarHeroView(currentState)
+                bg.addView(av, FrameLayout.LayoutParams(screenW, screenW, Gravity.CENTER))
+                bg.addView(
+                    View(this).apply { setBackgroundColor(Color.parseColor("#B8000000")) },
+                    FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+                )
+            }
             renderChatScreen(col)
+        } else if (callPhase != CallPhase.OFF) {
+            renderLiveCallScreen(col)
         } else {
-            renderHomeScreen(col)
+            when (activePage) {
+                WatchPage.CHATS -> renderChatsDrawerScreen(col)
+                WatchPage.HOME -> renderHomeScreen(col)
+                WatchPage.APPS -> renderWatchAppsScreen(col)
+                WatchPage.SETTINGS -> renderSettingsScreen(col)
+            }
         }
     }
 
     private fun renderWebAppShell(col: LinearLayout) {
+        val mini = activeMiniApp
+        val label = if (mini != null) "Back · ${mini.name}" else "Back to Watch"
         col.addView(
-            pillButton("Back to Watch", "#18181B", strokeHex = "#2E2E34") {
+            pillButton(label, "#18181B", strokeHex = "#2E2E34") {
                 webShellOpen = false
+                activeMiniApp = null
                 render()
             },
         )
         val base = WatchConfig.normalizeUrl(config.serverUrl)
         val tok = config.token.trim()
-        val url = if (tok.isNotEmpty()) "$base/?watch=1#token=$tok" else "$base/?watch=1"
+        val url = if (mini != null) {
+            val path = if (mini.url.startsWith("http")) mini.url else "$base${mini.url}"
+            if (tok.isNotEmpty() && !path.contains("token=")) {
+                val sep = if (path.contains("?")) "&" else "?"
+                "$path${sep}token=$tok"
+            } else {
+                path
+            }
+        } else {
+            if (tok.isNotEmpty()) "$base/?watch=1#token=$tok" else "$base/?watch=1"
+        }
         val wv = WebView(this).apply {
+            setBackgroundColor(Color.BLACK)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.useWideViewPort = true
@@ -1111,9 +1340,13 @@ class MainActivity : AppCompatActivity() {
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
             }
-            loadUrl(url)
+            if (tok.isNotEmpty()) {
+                loadUrl(url, mapOf("Authorization" to "Bearer $tok"))
+            } else {
+                loadUrl(url)
+            }
         }
-        val h = (resources.displayMetrics.heightPixels * 0.78f).roundToInt().coerceAtLeast(dp(220))
+        val h = (resources.displayMetrics.heightPixels * 0.80f).roundToInt().coerceAtLeast(dp(220))
         col.addView(wv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h))
     }
 
@@ -1230,23 +1463,98 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderLiveCallScreen(col: LinearLayout) {
-        val (phaseLabel, orbHex, shouldPulse) = when (callPhase) {
-            CallPhase.CONNECTING -> Triple("Connecting...", "#2563EB", true)
-            CallPhase.LISTENING -> Triple(if (callMuted) "Mic muted" else "Listening", if (callMuted) "#52525B" else "#0168FF", !callMuted)
-            CallPhase.THINKING -> Triple("Thinking...", "#6366F1", true)
-            CallPhase.SPEAKING -> Triple("Speaking...", "#10B981", true)
-            CallPhase.OFF -> Triple("Off", "#52525B", false)
-        }
-        val modeTag = if (callMode == "realtime") "Realtime Voice" else "Voice Call"
-        col.addView(brandHeader(config.agentName, modeTag, dotHex = orbHex))
-        col.addView(pulsingOrb(label = phaseLabel, active = shouldPulse, accentHex = orbHex))
-
-        if (voiceDraft.isNotBlank()) {
-            col.addView(bubbleView(voiceDraft, isUser = true))
-        } else if (callStreamingReply.isNotBlank()) {
-            col.addView(bubbleView(callStreamingReply, isUser = false))
+        val st = currentState
+        val screenW = resources.displayMetrics.widthPixels
+        val (phaseLabel, glowHex, showArc) = when (callPhase) {
+            CallPhase.CONNECTING -> Triple("Connecting...", "#38BDF8", true)
+            CallPhase.LISTENING -> Triple(if (callMuted) "Mic muted" else "Listening...", if (callMuted) "#94A3B8" else "#60A5FA", false)
+            CallPhase.THINKING -> Triple("Thinking...", "#818CF8", true)
+            CallPhase.SPEAKING -> Triple("Speaking...", "#34D399", false)
+            CallPhase.OFF -> Triple("", "#38BDF8", false)
         }
 
+        // Exact Muse Watch Call Screen: full-bleed animated character stays front & center,
+        // curved glowing status along the top rim, sweeping arc while connecting, left-bezel
+        // cyan volume arc on bezel rotation, and 3 curved bezel buttons (bright pink End Call,
+        // Chat overlay toggle, Mic/Mute).
+        val hero = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(screenW, screenW).apply {
+                val round = resources.configuration.isScreenRound
+                val padH = if (round) (screenW * 0.11f).roundToInt() else dp(12)
+                val padV = if (round) (screenW * 0.14f).roundToInt() else dp(16)
+                marginStart = -padH
+                marginEnd = -padH
+                topMargin = -padV
+            }
+        }
+
+        val av = avatarHeroView(st)
+        av.alpha = if (callPhase == CallPhase.CONNECTING) 0.58f else 0.92f
+        hero.addView(av, FrameLayout.LayoutParams(screenW, screenW))
+
+        if (showArc) {
+            hero.addView(PulseArcView(this), FrameLayout.LayoutParams(screenW, screenW))
+        }
+
+        if (phaseLabel.isNotBlank()) {
+            hero.addView(
+                CurvedTopTextView(this, phaseLabel, glowHex),
+                FrameLayout.LayoutParams(screenW, screenW),
+            )
+        }
+
+        // Subtle live caption if someone is speaking
+        val caption = when {
+            voiceDraft.isNotBlank() -> voiceDraft
+            callStreamingReply.isNotBlank() -> callStreamingReply
+            else -> ""
+        }
+        if (caption.isNotBlank()) {
+            hero.addView(
+                TextView(this).apply {
+                    text = caption.take(90)
+                    textSize = 11.5f
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                    setTextColor(Color.WHITE)
+                    gravity = Gravity.CENTER
+                    background = roundRect("#A6121420", 14)
+                    setPadding(dp(10), dp(5), dp(10), dp(5))
+                },
+                FrameLayout.LayoutParams(
+                    (screenW * 0.72f).roundToInt(),
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
+                ).apply { bottomMargin = dp(86) },
+            )
+        }
+
+        // Bottom 3 curved bezel buttons: bright pink End Call (left), Chat overlay (center), Mute (right)
+        hero.addView(
+            arcButtons(
+                screenW,
+                iconButton(R.drawable.ic_call, "#FF2D8E") { endLiveCall() },
+                iconButton(R.drawable.ic_chat, null) {
+                    chatOpen = true
+                    render()
+                },
+                iconButton(R.drawable.ic_mic, if (callMuted) "#991B1B" else null) {
+                    callMuted = !callMuted
+                    if (callMode != "realtime") {
+                        if (callMuted) destroySpeechRecognizer() else beginSpeechRecognition(isLiveCall = true)
+                    }
+                    render()
+                },
+            ),
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM,
+            ).apply { bottomMargin = dp(6) },
+        )
+        col.addView(hero)
+
+        // Scroll down below hero during a call for +10s grace, Done, Speaker, and recent transcript
         if (callPhase == CallPhase.LISTENING || callMode == "universal") {
             val speakRow = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -1274,29 +1582,9 @@ class MainActivity : AppCompatActivity() {
             col.addView(speakRow)
         }
 
-        val ctrlRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }.also { it.layoutParams = marginBottomParams(dp(7)) }
-        ctrlRow.addView(
+        col.addView(
             pillButton(
-                if (callMuted) "Unmute" else "Mute",
-                if (callMuted) "#27272A" else "#121216",
-                strokeHex = "#2E2E36",
-            ) {
-                callMuted = !callMuted
-                if (callMode != "realtime") {
-                    if (callMuted) destroySpeechRecognizer() else beginSpeechRecognition(isLiveCall = true)
-                }
-                render()
-            }.also {
-                it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = dp(4)
-                }
-            },
-        )
-        ctrlRow.addView(
-            pillButton(
-                if (callSpeakerOff) "Spkr Off" else "Speaker",
+                if (callSpeakerOff) "Speaker: OFF" else "Speaker: ON",
                 if (callSpeakerOff) "#27272A" else "#121216",
                 strokeHex = "#2E2E36",
             ) {
@@ -1305,21 +1593,10 @@ class MainActivity : AppCompatActivity() {
                     try { tts?.stop() } catch (_: Exception) {}
                 }
                 render()
-            }.also {
-                it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginStart = dp(4)
-                }
-            },
-        )
-        col.addView(ctrlRow)
-
-        col.addView(
-            pillButton("End Call", "#991B1B", strokeHex = "#DC2626") {
-                endLiveCall()
             },
         )
 
-        for (line in callTranscript.takeLast(3).reversed()) {
+        for (line in callTranscript.takeLast(4).reversed()) {
             val isUserLine = line.startsWith("You: ")
             val clean = if (isUserLine) line.removePrefix("You: ") else line.removePrefix("${config.agentName}: ")
             col.addView(bubbleView(clean, isUser = isUserLine))
@@ -1330,8 +1607,10 @@ class MainActivity : AppCompatActivity() {
         val st = currentState
         val screenW = resources.displayMetrics.widthPixels
 
-        // Muse-style home: the agent's face wears the whole round screen, three round
-        // buttons sit at the bottom (call, chat, voice), the status glows at the top.
+        // Exact Muse Watch Home: full-bleed animated character filling the round OLED face,
+        // 3 translucent glass round buttons hugging the bottom bezel curve (auto-fading after
+        // idle so only the living character shows; tap anywhere to wake), curved top status
+        // only when connecting/busy/error, and scrolling up shrinks the character smoothly.
         val hero = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(screenW, screenW).apply {
                 // cancel the column padding so the face is full-bleed
@@ -1344,38 +1623,35 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        hero.addView(avatarHeroView(st), FrameLayout.LayoutParams(screenW, screenW))
+        val av = avatarHeroView(st)
+        heroAvatarContainer = av
+        hero.addView(av, FrameLayout.LayoutParams(screenW, screenW))
 
         val (statusLine, statusHex) = when {
             st != null && st.busy -> "Working..." to "#8AB8FF"
             st != null && statusNotice.isNotBlank() -> statusNotice to "#FDE68A"
-            st != null -> "Online" to "#9BE7C4"
+            st != null -> "" to "#9BE7C4"
             lastStateError.isNotBlank() && stateFailures >= 2 ->
-                "Can't reach ${hostLabel()}" to "#FCA5A5"
+                "Offline · ${hostLabel().take(16)}" to "#FCA5A5"
             else -> "Connecting..." to "#8AB8FF"
         }
-        hero.addView(
-            TextView(this).apply {
-                text = statusLine
-                textSize = 15f
-                setTypeface(null, Typeface.BOLD)
-                setTextColor(Color.WHITE)
-                gravity = Gravity.CENTER
-                setShadowLayer(14f, 0f, 0f, Color.parseColor(statusHex))
-                maxLines = 1
-            },
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP,
-            ).apply { topMargin = dp(16) },
-        )
+        if (statusLine.isNotBlank()) {
+            hero.addView(
+                CurvedTopTextView(this, statusLine, statusHex),
+                FrameLayout.LayoutParams(screenW, screenW),
+            )
+        }
 
         if (st == null || st.busy) {
             hero.addView(PulseArcView(this), FrameLayout.LayoutParams(screenW, screenW))
         }
 
-        // Quiet rows close to the top: the update chip and an approval hint (only when present).
+        // Chrome overlay (buttons + quiet hints + page dots) — auto-hides when peacefully idle
+        val chrome = FrameLayout(this).apply {
+            alpha = if (chromeVisible || !config.autoHideHomeChrome || st == null || st.busy) 1f else 0f
+        }
+        homeChromeOverlay = chrome
+
         val overlayCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -1384,7 +1660,7 @@ class MainActivity : AppCompatActivity() {
         if (upd != null) {
             overlayCol.addView(
                 pillButton(
-                    if (updatingWatchApk) "Updating ${watchUpdateProgress}%..." else "Update to Watch v${upd.version}",
+                    if (updatingWatchApk) "Updating ${watchUpdateProgress}%..." else "Update Watch v${upd.version}",
                     "#CC0D9488",
                     strokeHex = "#14B8A6",
                 ) {
@@ -1400,31 +1676,39 @@ class MainActivity : AppCompatActivity() {
         }
         if (st != null && st.approvals.isNotEmpty()) {
             overlayCol.addView(
-                TextView(this).apply {
-                    text = "Needs approval (${st.approvals.size}) - open Chat"
-                    textSize = 11f
-                    setTextColor(Color.parseColor("#FDE68A"))
-                    setShadowLayer(10f, 0f, 0f, Color.parseColor("#92400E"))
+                pillButton(
+                    "Approval needed (${st.approvals.size})",
+                    "#CC92400E",
+                    fgHex = "#FEF3C7",
+                    strokeHex = "#F59E0B",
+                ) {
+                    activePage = WatchPage.CHATS
+                    render()
+                }.apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    )
                 },
             )
         }
         if (overlayCol.childCount > 0) {
-            hero.addView(
+            chrome.addView(
                 overlayCol,
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     Gravity.TOP,
-                ).apply { topMargin = dp(44) },
+                ).apply { topMargin = dp(40) },
             )
         }
 
-        val callReady = st?.call?.realtimeSupported == true
-        hero.addView(
+        // Exact Muse video 3 translucent glass bezel buttons (call pink ONLY during active call)
+        chrome.addView(
             arcButtons(
                 screenW,
-                iconButton(R.drawable.ic_call, if (callReady) "#FF2D8E" else null) { startLiveCall() },
-                iconButton(R.drawable.ic_chat, "#0168FF") {
+                iconButton(R.drawable.ic_call, null) { startLiveCall() },
+                iconButton(R.drawable.ic_chat, null) {
                     chatOpen = true
                     statusNotice = ""
                     render()
@@ -1435,12 +1719,26 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM,
-            ).apply { bottomMargin = dp(10) },
+            ).apply { bottomMargin = dp(6) },
         )
+
+        // Subtle 4-page indicator dots at very top rim when no status text occupies it
+        if (statusLine.isBlank()) {
+            chrome.addView(
+                pageDotsRow(WatchPage.HOME),
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP or Gravity.CENTER_HORIZONTAL,
+                ).apply { topMargin = dp(10) },
+            )
+        }
+
+        hero.addView(chrome, FrameLayout.LayoutParams(screenW, screenW))
         col.addView(hero)
 
         // A paired watch that cannot reach its server must say so, with a way out, instead of
-        // sitting on "Connecting..." for ever.
+        // sitting on "Connecting..." forever.
         if (st == null && lastStateError.isNotBlank() && stateFailures >= 2) {
             col.addView(
                 noticeCard(
@@ -1479,6 +1777,7 @@ class MainActivity : AppCompatActivity() {
             col.addView(retryRow)
         }
 
+        // Scroll below hero reveals quick info cards + swipe hint shortcuts
         if (st != null && st.cards.isNotEmpty()) {
             for (card in st.cards.take(2)) {
                 val txt = if (card.title.isNotEmpty()) "${card.title}: ${card.body}" else card.body
@@ -1486,45 +1785,324 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Options stay tucked away: live UI, stay awake, update check, unpair
+        val navRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = marginBottomParams(dp(6))
+        }
+        navRow.addView(
+            pillButton("Chats", "#121216", fgHex = "#D4D4D8", strokeHex = "#26262C") {
+                activePage = WatchPage.CHATS
+                rootScroll?.scrollTo(0, 0)
+                render()
+            }.also {
+                it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(4)
+                }
+            },
+        )
+        navRow.addView(
+            pillButton("Apps", "#121216", fgHex = "#D4D4D8", strokeHex = "#26262C") {
+                activePage = WatchPage.APPS
+                rootScroll?.scrollTo(0, 0)
+                render()
+            }.also {
+                it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = dp(4)
+                }
+            },
+        )
+        col.addView(navRow)
         col.addView(
-            pillButton("Options", "#0D0D10", fgHex = "#9CA3AF", strokeHex = "#222228") {
-                optionsExpanded = !optionsExpanded
+            pillButton("Settings", "#0D0D10", fgHex = "#9CA3AF", strokeHex = "#222228") {
+                activePage = WatchPage.SETTINGS
+                rootScroll?.scrollTo(0, 0)
                 render()
             },
         )
-        if (optionsExpanded) {
+
+        scheduleHomeChromeHide()
+    }
+
+    /** Swipe Left -> Right from Home: Chats & Side Menu (switch between Main Chat & side chats,
+     *  answer approvals, and trigger quick actions). */
+    private fun renderChatsDrawerScreen(col: LinearLayout) {
+        val st = currentState
+        col.addView(pageDotsRow(WatchPage.CHATS))
+        col.addView(brandHeader("Chats", config.agentName, dotHex = "#495596"))
+
+        if (st != null && st.approvals.isNotEmpty()) {
+            col.addView(sectionLabel("Needs approval"))
+            for (ap in st.approvals.take(3)) {
+                col.addView(noticeCard("${ap.tool}: ${ap.summary}", "#271A07", "#FDE68A", strokeHex = "#92400E"))
+                val apRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                apRow.addView(
+                    pillButton("Allow", "#15803D", strokeHex = "#22C55E") {
+                        lifecycleScope.launch {
+                            client.approve(ap, approved = true)
+                            refreshState()
+                        }
+                    }.also {
+                        it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            marginEnd = dp(4)
+                        }
+                    },
+                )
+                apRow.addView(
+                    pillButton("Deny", "#7F1D1D", strokeHex = "#EF4444") {
+                        lifecycleScope.launch {
+                            client.approve(ap, approved = false)
+                            refreshState()
+                        }
+                    }.also {
+                        it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            marginStart = dp(4)
+                        }
+                    },
+                )
+                col.addView(apRow)
+            }
+        }
+
+        val threads = st?.threads ?: emptyList()
+        if (threads.isNotEmpty()) {
+            for (th in threads.take(12)) {
+                val active = th.id == selectedThreadId
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = rippleBackground(
+                        if (active) "#1E294B" else "#121216",
+                        if (active) "#495596" else "#26262C",
+                        16,
+                    )
+                    setPadding(dp(12), dp(9), dp(12), dp(9))
+                    layoutParams = marginBottomParams(dp(7))
+                    setOnClickListener {
+                        buzz(Buzz.CLICK)
+                        selectedThreadId = th.id
+                        activePage = WatchPage.HOME
+                        chatOpen = true
+                        refreshState(silent = false)
+                        render()
+                    }
+                }
+                val titleRow = TextView(this).apply {
+                    text = if (th.isMain) "${th.title} ★" else th.title
+                    textSize = 13f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(Color.WHITE)
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                }
+                card.addView(titleRow)
+                if (th.preview.isNotBlank()) {
+                    card.addView(
+                        TextView(this).apply {
+                            text = th.preview
+                            textSize = 11f
+                            setTextColor(Color.parseColor("#A1A1AA"))
+                            maxLines = 2
+                            ellipsize = TextUtils.TruncateAt.END
+                        },
+                    )
+                }
+                col.addView(card)
+            }
+        } else {
             col.addView(
-                pillButton("Open Live UI", "#121216", fgHex = "#E4E4E7", strokeHex = "#26262C") {
-                    webShellOpen = true
+                pillButton("Open Main Chat", "#495596", strokeHex = "#6366F1") {
+                    selectedThreadId = "main"
+                    activePage = WatchPage.HOME
+                    chatOpen = true
                     render()
                 },
             )
-            val wakeLabel = if (config.keepScreenOnDuringVoice) "Stay Awake Voice: ON" else "Stay Awake Voice: OFF"
+        }
+
+        if (st != null && st.actions.isNotEmpty()) {
+            col.addView(sectionLabel("Quick actions"))
+            for (act in st.actions.take(3)) {
+                col.addView(
+                    pillButton(act.label, "#121216", fgHex = "#E4E4E7", strokeHex = "#26262C") {
+                        selectedThreadId = "main"
+                        activePage = WatchPage.HOME
+                        chatOpen = true
+                        submitWatchAsk(act.prompt)
+                    },
+                )
+            }
+        }
+
+        col.addView(
+            pillButton("Home →", "#0D0D10", fgHex = "#9CA3AF", strokeHex = "#222228") {
+                activePage = WatchPage.HOME
+                rootScroll?.scrollTo(0, 0)
+                render()
+            },
+        )
+    }
+
+    /** Swipe Right -> Left from Home: MiniMuse Watch Apps (open AI-built HTML apps on your wrist,
+     *  or ask MiniMuse to build / optimize an app for the watch). */
+    private fun renderWatchAppsScreen(col: LinearLayout) {
+        val st = currentState
+        col.addView(pageDotsRow(WatchPage.APPS))
+        col.addView(brandHeader("Watch Apps", "Made by ${config.agentName}", dotHex = "#10B981"))
+
+        val apps = st?.apps ?: emptyList()
+        if (apps.isEmpty()) {
             col.addView(
-                pillButton(wakeLabel, "#141418", strokeHex = "#282830") {
-                    config.keepScreenOnDuringVoice = !config.keepScreenOnDuringVoice
-                    updateWakeLocks()
-                    render()
-                },
+                noticeCard(
+                    "No MiniMuse apps found yet. Ask ${config.agentName} to make a watch app or optimize an existing app for Wear OS!",
+                    "#121216",
+                    "#A1A1AA",
+                    strokeHex = "#26262C",
+                ),
             )
-            val checkLabel = if (checkingWatchUpdate) "Checking Updates..." else "Check Update (v${BuildConfig.VERSION_NAME})"
+        } else {
+            for (app in apps.take(15)) {
+                val badge = if (app.watchOptimized) " · Watch" else ""
+                col.addView(
+                    pillButton(
+                        "${app.name}$badge",
+                        if (app.watchOptimized) "#102420" else "#121216",
+                        fgHex = "#FFFFFF",
+                        strokeHex = if (app.watchOptimized) "#10B981" else "#26262C",
+                    ) {
+                        buzz(Buzz.CLICK)
+                        activeMiniApp = app
+                        render()
+                    },
+                )
+            }
+        }
+
+        col.addView(
+            pillButton("+ Ask to Build Watch App", "#101E36", fgHex = "#93C5FD", strokeHex = "#2563EB") {
+                activePage = WatchPage.HOME
+                startVoiceAsk()
+            },
+        )
+        col.addView(
+            pillButton("Settings →", "#121216", fgHex = "#E4E4E7", strokeHex = "#26262C") {
+                activePage = WatchPage.SETTINGS
+                rootScroll?.scrollTo(0, 0)
+                render()
+            },
+        )
+    }
+
+    /** Swipe Right -> Left from Apps: Watch Settings, Bluetooth/server self-update, Live UI, Unpair. */
+    private fun renderSettingsScreen(col: LinearLayout) {
+        val st = currentState
+        col.addView(pageDotsRow(WatchPage.SETTINGS))
+        col.addView(
+            brandHeader(
+                "Settings",
+                if (st != null) "Connected · ${hostLabel().take(18)}" else "Offline · ${hostLabel().take(18)}",
+                dotHex = if (st != null) "#10B981" else "#EF4444",
+            ),
+        )
+
+        if (statusNotice.isNotBlank()) {
+            col.addView(noticeCard(statusNotice, "#0F1B33", "#93C5FD", strokeHex = "#1E3A8A"))
+        }
+
+        val upd = availableWatchUpdate
+        if (upd != null) {
             col.addView(
-                pillButton(checkLabel, "#141418", strokeHex = "#282830") {
-                    if (!checkingWatchUpdate) maybeAutoCheckWatchUpdate(force = true)
-                }.apply { isEnabled = !checkingWatchUpdate },
+                pillButton(
+                    if (updatingWatchApk) "Updating ${watchUpdateProgress}%..." else "Install Watch v${upd.version}",
+                    "#0D9488",
+                    strokeHex = "#14B8A6",
+                ) {
+                    if (!updatingWatchApk) startSingleFlightWatchUpdate(upd)
+                }.apply { isEnabled = !updatingWatchApk },
             )
-            col.addView(
-                pillButton("Unpair Watch", "#3B0D0D", fgHex = "#FCA5A5", strokeHex = "#7F1D1D") {
-                    endLiveCall()
-                    config.clearPairing()
-                    currentState = null
-                    statusNotice = ""
-                    optionsExpanded = false
-                    render()
-                    startLanScan()
-                },
-            )
+        }
+
+        val checkLabel = if (checkingWatchUpdate) "Checking Updates..." else "Check Watch Update (v${BuildConfig.VERSION_NAME})"
+        col.addView(
+            pillButton(checkLabel, "#141418", strokeHex = "#282830") {
+                if (!checkingWatchUpdate) maybeAutoCheckWatchUpdate(force = true)
+            }.apply { isEnabled = !checkingWatchUpdate },
+        )
+
+        val wakeLabel = if (config.keepScreenOnDuringVoice) "Stay Awake Voice: ON" else "Stay Awake Voice: OFF"
+        col.addView(
+            pillButton(wakeLabel, "#141418", strokeHex = "#282830") {
+                config.keepScreenOnDuringVoice = !config.keepScreenOnDuringVoice
+                updateWakeLocks()
+                render()
+            },
+        )
+
+        val autoHideLabel = if (config.autoHideHomeChrome) "Auto-Hide Buttons: ON" else "Auto-Hide Buttons: OFF"
+        col.addView(
+            pillButton(autoHideLabel, "#141418", strokeHex = "#282830") {
+                config.autoHideHomeChrome = !config.autoHideHomeChrome
+                chromeVisible = true
+                render()
+            },
+        )
+
+        col.addView(
+            pillButton("Reconnect / Refresh", "#101E36", fgHex = "#93C5FD", strokeHex = "#1D4ED8") {
+                stateFailures = 0
+                lastStateError = ""
+                statusNotice = "Refreshing..."
+                render()
+                refreshState(silent = false)
+            },
+        )
+
+        col.addView(
+            pillButton("Open Full Live UI", "#121216", fgHex = "#E4E4E7", strokeHex = "#26262C") {
+                webShellOpen = true
+                render()
+            },
+        )
+
+        col.addView(
+            pillButton("Unpair Watch", "#3B0D0D", fgHex = "#FCA5A5", strokeHex = "#7F1D1D") {
+                endLiveCall()
+                config.clearPairing()
+                currentState = null
+                statusNotice = ""
+                activePage = WatchPage.HOME
+                render()
+                startLanScan()
+            },
+        )
+    }
+
+    private fun pageDotsRow(current: WatchPage): LinearLayout {
+        val pages = listOf(WatchPage.CHATS, WatchPage.HOME, WatchPage.APPS, WatchPage.SETTINGS)
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = dp(4)
+            }
+            for (p in pages) {
+                val active = p == current
+                addView(
+                    View(this@MainActivity).apply {
+                        val sz = dp(if (active) 6 else 4)
+                        layoutParams = LinearLayout.LayoutParams(sz, sz).apply {
+                            marginStart = dp(3)
+                            marginEnd = dp(3)
+                        }
+                        background = GradientDrawable().apply {
+                            shape = GradientDrawable.OVAL
+                            setColor(if (active) Color.WHITE else Color.parseColor("#55FFFFFF"))
+                        }
+                    },
+                )
+            }
         }
     }
 
@@ -1785,15 +2363,27 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** The chat screen the hero's bubble opens: indigo bubbles, white text, keyboard and mic at the bottom. */
+    /** The chat overlay matching the real Muse watch OS: rich indigo assistant bubbles,
+     *  warm orange user pills, emoji reactions, curved right-edge scrollbar, keyboard + mic
+     *  along the bottom, and auto-scroll to newest messages at the bottom. */
     private fun renderChatScreen(col: LinearLayout) {
         val st = currentState
+        val headerTitle = if (selectedThreadId == "main") config.agentName else (st?.threadTitle ?: selectedThreadId)
         col.addView(
-            pillButton("Back", "#121216", fgHex = "#E4E4E7", strokeHex = "#26262C") {
-                chatOpen = false
-                chatInputOpen = false
-                statusNotice = ""
-                render()
+            TextView(this).apply {
+                text = "← $headerTitle"
+                textSize = 12.5f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#CBD5E1"))
+                gravity = Gravity.CENTER
+                setPadding(dp(8), dp(2), dp(8), dp(8))
+                setOnClickListener {
+                    buzz(Buzz.TICK)
+                    chatOpen = false
+                    chatInputOpen = false
+                    statusNotice = ""
+                    render()
+                }
             },
         )
         // Approvals need an answer, so they come first.
@@ -1833,38 +2423,29 @@ class MainActivity : AppCompatActivity() {
         }
         val recent = st?.recent ?: emptyList()
         for (msg in recent) {
-            col.addView(bubbleView(msg.text.take(600), isUser = msg.role == "user"))
+            col.addView(bubbleView(msg.text.take(600), isUser = msg.role == "user", reactions = msg.reactions))
         }
         if (recent.isEmpty()) {
-            col.addView(noticeCard("Say hello - your agent answers here.", "#121216", "#A1A1AA", strokeHex = "#26262C"))
+            col.addView(noticeCard("Say hello - ${config.agentName} answers here.", "#121216", "#A1A1AA", strokeHex = "#26262C"))
         }
-        // Quick actions the agent offered on the watch.
-        if (st != null && st.actions.isNotEmpty()) {
-            for (act in st.actions.take(3)) {
-                col.addView(
-                    pillButton(act.label, "#121216", fgHex = "#E4E4E7", strokeHex = "#26262C") {
-                        statusNotice = "Sending: ${act.label}..."
-                        render()
-                        lifecycleScope.launch {
-                            client.ask(act.prompt).onSuccess {
-                                statusNotice = "Sent"
-                                refreshState()
-                            }.onFailure { err ->
-                                statusNotice = err.message ?: "Failed"
-                                render()
-                            }
-                        }
-                    },
-                )
-            }
-        }
-        // The input row: keyboard, the typed prompt + send (when open), the mic.
+        // Bottom icon bar: pink End Call (if call is live), Keyboard, inline input + Send, Mic.
         val inputRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.BOTTOM
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = dp(8)
+            }
+        }
+        if (callPhase != CallPhase.OFF && !chatInputOpen) {
+            inputRow.addView(
+                iconButton(R.drawable.ic_call, "#FF2D8E", sizeDp = 40) { endLiveCall() },
+            )
         }
         inputRow.addView(
-            iconButton(R.drawable.ic_keyboard, null, sizeDp = 38) {
+            iconButton(R.drawable.ic_keyboard, null, sizeDp = 40) {
                 keyboardWarned = false
                 chatInputOpen = !chatInputOpen
                 render()
@@ -1872,7 +2453,7 @@ class MainActivity : AppCompatActivity() {
         )
         if (chatInputOpen) {
             val input = EditText(this).apply {
-                hint = "Ask..."
+                hint = "Message..."
                 setText(chatDraft)
                 setHintTextColor(Color.parseColor("#71717A"))
                 setTextColor(Color.WHITE)
@@ -1880,7 +2461,7 @@ class MainActivity : AppCompatActivity() {
                 isSingleLine = true
                 isFocusableInTouchMode = true
                 imeOptions = EditorInfo.IME_ACTION_SEND
-                background = outlinedRect("#121216", "#2A2A32", 14)
+                background = outlinedRect("#121216", "#495596", 14)
                 setPadding(dp(10), dp(8), dp(10), dp(8))
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -1910,11 +2491,11 @@ class MainActivity : AppCompatActivity() {
             inputRow.addView(
                 input,
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = dp(6)
+                    marginEnd = dp(4)
                 },
             )
             inputRow.addView(
-                iconButton(R.drawable.ic_send, "#0168FF", sizeDp = 38) {
+                iconButton(R.drawable.ic_send, "#E87A24", sizeDp = 40) {
                     val text = chatDraft.trim()
                     if (text.isNotEmpty()) {
                         chatDraft = ""
@@ -1927,9 +2508,14 @@ class MainActivity : AppCompatActivity() {
             inputRow.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         }
         inputRow.addView(
-            iconButton(R.drawable.ic_mic, null, sizeDp = 38) { startVoiceAsk() },
+            iconButton(R.drawable.ic_mic, null, sizeDp = 40) { startVoiceAsk() },
         )
         col.addView(inputRow)
+
+        // Scroll to newest messages at the bottom automatically
+        rootScroll?.post {
+            rootScroll?.fullScroll(View.FOCUS_DOWN)
+        }
 
         // The keyboard button promises a keyboard: give the field focus and ask the watch's
         // own input method to open. Without this the field existed but nothing ever appeared.
@@ -1940,7 +2526,6 @@ class MainActivity : AppCompatActivity() {
                     val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
                     val shown = imm?.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT) == true
                     if (!shown) {
-                        // no keyboard app on this watch: say it once, the mic still works
                         imm?.showSoftInput(field, InputMethodManager.SHOW_FORCED)
                         if (!keyboardWarned) {
                             keyboardWarned = true
@@ -1952,22 +2537,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** A round icon button like the Muse hero's: a translucent circle, a white glyph, pink when active. */
+    /** A round icon button like the Muse hero's: a dark frosted translucent glass circle with a
+     *  delicate white rim and white vector glyph, turning bright pink (#FF2D8E) when a call is active. */
     private fun iconButton(iconRes: Int, activeHex: String? = null, sizeDp: Int = 48, onClick: () -> Unit): View {
         val size = dp(sizeDp)
-        // a quarter of the button on each side left the glyph tiny on a watch face; a fifth
-        // keeps the circle and makes the symbol readable at arm's length
         val pad = dp(sizeDp / 5)
         return FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(size, size).apply {
-                marginStart = dp(6)
-                marginEnd = dp(6)
+                marginStart = dp(4)
+                marginEnd = dp(4)
             }
             background = RippleDrawable(
-                ColorStateList.valueOf(Color.parseColor("#33FFFFFF")),
+                ColorStateList.valueOf(Color.parseColor("#38FFFFFF")),
                 GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
-                    setColor(if (activeHex != null) Color.parseColor(activeHex) else Color.parseColor("#59000000"))
+                    setColor(if (activeHex != null) Color.parseColor(activeHex) else Color.parseColor("#73000000"))
+                    if (activeHex == null) {
+                        setStroke(dp(1).coerceAtLeast(1), Color.parseColor("#3DFFFFFF"))
+                    }
                 },
                 GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
@@ -1990,6 +2577,109 @@ class MainActivity : AppCompatActivity() {
                 buzz(Buzz.CLICK)
                 onClick()
             }
+        }
+    }
+
+    /** Curved glowing status text hugging the top circular bezel rim (just like "Connecting..."
+     *  in the original Muse Wear OS app). */
+    inner class CurvedTopTextView(
+        context: Context,
+        private val label: String,
+        glowHex: String,
+    ) : View(context) {
+        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = 14f * resources.displayMetrics.scaledDensity
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            textAlign = Paint.Align.CENTER
+            setShadowLayer(12f, 0f, 0f, Color.parseColor(glowHex))
+        }
+        private val arcPath = Path()
+
+        override fun onDraw(canvas: Canvas) {
+            if (label.isBlank()) return
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val inset = dp(24).toFloat()
+            val rect = RectF(inset, inset, w - inset, h - inset)
+            arcPath.reset()
+            arcPath.addArc(rect, 210f, 120f)
+            canvas.drawTextOnPath(label, arcPath, 0f, 0f, textPaint)
+        }
+    }
+
+    /** Glowing cyan curved volume arc along the LEFT bezel (135°..225°) when turning the watch
+     *  bezel during a live call — matching the exact original Muse watch OS visual. */
+    inner class VolumeArcView(context: Context) : View(context) {
+        private var level = 0.6f
+        private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            color = Color.parseColor("#33FFFFFF")
+            strokeWidth = dp(5).toFloat()
+            strokeCap = Paint.Cap.ROUND
+        }
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            color = Color.parseColor("#38BDF8")
+            strokeWidth = dp(5).toFloat()
+            strokeCap = Paint.Cap.ROUND
+            setShadowLayer(10f, 0f, 0f, Color.parseColor("#0284C7"))
+        }
+
+        fun setLevel(fraction: Float) {
+            level = fraction.coerceIn(0f, 1f)
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val inset = dp(9).toFloat()
+            val rect = RectF(inset, inset, w - inset, h - inset)
+            // Left bezel arc: bottom-left (142°) clockwise up to top-left (218°), total 76°
+            val totalSweep = 76f
+            canvas.drawArc(rect, 142f, totalSweep, false, trackPaint)
+            val activeSweep = (totalSweep * level).coerceAtLeast(4f)
+            canvas.drawArc(rect, 142f, activeSweep, false, fillPaint)
+        }
+    }
+
+    /** Sleek curved right-edge scrollbar arc along the right bezel during Chat & lists
+     *  (matching the original Muse watch OS video). */
+    inner class BezelScrollbarView(context: Context) : View(context) {
+        private var fraction = 0f
+        private var thumbFraction = 0.28f
+        private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            color = Color.parseColor("#24FFFFFF")
+            strokeWidth = dp(3).toFloat()
+            strokeCap = Paint.Cap.ROUND
+        }
+        private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            color = Color.parseColor("#CC93C5FD")
+            strokeWidth = dp(3.5f.roundToInt()).toFloat()
+            strokeCap = Paint.Cap.ROUND
+        }
+
+        fun updateScroll(scrollFraction: Float, thumbSize: Float) {
+            fraction = scrollFraction.coerceIn(0f, 1f)
+            thumbFraction = thumbSize.coerceIn(0.14f, 0.6f)
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val inset = dp(7).toFloat()
+            val rect = RectF(inset, inset, w - inset, h - inset)
+            // Right bezel arc: -34° to +34° (68° total)
+            val startDeg = -34f
+            val totalSweep = 68f
+            canvas.drawArc(rect, startDeg, totalSweep, false, trackPaint)
+            val thumbSweep = totalSweep * thumbFraction
+            val thumbStart = startDeg + (totalSweep - thumbSweep) * fraction
+            canvas.drawArc(rect, thumbStart, thumbSweep, false, thumbPaint)
         }
     }
 
@@ -2225,24 +2915,39 @@ class MainActivity : AppCompatActivity() {
         setPadding(dp(12), dp(9), dp(12), dp(9))
     }.also { it.layoutParams = marginBottomParams(dp(7)) }
 
-    private fun bubbleView(text: String, isUser: Boolean): LinearLayout {
+    private fun bubbleView(text: String, isUser: Boolean, reactions: List<String> = emptyList()): LinearLayout {
         return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+            orientation = LinearLayout.VERTICAL
             gravity = if (isUser) Gravity.END else Gravity.START
-            layoutParams = marginBottomParams(dp(6))
+            layoutParams = marginBottomParams(dp(7))
             val tv = TextView(this@MainActivity).apply {
                 this.text = text
                 textSize = 12.5f
                 setTextColor(Color.WHITE)
                 background = if (isUser) {
-                    roundRect("#015CFB", 18)
+                    roundRect("#E87A24", 20)
                 } else {
-                    roundRect("#3E4266", 18)
+                    roundRect("#E6495596", 20)
                 }
-                setPadding(dp(11), dp(8), dp(11), dp(8))
-                maxWidth = (resources.displayMetrics.widthPixels * 0.72f).roundToInt()
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                maxWidth = (resources.displayMetrics.widthPixels * 0.76f).roundToInt()
             }
             addView(tv)
+            if (reactions.isNotEmpty()) {
+                addView(
+                    TextView(this@MainActivity).apply {
+                        this.text = reactions.joinToString(" ")
+                        textSize = 12f
+                        setTextColor(Color.WHITE)
+                        background = roundRect("#99181A24", 12)
+                        setPadding(dp(7), dp(2), dp(7), dp(2))
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ).apply { topMargin = dp(2) }
+                    },
+                )
+            }
         }
     }
 

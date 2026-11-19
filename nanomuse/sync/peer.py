@@ -644,6 +644,8 @@ def load_pairs(data_dir: str | Path) -> list[dict[str, str]]:
             }
             if p.get("id"):
                 entry["id"] = str(p["id"])
+            if p.get("kind"):
+                entry["kind"] = str(p["kind"])
             out.append(entry)
     return out
 
@@ -664,7 +666,12 @@ def save_pairs(data_dir: str | Path, pairs: list[dict[str, str]]) -> None:
 
 
 def add_pair(
-    data_dir: str | Path, url: str, token: str, name: str = "", device_id: str = ""
+    data_dir: str | Path,
+    url: str,
+    token: str,
+    name: str = "",
+    device_id: str = "",
+    kind: str = "",
 ) -> dict[str, str]:
     """Record a peer: its token into the vault, its address and name into ``pairs.json``.
 
@@ -676,7 +683,10 @@ def add_pair(
     from nanomuse.vault.vault import CredentialVault
 
     url = _pair_url(url)
-    name = (name or urlsplit(url).hostname or "peer").strip()[:60]
+    clean_name = str(name or "").strip()
+    if clean_name.lower() == "localhost":
+        clean_name = ""
+    name = (clean_name or urlsplit(url).hostname or "peer").strip()[:60]
     did = str(device_id or "").strip()[:80]
     slot = _pair_slot(did or name)
     vault = CredentialVault(Path(data_dir) / "vault.enc", Path(data_dir) / "vault.key")
@@ -693,6 +703,8 @@ def add_pair(
     entry: dict[str, str] = {"name": name, "url": url, "key": f"{{{{vault:{slot}}}}}"}
     if did:
         entry["id"] = did
+    if kind:
+        entry["kind"] = str(kind).strip()[:20]
     pairs.append(entry)
     save_pairs(data_dir, pairs)
     return entry

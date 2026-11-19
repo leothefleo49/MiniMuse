@@ -1,6 +1,6 @@
-import { Bug, CalendarDays, LayoutGrid, Lightbulb, MapPin, Menu, MessageCircle, MonitorSmartphone, Newspaper, Search, SlidersHorizontal, SquareCheckBig, TerminalSquare, UserRound, Wrench, X } from "lucide-react";
+import { Bug, CalendarDays, LayoutGrid, Lightbulb, MapPin, Maximize2, Menu, MessageCircle, Minimize2, MonitorSmartphone, Newspaper, Search, SlidersHorizontal, SquareCheckBig, TerminalSquare, UserRound, Wrench, X } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
-import { desktopBridge } from "../desktop";
+import { desktopBridge, toggleDesktopFullscreen, useDesktopFullscreen } from "../desktop";
 import { directPeersOnline } from "../devicePeers";
 import { useDeveloperTools } from "../devtools";
 import { useT } from "../i18n";
@@ -36,6 +36,7 @@ export function Sidebar() {
   const [query, setQuery] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
   const developer = useDeveloperTools();
+  const desktopFs = useDesktopFullscreen();
   const { profile, status } = state;
   const name = profile?.name ?? "MiniMuse";
 
@@ -130,6 +131,16 @@ export function Sidebar() {
         </nav>
 
         <div className="flex w-full flex-col items-center gap-0.5 px-2 pb-3 pt-2">
+          <button
+            type="button"
+            onClick={() => void toggleDesktopFullscreen()}
+            aria-pressed={desktopFs}
+            className={railButton(desktopFs)}
+            title={desktopFs ? t("Exit fullscreen (F11)") : t("Fullscreen (F11)")}
+          >
+            {desktopFs ? <Minimize2 size={19} className="text-accent" /> : <Maximize2 size={19} className="text-fg/60" />}
+            <span className="max-w-full truncate">{desktopFs ? t("Exit full") : t("Fullscreen")}</span>
+          </button>
           <button
             type="button"
             onClick={() => setTab("account")}

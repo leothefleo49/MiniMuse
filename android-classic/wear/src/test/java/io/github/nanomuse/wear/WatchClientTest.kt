@@ -120,4 +120,40 @@ class WatchClientTest {
         )
         assertEquals(emptyList<String>(), WatchClient.pairingCandidates("", "", emptyList()))
         assertEquals(listOf("http://10.0.0.2:9000"), WatchClient.pairingCandidates("10.0.0.2:9000", "", emptyList()))
-    }}
+    }
+
+    @Test
+    fun `WatchState fromJson parses threads watch apps reactions and avatar clips`() {
+        val raw = """
+            {
+              "agent_name": "Sir Diddlage",
+              "thread_id": "t_food",
+              "thread_title": "Food Log",
+              "version": "1.2.13",
+              "busy": false,
+              "avatar": {"id": "1791236806916264653", "emoji": "⚡", "color": "#ff2a85", "clips": ["idle", "working"]},
+              "recent": [
+                {"role": "user", "text": "Already knew"},
+                {"role": "assistant", "text": "Bet, dropping it then", "reactions": ["👍"]}
+              ],
+              "threads": [
+                {"id": "main", "title": "Main Chat", "preview": "Hey Tyler", "is_main": true, "busy": false},
+                {"id": "t_food", "title": "Food Log", "preview": "Logged steak", "is_main": false, "busy": false}
+              ],
+              "apps": [
+                {"id": "apps/watch-timer.html", "name": "Watch Timer", "path": "apps/watch-timer.html", "url": "/api/files/apps/watch-timer.html", "watch_optimized": true}
+              ]
+            }
+        """.trimIndent()
+        val st = WatchState.fromJson(JSONObject(raw))
+        assertEquals("Sir Diddlage", st.agentName)
+        assertEquals("t_food", st.threadId)
+        assertEquals("Food Log", st.threadTitle)
+        assertEquals(listOf("idle", "working"), st.avatarClips)
+        assertEquals(listOf("👍"), st.recent[1].reactions)
+        assertEquals(2, st.threads.size)
+        assertTrue(st.threads[0].isMain)
+        assertEquals(1, st.apps.size)
+        assertTrue(st.apps[0].watchOptimized)
+    }
+}

@@ -219,6 +219,49 @@ def _run_native_window(
         _log(f"pywebview unavailable ({exc}); falling back")
         return False
 
+    state_file = (storage_dir / "window-state.json") if storage_dir is not None else None
+    start_fullscreen = False
+    if state_file is not None and state_file.is_file():
+        try:
+            saved = json.loads(state_file.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                start_fullscreen = bool(saved.get("fullscreen", False))
+        except Exception:  # noqa: BLE001
+            pass
+
+    fs_state = {"fullscreen": start_fullscreen}
+    win_holder: dict[str, object] = {}
+
+    def _save_window_state() -> None:
+        if state_file is None:
+            return
+        try:
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(
+                json.dumps({"fullscreen": bool(fs_state["fullscreen"])}), encoding="utf-8"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    class _DesktopWindowApi:
+        def is_fullscreen(self) -> bool:
+            return bool(fs_state["fullscreen"])
+
+        def set_fullscreen(self, enabled: bool) -> bool:
+            want = bool(enabled)
+            w = win_holder.get("win")
+            if w is not None and want != bool(fs_state["fullscreen"]):
+                try:
+                    w.toggle_fullscreen()
+                    fs_state["fullscreen"] = want
+                    _save_window_state()
+                except Exception as exc:  # noqa: BLE001
+                    _log(f"toggle_fullscreen failed: {exc}")
+            return bool(fs_state["fullscreen"])
+
+        def toggle_fullscreen(self) -> bool:
+            return self.set_fullscreen(not bool(fs_state["fullscreen"]))
+
     try:
         win = webview.create_window(
             "MiniMuse",
@@ -226,15 +269,18 @@ def _run_native_window(
             width=1220,
             height=840,
             min_size=(420, 620),
-            maximized=True,
+            maximized=not start_fullscreen,
+            fullscreen=start_fullscreen,
             text_select=True,
             confirm_close=False,
+            js_api=_DesktopWindowApi(),
         )
     except Exception as exc:  # noqa: BLE001
         _log(f"webview.create_window failed: {exc}")
         return False
     if win is None:
         return False
+    win_holder["win"] = win
 
     def _destroy_win() -> None:
         try:

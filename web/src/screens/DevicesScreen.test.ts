@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { countDevices, peerDisplayName, peerKind, uniqueDirectPeers } from "../devicePeers";
 import { normalizeWindows, onlyUnlistedPhones, sameDeviceName } from "./DevicesScreen";
 
 // "Something interrupted the screen — Cannot read properties of undefined (reading 'toLowerCase')"
@@ -46,5 +47,76 @@ describe("normalizeWindows", () => {
     expect(normalizeWindows(undefined)).toEqual([]);
     expect(normalizeWindows({})).toEqual([]);
     expect(normalizeWindows("x")).toEqual([]);
+  });
+});
+
+describe("unified device counts and peer deduplication", () => {
+  it("counts this phone + paired PC as 2 devices across all screens", () => {
+    const local = {
+      computer: { id: "local:computer", name: "Galaxy S24", kind: "phone" as const, online: true, this: true },
+      phones: [],
+    };
+    const sync = {
+      enabled: true,
+      available: true,
+      paused: false,
+      cursor: 0,
+      last_pull_at: null,
+      last_push_at: null,
+      error: "",
+      device_id: "phone-abc123",
+      peers: [
+        {
+          id: "pc-ceff25c24442",
+          name: "DESKTOP-F71C82T",
+          kind: "computer",
+          url: "http://192.168.1.223:8787",
+          online: true,
+          last_sync_at: null,
+          last_error: "",
+          pending: 0,
+        },
+      ],
+    };
+    expect(countDevices(null, local, sync)).toEqual({ total: 2, online: 2 });
+  });
+
+  it("deduplicates a direct peer already listed as a local phone and cleans 'localhost'", () => {
+    const listed = [{ id: "local:phone:1", name: "Galaxy S24", kind: "phone" }];
+    const sync = {
+      enabled: true,
+      available: true,
+      paused: false,
+      cursor: 0,
+      last_pull_at: null,
+      last_push_at: null,
+      error: "",
+      peers: [
+        {
+          id: "phone-1",
+          name: "Galaxy S24",
+          kind: "phone",
+          url: "http://192.168.1.129:8787",
+          online: true,
+          last_sync_at: null,
+          last_error: "",
+          pending: 0,
+        },
+        {
+          id: "pc-2",
+          name: "localhost",
+          kind: "computer",
+          url: "http://192.168.1.223:8787",
+          online: false,
+          last_sync_at: null,
+          last_error: "",
+          pending: 0,
+        },
+      ],
+    };
+    const unique = uniqueDirectPeers(sync, listed);
+    expect(unique.map((p) => p.id)).toEqual(["pc-2"]);
+    expect(peerDisplayName(unique[0])).toBe("192.168.1.223:8787");
+    expect(peerKind(unique[0])).toBe("computer");
   });
 });

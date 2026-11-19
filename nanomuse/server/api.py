@@ -748,8 +748,13 @@ class PeerClaimBody(BaseModel):
     code: str = Field(min_length=4, max_length=32)
     device_id: str = Field(default="", max_length=120)
     name: str = Field(default="", max_length=60)
+    kind: str = Field(default="", max_length=20)
     urls: list[str] = Field(default_factory=list)
     peer_token: str = Field(default="", max_length=512)
+
+
+class WatchAskBody(SendBody):
+    thread: str = Field("", max_length=120)
 
 
 class AutoUpdateSettingsBody(BaseModel):
@@ -3348,31 +3353,126 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         }
 
     @app.get("/api/watch/state", dependencies=dep)
-    async def watch_state() -> dict[str, Any]:
-        """Compact state snapshot tailored for Wear OS watches."""
+    async def watch_state(thread: str = Query(MAIN_THREAD, max_length=120)) -> dict[str, Any]:
+        """Compact state snapshot tailored for Wear OS watches (home hero, chats, watch apps)."""
         st = svc.state()
-        main_thread = svc.threads.get(MAIN_THREAD)
+        target_tid = (thread or MAIN_THREAD).strip() or MAIN_THREAD
+        active_thread = svc.threads.get(target_tid) or svc.threads.get(MAIN_THREAD)
+        if active_thread is None:
+            target_tid = MAIN_THREAD
+        else:
+            target_tid = active_thread.id
+
         recent: list[dict[str, Any]] = []
-        if main_thread is not None:
-            for ev in reversed(main_thread.timeline.events):
+        if active_thread is not None:
+            for ev in reversed(active_thread.timeline.events):
                 if ev.get("type") in ("user", "assistant"):
                     txt = str(ev.get("text") or "").strip()
                     if txt:
+                        raw_react = ev.get("reactions") or []
+                        reactions = [
+                            str(r.get("emoji") if isinstance(r, dict) else r)
+                            for r in raw_react
+                            if r
+                        ][:4]
                         recent.append(
                             {
                                 "id": ev.get("id"),
                                 "role": ev.get("type"),
                                 "text": txt[:600],
                                 "ts": ev.get("ts"),
+                                "reactions": reactions,
                             }
                         )
-                    if len(recent) >= 8:
+                    if len(recent) >= 16:
                         break
         recent.reverse()
+
+        # Recent threads for the watch's swipe-left Chats / side menu
+        threads_list: list[dict[str, Any]] = []
+        try:
+            vis = svc.visible_threads() if hasattr(svc, "visible_threads") else list(svc.threads.values())
+            for th in vis[:15]:
+                preview = ""
+                for ev in reversed(th.timeline.events):
+                    if ev.get("type") in ("user", "assistant"):
+                        t_txt = str(ev.get("text") or "").strip()
+                        if t_txt:
+                            preview = t_txt[:90]
+                            break
+                threads_list.append(
+                    {
+                        "id": th.id,
+                        "title": (th.title or ("Main Chat" if th.id == MAIN_THREAD else th.id))[:48],
+                        "preview": preview,
+                        "is_main": th.id == MAIN_THREAD,
+                        "busy": bool(th.busy),
+                    }
+                )
+        except Exception:
+            pass
+
+        # MiniMuse-created HTML apps runnable inside the watch Apps drawer
+        apps_list: list[dict[str, Any]] = []
+        try:
+            ws = svc.workspace()
+            seen_paths: set[str] = set()
+
+            def _add_app(rel_path: str, label: str, fpath: Path) -> None:
+                norm = rel_path.replace("\\", "/").lstrip("/")
+                if norm in seen_paths or not fpath.is_file():
+                    return
+                seen_paths.add(norm)
+                low = (norm + " " + label).lower()
+                watch_opt = any(k in low for k in ("watch", "wear", "mini", "quick", "glance"))
+                apps_list.append(
+                    {
+                        "id": norm,
+                        "name": label[:40],
+                        "path": norm,
+                        "url": f"/api/files/{norm}",
+                        "watch_optimized": watch_opt,
+                    }
+                )
+
+            apps_dir = ws / "apps"
+            if apps_dir.is_dir():
+                for sub in sorted(apps_dir.iterdir()):
+                    if sub.is_dir() and (sub / "index.html").is_file():
+                        _add_app(f"apps/{sub.name}/index.html", sub.name.replace("-", " ").replace("_", " ").title(), sub / "index.html")
+                    elif sub.is_file() and sub.suffix.lower() == ".html":
+                        _add_app(f"apps/{sub.name}", sub.stem.replace("-", " ").replace("_", " ").title(), sub)
+            for f in sorted(ws.glob("*.html")):
+                _add_app(f.name, f.stem.replace("-", " ").replace("_", " ").title(), f)
+            apps_list.sort(key=lambda a: (not a["watch_optimized"], a["name"].lower()))
+            apps_list = apps_list[:20]
+        except Exception:
+            pass
+
+        # Available animated mp4 clips for the active avatar
+        clips: list[str] = []
+        try:
+            face = str(svc.profile.avatar or "").strip()
+            if face and face not in ("none", "dragon", "emoji"):
+                fdir = svc.workspace() / "avatar" / face
+                if fdir.is_dir():
+                    for mood in ("idle", "working", "happy", "waiting"):
+                        cf = fdir / f"{mood}.mp4"
+                        if cf.is_file() and cf.stat().st_size > 10_000:
+                            clips.append(mood)
+        except Exception:
+            pass
+
         from nanomuse import __version__
 
         return {
             "agent_name": svc.profile.name,
+            "thread_id": target_tid,
+            "thread_title": (
+                active_thread.title or ("Main Chat" if target_tid == MAIN_THREAD else target_tid)
+                if active_thread is not None
+                else "Main Chat"
+            ),
             # the agent's face, so the watch can wear it full-bleed on its home screen:
             # a studio face id (its stills come through /api/files), "" for the emoji,
             # or "dragon" for the bundled dragon.
@@ -3380,9 +3480,10 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                 "id": svc.profile.avatar,
                 "emoji": svc.profile.emoji,
                 "color": svc.profile.color,
+                "clips": clips,
             },
             "version": svc.settings_view()["version"],
-            "busy": bool(main_thread.busy) if main_thread is not None else False,
+            "busy": bool(active_thread.busy) if active_thread is not None else False,
             "call": call_capabilities(svc),
             "pending_approvals": [
                 {
@@ -3401,6 +3502,8 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                 for h in (st.get("holds") or [])
             ],
             "recent": recent,
+            "threads": threads_list,
+            "apps": apps_list,
             "actions": [
                 {"label": "Daily Briefing", "prompt": "Give me a crisp spoken daily briefing of my calendar and top priorities."},
                 {"label": "Check Messages", "prompt": "Summarize any important unread emails or messages."},
@@ -3408,7 +3511,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             ],
             "update": {
                 "version": __version__,
-                "shell_version": "1.0.25",
+                "shell_version": "1.2.13",
                 "apk_url": "/api/watch/apk",
             },
         }
@@ -3423,19 +3526,22 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             asyncio.create_task(_ensure_watch_apk(), name="watch-apk-prefetch")
         return {
             "version": __version__,
-            "shell_version": "1.0.25",
+            "shell_version": "1.2.13",
             "apk_ready": apk is not None,
             "apk_url": "/api/watch/apk",
         }
 
     @app.post("/api/watch/ask", dependencies=dep)
-    async def watch_ask(body: SendBody) -> dict[str, Any]:
-        """Queue a voice/text prompt from the watch onto the main chat thread."""
+    async def watch_ask(body: WatchAskBody) -> dict[str, Any]:
+        """Queue a voice/text prompt from the watch onto the selected (or main) chat thread."""
         text = body.text.strip()
         if not text:
             raise HTTPException(400, "empty prompt")
-        ev = svc.send(MAIN_THREAD, text, language=body.language or "")
-        return {"ok": True, "event": ev}
+        tid = (body.thread or MAIN_THREAD).strip() or MAIN_THREAD
+        if tid not in svc.threads:
+            tid = MAIN_THREAD
+        ev = svc.send(tid, text, language=body.language or "")
+        return {"ok": True, "thread": tid, "event": ev}
 
     @app.post("/api/watch/approve", dependencies=dep)
     async def watch_approve(body: WatchApproveBody) -> dict[str, Any]:
@@ -4906,10 +5012,11 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
 
     @app.get("/v1/sync/hello")
     async def peer_hello() -> dict[str, Any]:
+        is_android = os.environ.get("NANOMUSE_DEVICE", "").strip().lower() == "android"
         return {
             "id": svc.hub.device_id,
             "name": svc.hub.device_name,
-            "kind": "phone" if svc.app.device is not None else "computer",
+            "kind": "phone" if (is_android or svc.app.device is not None) else "computer",
             "version": svc.settings_view()["version"],
             "pair_ready": svc.sync.pairing.pair_ready,
         }
@@ -4924,8 +5031,40 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             remote_urls=body.urls,
             return_token=body.peer_token,
             client_ip=ip,
+            remote_kind=body.kind,
         )
         return JSONResponse(payload, status_code=status)
+
+    @app.get("/v1/sync/muse-data", dependencies=dep_sync)
+    async def peer_get_muse_data() -> dict[str, Any]:
+        return svc.sync.export_muse_data()
+
+    @app.post("/v1/sync/muse-data", dependencies=dep_sync)
+    async def peer_post_muse_data(request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        return svc.sync.apply_muse_data(body if isinstance(body, dict) else {})
+
+    @app.get("/v1/sync/avatar/{face}/{relpath:path}", dependencies=dep_sync)
+    async def peer_get_avatar_file(face: str, relpath: str) -> FileResponse:
+        clean_face = face.strip()
+        if not clean_face or "/" in clean_face or "\\" in clean_face or clean_face in (".", ".."):
+            raise HTTPException(400, "invalid avatar face")
+        parts = [p for p in relpath.replace("\\", "/").split("/") if p and p not in (".", "..")]
+        if not parts:
+            raise HTTPException(400, "invalid avatar path")
+        root = (svc.workspace() / "avatar" / clean_face).resolve()
+        target = root.joinpath(*parts).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise HTTPException(403, "path escapes avatar folder") from exc
+        if not target.is_file():
+            raise HTTPException(404, "avatar file not found")
+        media = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        return FileResponse(target, media_type=media)
 
     app.include_router(
         make_peer_router(

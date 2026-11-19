@@ -5,7 +5,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { NoticeDialog } from "../components/NoticeDialog";
 import { SwitchModeConfirm } from "../components/SwitchModeConfirm";
 import { SyncControls } from "../components/DataControls";
-import { directPeers, directPeersOnline, peerHost } from "../devicePeers";
+import { countDevices, peerDisplayName, peerHost, peerKind, uniqueDirectPeers } from "../devicePeers";
 import { api, chromeExtensionZipUrl } from "../api";
 import { PageBar } from "../components/BackBar";
 import { CloudCard } from "../components/CloudCard";
@@ -96,17 +96,28 @@ export function DevicesScreen() {
   const localPhones = onlyUnlistedPhones(local?.phones ?? [], hubOthers);
   const localIds = new Set(localPhones.map((p) => p.id));
   const others = [...hubOthers, ...localPhones];
-  // pairing without an account: these are peers of the sync engine, not hub devices
-  const peers = directPeers(state.sync);
+  // pairing without an account: unified with Other devices, deduplicated against hub/local entries
+  const peers = uniqueDirectPeers(state.sync, others);
   const signedIn = !!hub?.account.signed_in;
-  const connected = hub?.state === "connected";
-  const hasThisDevice = Boolean((hub && connected) || local?.computer);
-  // the count: this device, the account's, and the directly paired ones
-  const total = others.length + peers.length + (hasThisDevice ? 1 : 0);
-  const online =
-    others.filter((d) => d.online).length +
-    directPeersOnline(state.sync) +
-    (hasThisDevice ? 1 : 0);
+  const { total, online } = countDevices(hub, local, state.sync);
+  const [syncingPeer, setSyncingPeer] = useState<string | null>(null);
+
+  const syncNowWithPeer = async (peerKey: string) => {
+    setSyncingPeer(peerKey);
+    try {
+      const res = await api.syncNow();
+      dispatch({ type: "ws", msg: { kind: "sync", sync: res } });
+      toast(
+        res.applied || res.pushed
+          ? t("Synced ({a} received, {p} sent).", { a: String(res.applied ?? 0), p: String(res.pushed ?? 0) })
+          : t("All devices are up to date."),
+      );
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setSyncingPeer(null);
+    }
+  };
 
   const unpairPeer = async (identifier: string) => {
     try {
@@ -201,12 +212,21 @@ export function DevicesScreen() {
           </div>
         )}
 
-        {/* the other devices */}
+        {/* the other devices — hub, local, and directly paired peers unified into one list */}
         <div className="px-4 pt-4">
           <SectionLabel>{t("Other devices")}</SectionLabel>
+          {state.syncProgress && (
+            <div className="mb-3 flex items-center gap-2 rounded-2xl bg-accent/12 px-3 py-2 text-[12.5px] text-accent">
+              <Loader2 size={13} className="animate-spin" />
+              {t("Syncing with {peer}: {n} messages so far...", {
+                peer: state.syncProgress.peer,
+                n: String(state.syncProgress.applied),
+              })}
+            </div>
+          )}
           {others.length === 0 && peers.length === 0 ? (
             <EmptyDevices hub={hub ?? undefined} signedIn={signedIn} cloudMode={state.settings?.cloud_mode} />
-          ) : others.length === 0 ? null : (
+          ) : (
             <div className="grid grid-cols-1 gap-3 @2xl:grid-cols-2">
               {others.map((d) => (
                 <DeviceCard
@@ -217,65 +237,67 @@ export function DevicesScreen() {
                   onForget={localIds.has(d.id) ? undefined : () => forget(d as HubDevice)}
                 />
               ))}
+              {peers.map((peer) => {
+                const displayName = peerDisplayName(peer);
+                const host = peerHost(peer);
+                const kind = peerKind(peer);
+                const pKey = peer.url || peer.id;
+                const isSyncing = syncingPeer === pKey;
+                return (
+                  <DeviceShell key={pKey}>
+                    <div className="flex items-start gap-3.5">
+                      <Glyph kind={kind} online={peer.online} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="flex items-center gap-1.5 truncate text-[15px] font-semibold leading-tight">
+                            <OnlineDot online={peer.online} />
+                            <span className="truncate">{displayName}</span>
+                          </p>
+                          <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-muted">
+                            {kind === "phone" ? t("Phone") : t("Computer")}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 truncate font-mono text-[11.5px] text-muted">{host}</p>
+                        <p className="mt-1 text-[12.5px] leading-snug text-muted">
+                          {peer.last_error
+                            ? t("Not syncing: {error}", { error: peer.last_error })
+                            : peer.last_sync_at
+                              ? t("Synced · {when}", { when: relativeTime(peer.last_sync_at) })
+                              : peer.online
+                                ? t("Connected · syncing directly")
+                                : t("Paired · catches up automatically when online")}
+                        </p>
+                        <div className="mt-2.5 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            disabled={isSyncing}
+                            onClick={() => void syncNowWithPeer(pKey)}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-accent/12 px-3 text-[12px] font-medium text-accent hover:bg-accent/20 disabled:opacity-50"
+                          >
+                            <RefreshCw size={12} className={cx(isSyncing && "animate-spin")} />
+                            {isSyncing ? t("Syncing…") : t("Sync now")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void unpairPeer(peer.id || peer.url || peer.name)}
+                            className="inline-flex h-8 items-center rounded-full border border-border px-3 text-[12px] font-medium text-muted hover:text-fg"
+                          >
+                            {t("Unpair")}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </DeviceShell>
+                );
+              })}
             </div>
           )}
           <p className="px-1 pt-3 text-[12.5px] leading-[18px] text-muted">{t("A chat addressed to a device runs there; you see every step here and answer its approvals.")}</p>
         </div>
 
-        {state.syncProgress && (
-          <div className="px-4 pt-4">
-            <div className="flex items-center gap-2 rounded-2xl bg-accent/12 px-3 py-2 text-[12.5px] text-accent">
-              <Loader2 size={13} className="animate-spin" />
-              {t("Syncing with {peer}: {n} messages so far...", {
-                peer: state.syncProgress.peer,
-                n: String(state.syncProgress.applied),
-              })}
-            </div>
-          </div>
-        )}
-        {peers.length > 0 && (
-          <div className="px-4 pt-4">
-            <SectionLabel>{t("Paired directly")}</SectionLabel>
-            <div className="grid grid-cols-1 gap-3 @2xl:grid-cols-2">
-              {peers.map((peer) => (
-                <div key={peer.url} className="rounded-2xl border border-border bg-surface px-3.5 py-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="flex items-center gap-1.5 truncate text-[14.5px] font-semibold leading-tight">
-                        <span
-                          className={cx(
-                            "h-2 w-2 shrink-0 rounded-full",
-                            peer.online ? "bg-emerald-500" : "bg-border",
-                          )}
-                        />
-                        {peer.name || peerHost(peer)}
-                      </p>
-                      <p className="mt-0.5 truncate font-mono text-[11.5px] text-muted">{peerHost(peer)}</p>
-                      <p className="mt-1 text-[12px] text-muted">
-                        {peer.last_error
-                          ? t("Not syncing: {error}", { error: peer.last_error })
-                          : peer.online
-                            ? t("Syncing directly, no account needed.")
-                            : t("Saved. It catches up when the device is online.")}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void unpairPeer(peer.name || peerHost(peer))}
-                      className="shrink-0 rounded-full border border-border px-2.5 py-1 text-[12px] font-medium text-muted hover:text-fg"
-                    >
-                      {t("Unpair")}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
         <div className="px-4 pt-4">
-          <SectionLabel>{t("Direct sync & offline merge")}</SectionLabel>
-          <SyncControls signedIn={signedIn} showCloudControls={false} />
+          <SectionLabel>{t("Pair & sync")}</SectionLabel>
+          <SyncControls signedIn={signedIn} showCloudControls={false} showPairedList={false} />
         </div>
 
         <div className="px-4 pt-4 space-y-3">

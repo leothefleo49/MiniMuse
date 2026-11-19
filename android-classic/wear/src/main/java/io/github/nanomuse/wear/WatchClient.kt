@@ -32,6 +32,23 @@ data class WatchApproval(
 data class WatchMessage(
     val role: String,
     val text: String,
+    val reactions: List<String> = emptyList(),
+)
+
+data class WatchThread(
+    val id: String,
+    val title: String,
+    val preview: String,
+    val isMain: Boolean = false,
+    val busy: Boolean = false,
+)
+
+data class WatchMiniApp(
+    val id: String,
+    val name: String,
+    val path: String,
+    val url: String,
+    val watchOptimized: Boolean = false,
 )
 
 data class WatchQuickAction(
@@ -58,6 +75,11 @@ data class WatchState(
     val avatarId: String = "dragon",
     val avatarEmoji: String = "?",
     val avatarColor: String = "#0064d4",
+    val avatarClips: List<String> = emptyList(),
+    val threadId: String = "main",
+    val threadTitle: String = "Main Chat",
+    val threads: List<WatchThread> = emptyList(),
+    val apps: List<WatchMiniApp> = emptyList(),
 ) {
     companion object {
         fun fromJson(obj: JSONObject): WatchState {
@@ -113,8 +135,53 @@ data class WatchState(
                         .ifBlank { item.optString("content") }
                         .ifBlank { item.optString("summary") }
                     if (text.isNotBlank()) {
-                        recentList.add(WatchMessage(role = role, text = text.trim()))
+                        val reacts = mutableListOf<String>()
+                        val rArr = item.optJSONArray("reactions")
+                        if (rArr != null) {
+                            for (ri in 0 until rArr.length()) {
+                                val rStr = rArr.optString(ri).trim()
+                                if (rStr.isNotEmpty()) reacts.add(rStr)
+                            }
+                        }
+                        recentList.add(WatchMessage(role = role, text = text.trim(), reactions = reacts))
                     }
+                }
+            }
+            val threadsList = mutableListOf<WatchThread>()
+            val thArr = obj.optJSONArray("threads")
+            if (thArr != null) {
+                for (i in 0 until thArr.length()) {
+                    val item = thArr.optJSONObject(i) ?: continue
+                    val tid = item.optString("id").trim()
+                    if (tid.isEmpty()) continue
+                    threadsList.add(
+                        WatchThread(
+                            id = tid,
+                            title = item.optString("title", tid).ifBlank { tid },
+                            preview = item.optString("preview").trim(),
+                            isMain = item.optBoolean("is_main", tid == "main"),
+                            busy = item.optBoolean("busy", false),
+                        ),
+                    )
+                }
+            }
+            val appsList = mutableListOf<WatchMiniApp>()
+            val appArr = obj.optJSONArray("apps")
+            if (appArr != null) {
+                for (i in 0 until appArr.length()) {
+                    val item = appArr.optJSONObject(i) ?: continue
+                    val aid = item.optString("id").trim()
+                    val aurl = item.optString("url").trim()
+                    if (aid.isEmpty() || aurl.isEmpty()) continue
+                    appsList.add(
+                        WatchMiniApp(
+                            id = aid,
+                            name = item.optString("name", aid).ifBlank { aid },
+                            path = item.optString("path", aid),
+                            url = aurl,
+                            watchOptimized = item.optBoolean("watch_optimized", false),
+                        ),
+                    )
                 }
             }
             val actionsList = mutableListOf<WatchQuickAction>()
@@ -143,6 +210,14 @@ data class WatchState(
             }
             val updObj = obj.optJSONObject("update")
             val avObj = obj.optJSONObject("avatar")
+            val clipsList = mutableListOf<String>()
+            val clipArr = avObj?.optJSONArray("clips")
+            if (clipArr != null) {
+                for (i in 0 until clipArr.length()) {
+                    val c = clipArr.optString(i).trim()
+                    if (c.isNotEmpty()) clipsList.add(c)
+                }
+            }
             return WatchState(
                 agentName = obj.optString("agent_name", "MiniMuse").ifBlank { "MiniMuse" },
                 version = obj.optString("version"),
@@ -157,6 +232,11 @@ data class WatchState(
                 avatarId = avObj?.optString("id", "dragon")?.ifBlank { "dragon" } ?: "dragon",
                 avatarEmoji = avObj?.optString("emoji", "?")?.ifBlank { "?" } ?: "?",
                 avatarColor = avObj?.optString("color", "#0064d4")?.ifBlank { "#0064d4" } ?: "#0064d4",
+                avatarClips = clipsList,
+                threadId = obj.optString("thread_id", "main").ifBlank { "main" },
+                threadTitle = obj.optString("thread_title", "Main Chat").ifBlank { "Main Chat" },
+                threads = threadsList,
+                apps = appsList,
             )
         }
     }
@@ -230,15 +310,17 @@ class WatchClient(private val config: WatchConfig) {
         val tried = if (candidates.size == 1) "" else " (tried ${candidates.size} addresses)"
         return Result.failure(IllegalStateException((last?.message ?: "Pairing failed") + tried))
     }
-    suspend fun fetchState(): Result<WatchState> = withContext(Dispatchers.IO) {
+    suspend fun fetchState(threadId: String = "main"): Result<WatchState> = withContext(Dispatchers.IO) {
         val baseUrl = config.serverUrl
         val token = config.token
         if (baseUrl.isBlank() || token.isBlank()) {
             return@withContext Result.failure(IllegalStateException("Not paired"))
         }
         try {
+            val tid = threadId.trim().ifBlank { "main" }
+            val query = if (tid == "main") "" else "?thread=${java.net.URLEncoder.encode(tid, "UTF-8")}"
             val req = Request.Builder()
-                .url("$baseUrl/api/watch/state")
+                .url("$baseUrl/api/watch/state$query")
                 .header("Authorization", "Bearer $token")
                 .get()
                 .build()
@@ -332,13 +414,18 @@ class WatchClient(private val config: WatchConfig) {
         }
     }
 
-    suspend fun ask(prompt: String, language: String = Locale.getDefault().toLanguageTag()): Result<Unit> =
+    suspend fun ask(
+        prompt: String,
+        language: String = Locale.getDefault().toLanguageTag(),
+        threadId: String = "main",
+    ): Result<Unit> =
         withContext(Dispatchers.IO) {
             val clean = prompt.trim()
             if (clean.isEmpty()) return@withContext Result.failure(IllegalArgumentException("Empty prompt"))
             val payload = JSONObject()
                 .put("text", clean)
                 .put("language", language)
+                .put("thread", threadId.trim().ifBlank { "main" })
                 .toString()
             try {
                 val req = Request.Builder()

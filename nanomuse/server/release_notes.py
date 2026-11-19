@@ -17,6 +17,21 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.13": {
+        "title": "PC-phone sync fixed, unified Devices, Muse Watch OS overhaul & Desktop Fullscreen",
+        "added": [
+            "Desktop Fullscreen Mode (F11 shortcut, sidebar Fullscreen button, and Appearance toggle, remembered across launches)",
+            "Bidirectional sync of Muse memories, goals, reminders, profile, avatar animations/frames, and MiniMuse HTML apps between paired devices",
+            "Muse-faithful Wear OS watch app: auto-hiding curved bezel buttons, scroll-to-shrink animated hero, horizontal swipe pages (Chats, Home, Watch Apps, Settings), curved top status, and left-bezel call volume arc",
+        ],
+        "improved": [
+            "Unified Devices screen and device count across Settings and Devices (phone + PC now shows 2 devices with no duplicate 'Paired directly' split)",
+        ],
+        "fixed": [
+            "Fixed 'Not syncing: name client is not defined' crash in peer-to-peer sync",
+            "Fixed PC-to-phone pairing overwriting the phone's device ID and showing 'localhost', and fixed profile/avatar transfer silently failing",
+        ],
+    },
     "1.2.12": {
         "title": "The imported avatar shows up instead of a broken image",
         "added": [

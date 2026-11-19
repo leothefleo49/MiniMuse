@@ -25,6 +25,11 @@ class WatchConfig(context: Context) {
         get() = prefs.getBoolean("keep_screen_on", true)
         set(value) { prefs.edit().putBoolean("keep_screen_on", value).apply() }
 
+    /** Auto-fade home screen buttons after a few seconds so only the living AI character shows. */
+    var autoHideHomeChrome: Boolean
+        get() = prefs.getBoolean("auto_hide_home_chrome", true)
+        set(value) { prefs.edit().putBoolean("auto_hide_home_chrome", value).apply() }
+
     /** Silence wait before finalizing hands-free turn (ms). Default 4500ms so user isn't cut off. */
     var patienceMs: Long
         get() = prefs.getLong("patience_ms", 4500L).coerceIn(1500L, 15000L)

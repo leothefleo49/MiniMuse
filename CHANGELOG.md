@@ -4,6 +4,20 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.13] - 2026-11-19
+### Added
+- **Desktop Fullscreen Mode**: press **F11**, click **Fullscreen** in the desktop sidebar rail, or toggle **Settings -> Appearance -> Fullscreen mode** (persists across launches in the native Windows/Linux desktop window, with browser fullscreen fallback).
+- **Bidirectional Muse Data & Avatar/Frames Sync**: paired devices now continuously sync memories, goals, reminders, profile, avatar stills/clips/frames, USER.md, and MiniMuse-created HTML apps alongside conversations and side chats.
+- **Muse-faithful Wear OS Overhaul**: full-bleed animated character with auto-hiding translucent curved bezel buttons (tap to wake), scroll-to-shrink hero, horizontal swipe navigation (**Chats & Side Menu** ← **Home** → **MiniMuse Watch Apps** → **Watch Settings**), curved top status arc, left-bezel glowing cyan call volume arc on bezel turn, and Muse-style indigo/orange chat bubbles with emoji reactions and right-edge bezel scrollbar.
+
+### Changed
+- **Unified Devices screen & counts**: directly paired peers now appear right inside **Other devices** with proper phone/computer icons, real names, Sync now, and Unpair — deduplicated against local devices, with **Settings -> Devices** and **Devices** both reporting the accurate total (e.g., 2 devices for phone + PC).
+
+### Fixed
+- **Peer sync `NameError: name 'client' is not defined`**: restored the peer sync client initialization in `_sync_one_peer()` so PC ↔ phone syncing actually runs instead of failing every pass.
+- **Duplicate device identity & `"localhost"` naming**: setup bundles no longer copy device-local keys (`hub.device_id`, `app_lock`, `server`, `hands`, `gui`), Android now uses its friendly model name and a `phone-*` ID (and auto-heals previously collided `pc-*` IDs), and `update_profile()` now receives a dict instead of silently failing with `TypeError`.
+- **Avatar transfer truncation**: setup bundles now export canonical avatar files (`idle.webp`, `idle.mp4`, `working.mp4`, `happy.mp4`, `waiting.mp4`, `error.webp`) first so raw source files no longer crowd them out.
+
 ## [1.2.12] - 2026-11-19
 ### Added
 - The files route now falls back to the session when a signed link has expired or its signature no longer matches, so a stale avatar link still loads instead of painting a broken image.

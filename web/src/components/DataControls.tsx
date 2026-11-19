@@ -136,12 +136,14 @@ export function DataControls({ me: given, onChanged, flush = false }: { me?: Clo
 export function SyncControls({
   signedIn,
   showCloudControls = true,
+  showPairedList = true,
 }: {
   signedIn: boolean;
   showCloudControls?: boolean;
+  showPairedList?: boolean;
 }) {
   const t = useT();
-  const { state, toast } = useStore();
+  const { state, dispatch, toast } = useStore();
   const [sync, setSync] = useState<SyncState | null>(null);
   const [nearby, setNearby] = useState<NearbyPeer[]>([]);
   const [pairCode, setPairCode] = useState<PairCodeInfo | null>(null);
@@ -172,11 +174,12 @@ export function SyncControls({
     try {
       const s = await api.syncState();
       setSync(s);
+      dispatch({ type: "ws", msg: { kind: "sync", sync: s } });
       if (s.nearby) setNearby(s.nearby);
     } catch {
       /* an older runtime without sync: the card shows the switch as unavailable */
     }
-  }, []);
+  }, [dispatch]);
 
   useEffect(() => {
     void load();
@@ -220,6 +223,7 @@ export function SyncControls({
           sync_side_chats: true,
         });
         setSync(res.sync);
+        dispatch({ type: "ws", msg: { kind: "sync", sync: res.sync } });
         setTarget("");
         setCode("");
         setShowManual(false);
@@ -230,7 +234,7 @@ export function SyncControls({
         setPairing(false);
       }
     },
-    [t, toast],
+    [dispatch, t, toast],
   );
 
   useEffect(() => {
@@ -429,12 +433,12 @@ export function SyncControls({
           )}
 
           {/* Paired peers */}
-          {peers.length > 0 && (
+          {showPairedList && peers.length > 0 && (
             <div className="space-y-2">
               <div className="text-[12px] font-medium uppercase tracking-wide text-muted">{t("Paired devices")}</div>
               <div className="space-y-1.5">
                 {peers.map((peer) => (
-                  <div key={peer.id} className="flex items-center justify-between gap-2 rounded-2xl border border-border px-3 py-2.5">
+                  <div key={peer.url || peer.id} className="flex items-center justify-between gap-2 rounded-2xl border border-border px-3 py-2.5">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 text-[13.5px] font-medium">
                         <span className={cx("h-2 w-2 rounded-full shrink-0", peer.online ? "bg-emerald-500" : "bg-amber-500")} />

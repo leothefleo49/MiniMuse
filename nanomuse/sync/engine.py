@@ -141,6 +141,55 @@ def _iso(unix: int | float | None) -> str:
         return _now_iso()
 
 
+# Keys inside app-settings.json that belong strictly to a single physical device and must
+# NEVER be copied to or overwritten by a paired peer (copying `hub` gave the phone the PC's
+# own device_id, causing peer sync to mistake PC messages for local echoes).
+DEVICE_LOCAL_SETTINGS_KEYS = frozenset(
+    {"hub", "app_lock", "server", "hands", "gui", "device_nicknames", "watch"}
+)
+
+# Canonical avatar files that every MiniMuse UI (desktop, phone, watch) actually loads first.
+# Exporting these first ensures the live animated avatar is never crowded out by raw source files.
+_CANONICAL_AVATAR_FILES = (
+    "idle.webp",
+    "idle.mp4",
+    "working.webp",
+    "working.mp4",
+    "happy.webp",
+    "happy.mp4",
+    "waiting.webp",
+    "waiting.mp4",
+    "error.webp",
+    "error.mp4",
+    "avatar-model.json",
+)
+
+
+def _infer_peer_kind(peer: dict[str, Any]) -> str:
+    explicit = str(peer.get("kind") or "").strip().lower()
+    if explicit in ("phone", "computer", "tablet", "watch"):
+        return explicit
+    pid = str(peer.get("id") or "").strip().lower()
+    name = str(peer.get("name") or "").strip().lower()
+    if pid.startswith("phone-") or any(w in name for w in ("phone", "android", "pixel", "galaxy", "samsung", "iphone", "oneplus", "xiaomi")):
+        return "phone"
+    if pid.startswith("pc-") or any(w in name for w in ("desktop", "laptop", "macbook", "pc", "windows")):
+        return "computer"
+    return ""
+
+
+def _clean_peer_name(name: str, url: str, kind: str = "") -> str:
+    clean = str(name or "").strip()
+    if clean and clean.lower() != "localhost":
+        return clean
+    if kind == "phone":
+        return "Paired phone"
+    if kind == "computer":
+        return "Paired computer"
+    host = str(url or "").replace("http://", "").replace("https://", "").rstrip("/")
+    return host or "Peer"
+
+
 class ConversationSync:
     def __init__(self, svc: MuseService):
         self.svc = svc
@@ -447,10 +496,12 @@ class ConversationSync:
             st = self._peer_status.get(pkey, {})
             cur = self.state.get("peer_cursors", {}).get(pkey, {})
             out_seq = int(cur.get("out") or 0)
+            kind = _infer_peer_kind(p)
             out.append(
                 {
                     "id": p.get("id") or "",
-                    "name": p.get("name") or p.get("url") or "Peer",
+                    "name": _clean_peer_name(p.get("name") or "", p.get("url") or "", kind),
+                    "kind": kind,
                     "url": p.get("url") or "",
                     "online": bool(st.get("online", False)),
                     "last_sync_at": st.get("last_sync_at") or cur.get("last_sync_at") or None,
@@ -1653,11 +1704,27 @@ class ConversationSync:
                 self._applying = True
                 try:
                     for row in convs:
-                        if str(row.get("device") or "") != self.svc.hub.device_id or row.get("deleted"):
+                        cid = str(row.get("cid") or "")
+                        missing_locally = bool(cid) and self.thread_of(cid) is None
+                        if (
+                            str(row.get("device") or "") != self.svc.hub.device_id
+                            or row.get("deleted")
+                            or missing_locally
+                        ):
                             self._apply_conversation(row)
                             applied += 1
                     for row in msgs:
-                        if str(row.get("device") or "") != self.svc.hub.device_id or row.get("deleted"):
+                        mid = str(row.get("mid") or "")
+                        cid = str(row.get("cid") or "")
+                        th = self.thread_of(cid) if cid else None
+                        missing_locally = bool(mid) and (
+                            th is None or not any(ev.get("mid") == mid for ev in th.timeline.events)
+                        )
+                        if (
+                            str(row.get("device") or "") != self.svc.hub.device_id
+                            or row.get("deleted")
+                            or missing_locally
+                        ):
                             self._apply_message(row)
                             applied += 1
                 finally:
@@ -1749,13 +1816,67 @@ class ConversationSync:
             self.svc.bus.publish({"kind": "sync", "sync": self.view()})
         return {"applied": total_applied, "pushed": total_pushed, "peers": self.peers_view()}
 
+    async def _refresh_peer_identity(self, peer: dict[str, str]) -> None:
+        """Ask the peer's /v1/sync/hello for its real name, kind, and device_id so stale
+        'localhost' names or previously collided IDs heal automatically."""
+        import httpx
+
+        base = str(peer.get("url") or "").strip().rstrip("/")
+        if not base:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=2.5) as hc:
+                r = await hc.get(base + "/v1/sync/hello")
+                if r.status_code != 200:
+                    return
+                info = r.json()
+        except Exception:
+            return
+        if not isinstance(info, dict):
+            return
+        remote_name = str(info.get("name") or "").strip()
+        remote_kind = str(info.get("kind") or "").strip().lower()
+        remote_id = str(info.get("id") or "").strip()
+        changed = False
+        if remote_name and remote_name.lower() != "localhost" and peer.get("name") != remote_name:
+            peer["name"] = remote_name[:60]
+            changed = True
+        if remote_kind in ("phone", "computer", "tablet", "watch") and peer.get("kind") != remote_kind:
+            peer["kind"] = remote_kind
+            changed = True
+        if remote_id and remote_id != self.svc.hub.device_id and peer.get("id") != remote_id:
+            peer["id"] = remote_id
+            changed = True
+        if changed:
+            from nanomuse.sync.peer import save_pairs
+
+            stored = load_pairs(self.svc.data_dir)
+            for item in stored:
+                if item.get("url", "").rstrip("/") == base:
+                    if peer.get("name"):
+                        item["name"] = peer["name"]
+                    if peer.get("kind"):
+                        item["kind"] = peer["kind"]
+                    if peer.get("id"):
+                        item["id"] = peer["id"]
+            save_pairs(self.svc.data_dir, stored)
+
     async def _sync_one_peer(self, peer: dict[str, str]) -> tuple[int, int]:
+        await self._refresh_peer_identity(peer)
         pkey = self._peer_key_of(peer)
         peer_cursors = self.state.setdefault("peer_cursors", {})
         cur = peer_cursors.setdefault(pkey, {"in": 0, "out": 0})
         in_seq = int(cur.get("in") or 0)
         out_seq = int(cur.get("out") or 0)
-        peer_name = str(peer.get("name") or peer.get("id") or "device")
+        client = SyncClient(CloudClient(peer["url"]))
+        client.cloud.api_key = peer.get("token") or ""
+        applied = 0
+        pushed = 0
+        peer_name = _clean_peer_name(
+            str(peer.get("name") or ""),
+            str(peer.get("url") or ""),
+            _infer_peer_kind(peer),
+        )
         # Ensure peer's sync store is turned on
         try:
             await client.set_enabled(True)
@@ -1896,6 +2017,13 @@ class ConversationSync:
                     dirty = True
             if dirty:
                 thread.timeline.save()
+
+        # 3. Sync Muse data (profile, avatar/frames, memories, goals, reminders, apps, portable settings)
+        try:
+            await self._sync_muse_data_with_peer(peer)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("peer muse-data sync skipped/failed for {}: {}", peer_name, exc)
+
         now_str = _now_iso()
         cur["last_sync_at"] = now_str
         self._peer_status[pkey] = {
@@ -1905,6 +2033,469 @@ class ConversationSync:
         }
         self._save()
         return applied, pushed
+
+    # ------------------------------------------------------------------ Muse data & avatar/frames sync
+    def list_avatar_files(self, face: str | None = None) -> list[dict[str, Any]]:
+        """List files (stills, animated clips, and frames) for the active avatar face."""
+        target_face = str(face if face is not None else getattr(self.svc.profile, "avatar", "") or "").strip()
+        if not target_face or target_face in ("none", "dragon", "emoji"):
+            return []
+        face_dir = self.svc.workspace() / "avatar" / target_face
+        if not face_dir.is_dir():
+            return []
+        allowed_ext = (".webp", ".png", ".jpg", ".jpeg", ".mp4", ".webm", ".json")
+        rank = {name: i for i, name in enumerate(_CANONICAL_AVATAR_FILES)}
+        items: list[tuple[int, str, int, float]] = []
+        try:
+            for f in face_dir.iterdir():
+                if f.is_file() and f.suffix.lower() in allowed_ext:
+                    st = f.stat()
+                    items.append((rank.get(f.name, 999), f.name, int(st.st_size), float(st.st_mtime)))
+            frames_dir = face_dir / "frames"
+            if frames_dir.is_dir():
+                for f in sorted(frames_dir.iterdir()):
+                    if f.is_file() and f.suffix.lower() in allowed_ext:
+                        st = f.stat()
+                        items.append((500, f"frames/{f.name}", int(st.st_size), float(st.st_mtime)))
+        except OSError:
+            pass
+        items.sort(key=lambda t: (t[0], t[1]))
+        return [
+            {"face": target_face, "rel": rel, "size": size, "mtime": round(mtime, 2)}
+            for _, rel, size, mtime in items
+        ]
+
+    def export_muse_data(self) -> dict[str, Any]:
+        """Export portable Muse state (profile, avatar manifest, memories, goals, reminders,
+        USER.md, UI prefs, portable settings, and small HTML apps) for peer sync."""
+        memories: list[dict[str, Any]] = []
+        goals: list[dict[str, Any]] = []
+        goal_steps: list[dict[str, Any]] = []
+        reminders: list[dict[str, Any]] = []
+
+        # Memories
+        mem_db = self.svc.data_dir / "memory.db"
+        if mem_db.is_file():
+            try:
+                conn = sqlite3.connect(str(mem_db))
+                conn.row_factory = sqlite3.Row
+                cols = {r["name"] for r in conn.execute("PRAGMA table_info(memories)")}
+                sel = ["id", "content", "category", "created_at", "source"]
+                if "updated_at" in cols:
+                    sel.append("updated_at")
+                rows = conn.execute(f"SELECT {', '.join(sel)} FROM memories").fetchall()
+                memories = [dict(r) for r in rows]
+                conn.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("export_muse_data memories: {}", exc)
+
+        # Goals + steps
+        goals_db = self.svc.data_dir / "goals.db"
+        if goals_db.is_file():
+            try:
+                conn = sqlite3.connect(str(goals_db))
+                conn.row_factory = sqlite3.Row
+                goals = [dict(r) for r in conn.execute("SELECT * FROM goals").fetchall()]
+                goal_steps = [dict(r) for r in conn.execute("SELECT * FROM steps").fetchall()]
+                conn.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("export_muse_data goals: {}", exc)
+
+        # Reminders
+        rem_db = self.svc.data_dir / "reminders.db"
+        if rem_db.is_file():
+            try:
+                conn = sqlite3.connect(str(rem_db))
+                conn.row_factory = sqlite3.Row
+                reminders = [dict(r) for r in conn.execute("SELECT * FROM reminders").fetchall()]
+                conn.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("export_muse_data reminders: {}", exc)
+
+        # Small standalone HTML apps in workspace/ or workspace/apps/
+        workspace_apps: list[dict[str, Any]] = []
+        try:
+            ws = self.svc.workspace()
+            app_candidates: list[tuple[str, Any]] = []
+            for f in sorted(ws.glob("*.html")):
+                app_candidates.append((f.name, f))
+            apps_dir = ws / "apps"
+            if apps_dir.is_dir():
+                for f in sorted(apps_dir.glob("*.html")):
+                    app_candidates.append((f"apps/{f.name}", f))
+                for sub in sorted(apps_dir.iterdir()):
+                    idx = sub / "index.html"
+                    if sub.is_dir() and idx.is_file():
+                        app_candidates.append((f"apps/{sub.name}/index.html", idx))
+            total_app_bytes = 0
+            for rel, fpath in app_candidates[:30]:
+                sz = fpath.stat().st_size
+                if sz <= 512 * 1024 and total_app_bytes + sz <= 4 * 1024 * 1024:
+                    workspace_apps.append(
+                        {
+                            "rel": rel,
+                            "mtime": round(float(fpath.stat().st_mtime), 2),
+                            "content": fpath.read_text(encoding="utf-8", errors="replace"),
+                        }
+                    )
+                    total_app_bytes += sz
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("export_muse_data apps: {}", exc)
+
+        profile_text = ""
+        profile_path = self.svc.data_dir / "USER.md"
+        if profile_path.exists():
+            try:
+                profile_text = profile_path.read_text(encoding="utf-8")
+            except Exception:
+                pass
+
+        portable_settings = {
+            k: v
+            for k, v in dict(self.svc.connections.data).items()
+            if k not in DEVICE_LOCAL_SETTINGS_KEYS
+        }
+
+        return {
+            "device_id": self.svc.hub.device_id,
+            "profile": self.svc.profile.to_dict(),
+            "avatar_manifest": self.list_avatar_files(),
+            "memories": memories,
+            "goals": goals,
+            "goal_steps": goal_steps,
+            "reminders": reminders,
+            "user_profile": profile_text,
+            "ui_preferences": self._load_ui_prefs(),
+            "app_settings": portable_settings,
+            "workspace_apps": workspace_apps,
+        }
+
+    def apply_muse_data(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Idempotently merge Muse data (profile, memories, goals, reminders, apps, USER.md)
+        from a paired peer without overwriting device-local settings."""
+        if not isinstance(payload, dict):
+            return {"applied": False}
+        counts = {"memories": 0, "goals": 0, "reminders": 0, "apps": 0, "profile": False}
+        overrides = dict(
+            self.state.get("device_overrides")
+            or {"enabled": False, "keep_local_appearance": False, "default_model": ""}
+        )
+        keep_appearance = bool(overrides.get("enabled", False)) and bool(
+            overrides.get("keep_local_appearance", False)
+        )
+
+        # 1. Profile — prefer custom non-default identity/avatar over bare defaults
+        incoming_prof = payload.get("profile")
+        if isinstance(incoming_prof, dict) and incoming_prof:
+            cur_prof = self.svc.profile.to_dict()
+            changed = False
+            defaults = {"name": ("MiniMuse", "nanoMuse", ""), "avatar": ("dragon", "none", "")}
+            for k, v in incoming_prof.items():
+                if k not in cur_prof:
+                    continue
+                if keep_appearance and k in ("color", "emoji", "avatar"):
+                    continue
+                if isinstance(v, str):
+                    vs = v.strip()
+                    if not vs:
+                        continue
+                    cur_val = str(cur_prof.get(k) or "").strip()
+                    # Prefer incoming if local is empty/default or incoming is richer/custom
+                    if k in defaults:
+                        if cur_val in defaults[k] and vs not in defaults[k]:
+                            cur_prof[k] = vs
+                            changed = True
+                        elif vs not in defaults[k] and k == "avatar" and cur_val != vs:
+                            # Prefer a face that has animated files in incoming manifest
+                            in_manifest = payload.get("avatar_manifest") or []
+                            if any(
+                                isinstance(m, dict) and m.get("face") == vs and str(m.get("rel", "")).endswith(".mp4")
+                                for m in in_manifest
+                            ):
+                                cur_prof[k] = vs
+                                changed = True
+                    elif not cur_val or (k == "style" and len(vs) > len(cur_val)):
+                        cur_prof[k] = vs
+                        changed = True
+                elif isinstance(v, (bool, int)) and cur_prof.get(k) is None:
+                    cur_prof[k] = v
+                    changed = True
+            if changed:
+                try:
+                    self.svc.update_profile(cur_prof)
+                    counts["profile"] = True
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("apply_muse_data profile: {}", exc)
+
+        # 2. Memories (idempotent upsert by id + normalized content dedup)
+        incoming_mems = payload.get("memories")
+        if isinstance(incoming_mems, list) and incoming_mems:
+            mem_store = getattr(self.svc.app, "memory", None)
+            mem_db = self.svc.data_dir / "memory.db"
+            if mem_store is not None or mem_db.is_file():
+                try:
+                    conn = sqlite3.connect(str(mem_db))
+                    conn.row_factory = sqlite3.Row
+                    cols = {r["name"] for r in conn.execute("PRAGMA table_info(memories)")}
+                    existing_by_id = {
+                        str(r["id"]): str(r["updated_at"] if "updated_at" in cols else r["created_at"])
+                        for r in conn.execute(
+                            f"SELECT id, created_at{', updated_at' if 'updated_at' in cols else ''} FROM memories"
+                        ).fetchall()
+                    }
+                    existing_contents = {
+                        str(r["content"]).strip().lower()
+                        for r in conn.execute("SELECT content FROM memories").fetchall()
+                    }
+                    for m in incoming_mems:
+                        if not isinstance(m, dict):
+                            continue
+                        mid = str(m.get("id") or "").strip()
+                        content = str(m.get("content") or "").strip()
+                        if not mid or not content:
+                            continue
+                        category = str(m.get("category") or "general")
+                        created_at = str(m.get("created_at") or _now_iso())
+                        source = str(m.get("source") or "sync")
+                        updated_at = str(m.get("updated_at") or created_at)
+                        if mid in existing_by_id:
+                            if updated_at > existing_by_id[mid]:
+                                if "updated_at" in cols:
+                                    conn.execute(
+                                        "UPDATE memories SET content=?, category=?, updated_at=? WHERE id=?",
+                                        (content, category, updated_at, mid),
+                                    )
+                                else:
+                                    conn.execute(
+                                        "UPDATE memories SET content=?, category=? WHERE id=?",
+                                        (content, category, mid),
+                                    )
+                                counts["memories"] += 1
+                        elif content.lower() not in existing_contents:
+                            if "updated_at" in cols:
+                                conn.execute(
+                                    "INSERT OR IGNORE INTO memories (id, content, category, created_at, source, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                    (mid, content, category, created_at, source, updated_at),
+                                )
+                            else:
+                                conn.execute(
+                                    "INSERT OR IGNORE INTO memories (id, content, category, created_at, source) VALUES (?, ?, ?, ?, ?)",
+                                    (mid, content, category, created_at, source),
+                                )
+                            existing_contents.add(content.lower())
+                            counts["memories"] += 1
+                    conn.commit()
+                    conn.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("apply_muse_data memories: {}", exc)
+
+        # 3. Goals + steps (idempotent upsert by id, keeping newer updated_at)
+        incoming_goals = payload.get("goals")
+        incoming_steps = payload.get("goal_steps")
+        if isinstance(incoming_goals, list) and incoming_goals:
+            goals_db = self.svc.data_dir / "goals.db"
+            if goals_db.is_file():
+                try:
+                    conn = sqlite3.connect(str(goals_db))
+                    conn.row_factory = sqlite3.Row
+                    g_cols = [r["name"] for r in conn.execute("PRAGMA table_info(goals)")]
+                    g_col_set = set(g_cols)
+                    existing_goals = {
+                        str(r["id"]): str(r["updated_at"] or "")
+                        for r in conn.execute("SELECT id, updated_at FROM goals").fetchall()
+                    }
+                    for g in incoming_goals:
+                        if not isinstance(g, dict):
+                            continue
+                        gid = str(g.get("id") or "").strip()
+                        title = str(g.get("title") or "").strip()
+                        if not gid or not title:
+                            continue
+                        in_upd = str(g.get("updated_at") or g.get("created_at") or "")
+                        if gid not in existing_goals or in_upd > existing_goals[gid]:
+                            use_cols = [c for c in g_cols if c in g]
+                            placeholders = ", ".join("?" for _ in use_cols)
+                            conn.execute(
+                                f"INSERT OR REPLACE INTO goals ({', '.join(use_cols)}) VALUES ({placeholders})",
+                                [g[c] for c in use_cols],
+                            )
+                            counts["goals"] += 1
+                    if isinstance(incoming_steps, list) and incoming_steps:
+                        s_cols = [r["name"] for r in conn.execute("PRAGMA table_info(steps)")]
+                        existing_steps = {
+                            str(r["id"]): str(r["updated_at"] or "")
+                            for r in conn.execute("SELECT id, updated_at FROM steps").fetchall()
+                        }
+                        for st in incoming_steps:
+                            if not isinstance(st, dict):
+                                continue
+                            sid = str(st.get("id") or "").strip()
+                            if not sid:
+                                continue
+                            in_upd = str(st.get("updated_at") or "")
+                            if sid not in existing_steps or in_upd > existing_steps[sid]:
+                                use_cols = [c for c in s_cols if c in st]
+                                placeholders = ", ".join("?" for _ in use_cols)
+                                conn.execute(
+                                    f"INSERT OR REPLACE INTO steps ({', '.join(use_cols)}) VALUES ({placeholders})",
+                                    [st[c] for c in use_cols],
+                                )
+                    conn.commit()
+                    conn.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("apply_muse_data goals: {}", exc)
+
+        # 4. Reminders (idempotent upsert by id)
+        incoming_rems = payload.get("reminders")
+        if isinstance(incoming_rems, list) and incoming_rems:
+            rem_db = self.svc.data_dir / "reminders.db"
+            if rem_db.is_file():
+                try:
+                    conn = sqlite3.connect(str(rem_db))
+                    conn.row_factory = sqlite3.Row
+                    r_cols = [r["name"] for r in conn.execute("PRAGMA table_info(reminders)")]
+                    existing_rems = {
+                        str(r["id"]): (str(r["last_fired_at"] or ""), str(r["status"] or ""))
+                        for r in conn.execute("SELECT id, last_fired_at, status FROM reminders").fetchall()
+                    }
+                    for rm in incoming_rems:
+                        if not isinstance(rm, dict):
+                            continue
+                        rid = str(rm.get("id") or "").strip()
+                        if not rid or not str(rm.get("text") or "").strip():
+                            continue
+                        in_fired = str(rm.get("last_fired_at") or "")
+                        if rid not in existing_rems or in_fired > existing_rems[rid][0]:
+                            use_cols = [c for c in r_cols if c in rm]
+                            placeholders = ", ".join("?" for _ in use_cols)
+                            conn.execute(
+                                f"INSERT OR REPLACE INTO reminders ({', '.join(use_cols)}) VALUES ({placeholders})",
+                                [rm[c] for c in use_cols],
+                            )
+                            counts["reminders"] += 1
+                    conn.commit()
+                    conn.close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("apply_muse_data reminders: {}", exc)
+
+        # 5. User profile (USER.md) — keep richer copy
+        user_prof = payload.get("user_profile")
+        if isinstance(user_prof, str) and user_prof.strip():
+            profile_path = self.svc.data_dir / "USER.md"
+            cur_txt = ""
+            if profile_path.exists():
+                try:
+                    cur_txt = profile_path.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+            if len(user_prof.strip()) > len(cur_txt.strip()):
+                try:
+                    profile_path.write_text(user_prof, encoding="utf-8")
+                except Exception:
+                    pass
+
+        # 6. Workspace HTML apps (keep newer mtime)
+        incoming_apps = payload.get("workspace_apps")
+        if isinstance(incoming_apps, list) and incoming_apps:
+            ws = self.svc.workspace()
+            for app_item in incoming_apps:
+                if not isinstance(app_item, dict):
+                    continue
+                rel = str(app_item.get("rel") or "").replace("\\", "/").strip("/")
+                content = app_item.get("content")
+                if not rel or not rel.endswith(".html") or not isinstance(content, str):
+                    continue
+                parts = [p for p in rel.split("/") if p and p not in (".", "..")]
+                if not parts:
+                    continue
+                dest = ws.joinpath(*parts)
+                try:
+                    in_mtime = float(app_item.get("mtime") or 0.0)
+                    if not dest.exists() or in_mtime > dest.stat().st_mtime + 1.0:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.write_text(content, encoding="utf-8")
+                        counts["apps"] += 1
+                except Exception:
+                    pass
+
+        # Notify live UI if anything changed
+        if any(counts.values()) and getattr(self.svc, "bus", None):
+            try:
+                self.svc.bus.publish({"kind": "profile", "profile": self.svc.profile.to_dict()})
+                self.svc.bus.publish({"kind": "sync", "sync": self.view()})
+            except Exception:
+                pass
+        return {"applied": True, "counts": counts}
+
+    async def _sync_muse_data_with_peer(self, peer: dict[str, str]) -> None:
+        """Bidirectionally sync Muse data (memories, goals, reminders, profile, avatar/frames,
+        HTML apps) with a paired peer."""
+        import hashlib
+        import httpx
+
+        base = str(peer.get("url") or "").strip().rstrip("/")
+        tok = str(peer.get("token") or "").strip()
+        if not base or not tok:
+            return
+        headers = {"Authorization": f"Bearer {tok}"}
+        async with httpx.AsyncClient(timeout=15.0) as hc:
+            # 1. Pull peer's Muse data
+            r = await hc.get(base + "/v1/sync/muse-data", headers=headers)
+            if r.status_code == 200:
+                remote_data = r.json()
+                if isinstance(remote_data, dict):
+                    # Download missing/updated avatar stills, clips, and frames first so
+                    # the profile switch renders immediately with zero broken images
+                    manifest = remote_data.get("avatar_manifest") or []
+                    ws_avatar = self.svc.workspace() / "avatar"
+                    for item in manifest:
+                        if not isinstance(item, dict):
+                            continue
+                        face = str(item.get("face") or "").strip()
+                        rel = str(item.get("rel") or "").replace("\\", "/").strip("/")
+                        expected_sz = int(item.get("size") or 0)
+                        if not face or not rel or ".." in face or ".." in rel:
+                            continue
+                        parts = [p for p in rel.split("/") if p and p not in (".", "..")]
+                        if not parts:
+                            continue
+                        dest = (ws_avatar / face).joinpath(*parts)
+                        if dest.is_file() and expected_sz > 0 and dest.stat().st_size == expected_sz:
+                            continue
+                        try:
+                            fr = await hc.get(
+                                f"{base}/v1/sync/avatar/{face}/{rel}",
+                                headers=headers,
+                                timeout=20.0,
+                            )
+                            if fr.status_code == 200 and fr.content:
+                                dest.parent.mkdir(parents=True, exist_ok=True)
+                                dest.write_bytes(fr.content)
+                        except Exception:
+                            pass
+                    self.apply_muse_data(remote_data)
+
+            # 2. Push our Muse data to the peer when our digest changed since last push
+            local_data = self.export_muse_data()
+            digest_src = json.dumps(
+                {
+                    "profile": local_data.get("profile"),
+                    "m": len(local_data.get("memories") or []),
+                    "g": len(local_data.get("goals") or []),
+                    "r": len(local_data.get("reminders") or []),
+                    "a": len(local_data.get("avatar_manifest") or []),
+                    "apps": [(x.get("rel"), x.get("mtime")) for x in (local_data.get("workspace_apps") or [])],
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+            digest = hashlib.sha256(digest_src).hexdigest()[:16]
+            pkey = self._peer_key_of(peer)
+            pushed_digests = self.state.setdefault("peer_muse_digests", {})
+            if pushed_digests.get(pkey) != digest:
+                pr = await hc.post(base + "/v1/sync/muse-data", headers=headers, json=local_data)
+                if pr.status_code == 200:
+                    pushed_digests[pkey] = digest
+                    self._save()
 
     def set_device_overrides(self, body: dict[str, Any]) -> dict[str, Any]:
         """Configure optional device-specific settings (disabled by default)."""
@@ -1925,7 +2516,9 @@ class ConversationSync:
         return self.view()
 
     def export_setup_bundle(self) -> dict[str, Any]:
-        """Export this device's full setup (models, vault keys, routing, connections, appearance, profile) for a paired peer."""
+        """Export this device's portable setup (models, vault keys, routing, connections,
+        appearance, profile, avatar, and Muse data) for a paired peer — never exporting
+        device-local keys such as hub.device_id or app_lock."""
         from nanomuse.llm.smart_router import load_routing_config
 
         vault = self.svc.app.vault
@@ -1939,7 +2532,11 @@ class ConversationSync:
                     vault_items[name] = val
         except Exception:
             pass
-        app_data = dict(self.svc.connections.data)
+        app_data = {
+            k: v
+            for k, v in dict(self.svc.connections.data).items()
+            if k not in DEVICE_LOCAL_SETTINGS_KEYS
+        }
         profile_text = ""
         profile_path = self.svc.data_dir / "USER.md"
         if profile_path.exists():
@@ -1955,15 +2552,23 @@ class ConversationSync:
             if face and face != "none":
                 face_dir = self.svc.workspace() / "avatar" / face
                 if face_dir.is_dir():
+                    rank = {name: i for i, name in enumerate(_CANONICAL_AVATAR_FILES)}
+                    candidates = [
+                        f
+                        for f in face_dir.iterdir()
+                        if f.is_file()
+                        and f.suffix.lower() in (".webp", ".png", ".jpg", ".mp4", ".webm", ".json")
+                    ]
+                    candidates.sort(key=lambda f: (rank.get(f.name, 999), f.name))
                     total_bytes = 0
-                    for f in sorted(face_dir.iterdir()):
-                        if f.is_file() and f.suffix.lower() in (".webp", ".png", ".jpg", ".mp4", ".webm", ".json"):
-                            sz = f.stat().st_size
-                            if total_bytes + sz <= 15 * 1024 * 1024:
-                                avatar_files[f"{face}/{f.name}"] = base64.b64encode(f.read_bytes()).decode("ascii")
-                                total_bytes += sz
+                    for f in candidates:
+                        sz = f.stat().st_size
+                        if total_bytes + sz <= 25 * 1024 * 1024:
+                            avatar_files[f"{face}/{f.name}"] = base64.b64encode(f.read_bytes()).decode("ascii")
+                            total_bytes += sz
         except Exception:
             pass
+        muse_data = self.export_muse_data()
         return {
             "app_settings": app_data,
             "profile": self.svc.profile.to_dict(),
@@ -1972,6 +2577,11 @@ class ConversationSync:
             "vault_entries": vault_items,
             "user_profile": profile_text,
             "ui_preferences": self._load_ui_prefs(),
+            "memories": muse_data.get("memories") or [],
+            "goals": muse_data.get("goals") or [],
+            "goal_steps": muse_data.get("goal_steps") or [],
+            "reminders": muse_data.get("reminders") or [],
+            "workspace_apps": muse_data.get("workspace_apps") or [],
         }
 
     def _load_ui_prefs(self) -> dict[str, Any]:
@@ -1986,7 +2596,8 @@ class ConversationSync:
         return {}
 
     def apply_setup_bundle(self, bundle: dict[str, Any]) -> dict[str, Any]:
-        """Apply a setup bundle received from a paired device, respecting optional device_overrides."""
+        """Apply a setup bundle received from a paired device, respecting optional device_overrides
+        and strictly preserving device-local identity/security keys."""
         if not isinstance(bundle, dict):
             return {"applied": False}
         from nanomuse.config import apply_app_settings
@@ -2018,13 +2629,15 @@ class ConversationSync:
             except Exception:
                 pass
 
-        # 3. App settings (models, connections, onboarding, identity)
+        # 3. App settings (models, connections, onboarding) — NEVER overwrite device-local keys
         incoming = bundle.get("app_settings")
         if isinstance(incoming, dict):
             merged = dict(self.svc.connections.data)
             local_agent = dict(merged.get("agent") or {})
             local_llm = dict(merged.get("llm") or {})
             for k, v in incoming.items():
+                if k in DEVICE_LOCAL_SETTINGS_KEYS:
+                    continue
                 merged[k] = v
             if keep_appearance and local_agent:
                 # Keep device-local avatar/theme appearance if override enabled
@@ -2067,11 +2680,11 @@ class ConversationSync:
                 if not isinstance(rel_key, str) or not isinstance(b64_str, str):
                     continue
                 parts = [p for p in rel_key.replace("\\", "/").split("/") if p and p not in (".", "..")]
-                if len(parts) == 2:
+                if len(parts) >= 2:
                     try:
-                        target_dir = self.svc.workspace() / "avatar" / parts[0]
-                        target_dir.mkdir(parents=True, exist_ok=True)
-                        (target_dir / parts[1]).write_bytes(base64.b64decode(b64_str))
+                        dest = (self.svc.workspace() / "avatar").joinpath(*parts)
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.write_bytes(base64.b64decode(b64_str))
                     except Exception:
                         pass
 
@@ -2084,7 +2697,7 @@ class ConversationSync:
                         continue
                     cur_prof[k] = v.strip()
             try:
-                self.svc.update_profile(**cur_prof)
+                self.svc.update_profile(cur_prof)
             except Exception as exc:
                 logger.debug("apply_setup_bundle profile apply: {}", exc)
 
@@ -2097,6 +2710,20 @@ class ConversationSync:
                 )
             except Exception:
                 pass
+
+        # 7. Memories, goals, reminders, workspace HTML apps
+        try:
+            self.apply_muse_data(
+                {
+                    "memories": bundle.get("memories") or [],
+                    "goals": bundle.get("goals") or [],
+                    "goal_steps": bundle.get("goal_steps") or [],
+                    "reminders": bundle.get("reminders") or [],
+                    "workspace_apps": bundle.get("workspace_apps") or [],
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("apply_setup_bundle muse data: {}", exc)
 
         return {
             "applied": True,
@@ -2163,6 +2790,11 @@ class ConversationSync:
                 out.append(url)
         return out
 
+    def _local_kind(self) -> str:
+        if os.environ.get("NANOMUSE_DEVICE", "").strip().lower() == "android":
+            return "phone"
+        return "phone" if getattr(self.svc.app, "device", None) is not None else "computer"
+
     def accept_inbound_claim(
         self,
         *,
@@ -2172,12 +2804,17 @@ class ConversationSync:
         remote_urls: list[str],
         return_token: str = "",
         client_ip: str = "",
+        remote_kind: str = "",
     ) -> tuple[bool, dict[str, Any], int]:
         ok, err = self.pairing.claim_code(code, client_ip=client_ip)
         if not ok:
             status = 429 if "many attempts" in err else 401
             return False, {"ok": False, "detail": err}, status
-        peer_tok = self.pairing.mint_inbound_token(remote_id, remote_name)
+        clean_kind = str(remote_kind or "").strip().lower() or _infer_peer_kind(
+            {"id": remote_id, "name": remote_name}
+        )
+        clean_name = _clean_peer_name(remote_name, client_ip or remote_id, clean_kind)
+        peer_tok = self.pairing.mint_inbound_token(remote_id, clean_name)
         port = int(getattr(self.svc.settings.server, "port", 8787) or 8787)
         host = str(getattr(self.svc.settings.server, "host", "127.0.0.1") or "127.0.0.1")
         my_urls = candidate_urls(port, host)
@@ -2189,8 +2826,9 @@ class ConversationSync:
                         self.svc.data_dir,
                         rurl,
                         return_token,
-                        name=remote_name or remote_id or "Peer",
+                        name=clean_name,
                         device_id=remote_id,
+                        kind=clean_kind,
                     )
                     break
                 except ValueError:
@@ -2204,13 +2842,14 @@ class ConversationSync:
             self.peer_sync_soon(delay=0.2)
         if getattr(self.svc, "bus", None):
             self.svc.bus.publish({"kind": "sync", "sync": self.view()})
-            self.svc.bus.publish({"kind": "paired", "name": remote_name or remote_id or "A device"})
+            self.svc.bus.publish({"kind": "paired", "name": clean_name or "A device"})
         return (
             True,
             {
                 "ok": True,
                 "device_id": self.svc.hub.device_id,
                 "name": self.svc.hub.device_name,
+                "kind": self._local_kind(),
                 "peer_token": peer_tok,
                 "urls": my_urls,
                 "setup_bundle": self.export_setup_bundle(),
@@ -2246,12 +2885,13 @@ class ConversationSync:
                 "code": norm_code,
                 "device_id": self.svc.hub.device_id,
                 "name": self.svc.hub.device_name,
+                "kind": self._local_kind(),
                 "urls": my_urls,
                 "peer_token": return_token,
             }
             last_err = "no answer"
             tried = ", ".join(u.rstrip("/") for u in urls)
-            async with httpx.AsyncClient(timeout=5.0) as hc:
+            async with httpx.AsyncClient(timeout=20.0) as hc:
                 for base in urls:
                     try:
                         r = await hc.post(base.rstrip("/") + "/v1/sync/pair/claim", json=payload)
@@ -2259,10 +2899,24 @@ class ConversationSync:
                         if r.status_code == 200 and data.get("ok"):
                             peer_tok = str(data.get("peer_token") or "")
                             r_id = str(data.get("device_id") or parsed.get("id") or "")
-                            r_name = str(data.get("name") or name or parsed.get("name") or base)
+                            r_kind = str(data.get("kind") or "").strip().lower() or _infer_peer_kind(
+                                {"id": r_id, "name": data.get("name") or name or parsed.get("name") or ""}
+                            )
+                            r_name = _clean_peer_name(
+                                str(data.get("name") or name or parsed.get("name") or ""),
+                                base,
+                                r_kind,
+                            )
                             if not peer_tok:
                                 raise ValueError("Peer did not return a pairing token")
-                            add_pair(self.svc.data_dir, base, peer_tok, name=r_name, device_id=r_id)
+                            add_pair(
+                                self.svc.data_dir,
+                                base,
+                                peer_tok,
+                                name=r_name,
+                                device_id=r_id,
+                                kind=r_kind,
+                            )
                             self.state["enabled"] = True
                             if sync_side_chats and not self.state.get("side_chats_set"):
                                 self.state["side_chats"] = True

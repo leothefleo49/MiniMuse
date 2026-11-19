@@ -55,8 +55,9 @@ import { SwitchModeConfirm } from "../components/SwitchModeConfirm";
 import { EmergencyStop, RelatedSafety } from "../components/SafetyControls";
 import { api, setToken } from "../api";
 import { DRAGON } from "../avatars";
-import { desktopBridge, desktopUpdates, isDesktopApp } from "../desktop";
+import { desktopBridge, desktopUpdates, isDesktopApp, setDesktopFullscreen, useDesktopFullscreen } from "../desktop";
 import { thisDeviceKind } from "../device";
+import { countDevices } from "../devicePeers";
 import { setDeveloperTools, useDeveloperTools } from "../devtools";
 import { setShowSteps, useShowSteps } from "../steps";
 import { clearMarks, markMatches, queryWords, searchSettingsCatalog, splitAround, type SettingsCatalogEntry } from "../settings-search";
@@ -902,6 +903,7 @@ export function SettingsScreen() {
               <ScaleSlider />
             </div>
           </SettingBlock>
+          {!androidApp() && <DesktopFullscreenSetting highlightedId={highlightedId} />}
           <SettingBlock id="appearance-accent" highlightedId={highlightedId} className="space-y-3">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               <div className="flex min-w-[150px] flex-1 items-center gap-1.5 text-[13.5px]">
@@ -1746,10 +1748,17 @@ function SettingsHome({
   query: string;
   onQuery: (value: string) => void;
 }) {
-  const { state, setTab } = useStore();
+  const { state, dispatch, setTab } = useStore();
   const t = useT();
   const s = state.settings;
   const hub = state.hub;
+  useEffect(() => {
+    if (state.sync) return;
+    void api
+      .syncState()
+      .then((sync) => dispatch({ type: "ws", msg: { kind: "sync", sync } }))
+      .catch(() => {});
+  }, [dispatch, state.sync]);
   // what the configured providers cover (contract C11), from the runtime; null on an older one
   const providers = useProviders();
   const name = state.profile?.name ?? "MiniMuse";
@@ -1758,11 +1767,8 @@ function SettingsHome({
   const [lockPromptDismissed, setLockPromptDismissed] = useState(() => readLockPromptDismissed());
   const [confirmExternal, setConfirmExternal] = useState<{ label: string; url: string } | null>(null);
 
-  const localPhones = s?.local_devices?.phones ?? [];
-  const localComp = s?.local_devices?.computer;
   const hubOthers = hub?.devices.filter((d) => !d.this && d.kind !== "web") ?? [];
-  const hasLocalComputer = !!localComp;
-  const totalDevs = (hasLocalComputer || (hub && hub.state === "connected") ? 1 : 0) + localPhones.length + hubOthers.length;
+  const { total: totalDevs } = countDevices(hub, state.devices ?? s?.local_devices, state.sync);
   const coding = hubOthers.filter((d) => d.online && d.actions?.includes("coding.sessions"));
   const mode = s?.sentinel.mode;
   const modeLabel = mode === "ask" ? t("Balanced") : mode === "strict" ? t("Cautious") : mode === "auto" ? t("Hands-off") : "";
@@ -2611,6 +2617,29 @@ function Swatch({ label, color, selected, onClick }: { label: string; color: str
           : "0 0 0 1.5px color-mix(in srgb, var(--om-fg) 35%, var(--om-bg) 65%)",
       }}
     />
+  );
+}
+
+function DesktopFullscreenSetting({ highlightedId }: { highlightedId?: string | null }) {
+  const t = useT();
+  const fs = useDesktopFullscreen();
+  return (
+    <SettingBlock id="appearance-fullscreen" highlightedId={highlightedId ?? null}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[13.5px]">
+          <span>{t("Fullscreen mode")}</span>
+          <SettingInfo
+            forceOpen={highlightedId === "appearance-fullscreen"}
+            text={t("Fills the entire monitor without window borders or title bar. Press F11 anytime to toggle.")}
+          />
+        </div>
+        <Toggle
+          checked={fs}
+          label={t("Fullscreen mode")}
+          onChange={(v) => void setDesktopFullscreen(v)}
+        />
+      </div>
+    </SettingBlock>
   );
 }
 
