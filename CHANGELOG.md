@@ -9,7 +9,7 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 - A one-time sync backfill: a paired device that never chose the side-chat switch reads the side chats it skipped, without pairing again.
 
 ### Changed
-- The conversation list is ordered by the newest message from either person, and the desktop sidebar follows the same order instead of file/insertion order.
+- The conversation list is ordered by the newest message from either person, and the desktop sidebar follows the same order instead of file/insertion order. A chat that holds only an imported notice (a document an older build turned into an empty chat) comes after every conversation somebody actually spoke in.
 - A chat's dates come from its messages rather than from when a file was imported, so an imported archive starts where its first message was.
 
 ### Fixed

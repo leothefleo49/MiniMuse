@@ -540,6 +540,19 @@ class Thread:
     # else is signed in, hidden from them, back as `main` when that account returns
     main_of: str = ""
 
+    def last_message_ts(self) -> str:
+        """The newest message either person actually wrote, "" when the conversation only
+        holds notices (a document imported by an older build, a system line). Notices carry
+        the time they were imported, which says nothing about when the chat was last used."""
+        newest = ""
+        for ev in self.timeline.events:
+            if ev.get("type") not in ("user", "assistant"):
+                continue
+            ts = str(ev.get("ts") or "")
+            if ts > "1971-01-01" and ts > newest:
+                newest = ts
+        return newest
+
     def refresh_times_from_events(self) -> bool:
         """The dates a conversation is shown and sorted by are its messages' dates, not
         when a file happened to be imported or when the chat was last renamed. An archive
@@ -552,12 +565,13 @@ class Thread:
         ]
         if not stamps:
             return False
-        first, last = min(stamps), max(stamps)
+        first = min(stamps)
         changed = False
         if not self.created_at or first < self.created_at:
             self.created_at = first
             changed = True
-        if last != self.updated_at:
+        last = self.last_message_ts()
+        if last and last != self.updated_at:
             self.updated_at = last
             changed = True
         return changed
@@ -568,6 +582,9 @@ class Thread:
             "title": self.title,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            # the newest real message: the list is ordered by this, so a shell that only
+            # holds an imported notice sorts below every chat somebody actually spoke in
+            "last_message_at": self.last_message_ts(),
             "busy": self.busy,
             "queued": self.inbox.qsize(),
             "events": len(self.timeline.events),
@@ -1969,10 +1986,17 @@ class MuseService:
 
         Newest activity first, the way a chat list is read: an imported archive starts where
         its first message was, so it lands between the chats it belongs with instead of at
-        the end in file order."""
+        the end in file order. Threads that only hold notices (documents an older build
+        turned into empty chats) come after every conversation somebody spoke in."""
+        visible = [t for t in self.threads.values() if self.sync.visible(t)]
+        newest = {id(t): t.last_message_ts() for t in visible}
         return sorted(
-            (t for t in self.threads.values() if self.sync.visible(t)),
-            key=lambda t: (t.updated_at or "", t.created_at or ""),
+            visible,
+            key=lambda t: (
+                1 if newest[id(t)] else 0,
+                newest[id(t)] or t.updated_at or "",
+                t.created_at or "",
+            ),
             reverse=True,
         )
 

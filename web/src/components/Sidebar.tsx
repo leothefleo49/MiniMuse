@@ -7,6 +7,7 @@ import { useT } from "../i18n";
 import { ThreadList } from "../screens/ChatScreen";
 import { MuseSheet } from "../screens/MuseSheet";
 import { useStore, type Tab } from "../store";
+import { byNewestMessage } from "../threadOrder";
 import { cx } from "../util";
 import { Avatar } from "./Avatar";
 import { useMenuKeys } from "./useMenuKeys";
@@ -74,9 +75,7 @@ export function Sidebar() {
   ];
 
   const q = query.trim().toLowerCase();
-  const threads = [...state.threads].sort((a, b) =>
-    (b.updated_at || "").localeCompare(a.updated_at || ""),
-  );
+  const threads = [...state.threads].sort(byNewestMessage);
   const shown = q
     ? threads.filter((th) => th.id === "main" || (th.title || "").toLowerCase().includes(q) || (th.device_name ?? "").toLowerCase().includes(q))
     : threads;

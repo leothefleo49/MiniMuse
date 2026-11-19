@@ -204,17 +204,28 @@ class FakeThread:
         self.timeline = Timeline(tid, threads_dir / f"{tid}.json", max_events=_TINY_LIMIT or 2000)
         self.agent = FakeAgent()
 
+    def last_message_ts(self) -> str:
+        newest = ""
+        for ev in self.timeline.events:
+            if ev.get("type") not in ("user", "assistant"):
+                continue
+            ts = str(ev.get("ts") or "")
+            if ts > newest:
+                newest = ts
+        return newest
+
     def refresh_times_from_events(self) -> bool:
         """The real Thread's rule: dates come from the messages."""
         stamps = [str(ev.get("ts") or "") for ev in self.timeline.events if ev.get("ts")]
         if not stamps:
             return False
-        first, last = min(stamps), max(stamps)
+        first = min(stamps)
         changed = False
         if first < self.created_at:
             self.created_at = first
             changed = True
-        if last != self.updated_at:
+        last = self.last_message_ts()
+        if last and last != self.updated_at:
             self.updated_at = last
             changed = True
         return changed

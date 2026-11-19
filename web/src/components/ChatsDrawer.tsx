@@ -5,6 +5,7 @@ import { api } from "../api";
 import { DRAFT_THREAD, useStore } from "../store";
 import type { HubDevice, ThreadMeta } from "../types";
 import { intlLocale, useT } from "../i18n";
+import { byNewestMessage } from "../threadOrder";
 import { cx } from "../util";
 import { longPressHandlers, ThreadActionsSheet, type ThreadSheetMode } from "./ThreadActionsSheet";
 import { useFocusTrap } from "./useFocusTrap";
@@ -53,7 +54,7 @@ export function ChatsDrawer() {
     return state.threads
       .filter((th) => th.id !== "main")
       .filter((th) => !q || (th.title || "").toLowerCase().includes(q))
-      .sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+      .sort(byNewestMessage);
   }, [state.threads, query]);
   const others: HubDevice[] = (state.hub?.devices ?? []).filter((d) => !d.this && d.kind !== "web");
   const othersOnline = others.filter((d) => d.online).length;

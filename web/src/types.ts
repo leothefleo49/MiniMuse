@@ -325,6 +325,8 @@ export interface ThreadMeta {
   title: string;
   created_at: string;
   updated_at: string;
+  /** the newest real message (user/assistant); the list is ordered by this */
+  last_message_at?: string;
   busy: boolean;
   queued: number;
   events: number;
