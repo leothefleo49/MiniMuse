@@ -4,6 +4,16 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.11] - 2026-11-19
+### Added
+- Chats imported before the counter existed get their real message total once, from the search index that still holds every imported message, so a 5,045-message chat is not shown as "2,000 events".
+
+### Changed
+- A chat's count now takes whichever is larger, the events it kept or the messages the deep archive knows for it, and stays that way across restarts.
+
+### Fixed
+- The "2,000 events" ceiling on the label for long imported chats is gone; the list shows the true total (five digits, then 99,999+).
+
 ## [1.2.10] - 2026-11-19
 ### Added
 - A chat's message count is its real total now, not the size of the window the conversation keeps in memory: five digits with separators, then **99,999+**.

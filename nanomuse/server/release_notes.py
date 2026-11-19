@@ -17,6 +17,18 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.11": {
+        "title": "The real message count on long imported chats",
+        "added": [
+            "A chat imported before the counter existed takes its true message total from the search index once, instead of showing the 2,000 it kept",
+        ],
+        "improved": [
+            "The count takes the larger of the kept events and the messages the deep archive knows, and survives restarts",
+        ],
+        "fixed": [
+            "No more '2,000 events' ceiling on a 5,000-message imported chat",
+        ],
+    },
     "1.2.10": {
         "title": "Real message counts, a phone that listens, and the Muse avatar after a re-pair",
         "added": [

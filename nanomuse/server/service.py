@@ -1615,7 +1615,29 @@ class MuseService:
                 thread.origin_device_name = str(m.get("origin_device_name") or "")
             if m.get("main_of"):
                 thread.main_of = str(m["main_of"])
+        self._seed_event_totals()
         self._save_index()
+
+    def _seed_event_totals(self) -> None:
+        """Chats imported before the counter existed were trimmed to the events they keep,
+        so their file cannot say how many they had. The search index still holds every
+        imported message: take the count from there once, so a 5,045-message chat is not
+        shown as 2,000."""
+        try:
+            conn = sqlite3.connect(self.data_dir / "personal.db", timeout=10)
+            try:
+                rows = conn.execute(
+                    "SELECT thread_id, COUNT(*) FROM messages_fts GROUP BY thread_id"
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return
+        for tid, count in rows:
+            thread = self.threads.get(str(tid))
+            if thread is not None and int(count) > thread.timeline.total:
+                thread.timeline.total = int(count)
+                thread.timeline.save()
 
     # ------------------------------------------------------------------ trash
     def _trash_retention_days(self) -> int:
