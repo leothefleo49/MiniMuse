@@ -17,6 +17,20 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.7": {
+        "title": "Watch: a keyboard that opens, an animated face, and no more 'Connecting...'",
+        "added": [
+            "The watch home screen plays the agent's own animation, looped, instead of a still",
+        ],
+        "improved": [
+            "The three round buttons follow the bezel's curve, with the chat button lower like the other two",
+            "The keyboard icon is the real one, and the glyphs are bigger",
+        ],
+        "fixed": [
+            "The keyboard button now opens the watch's keyboard (and says so if the watch has none)",
+            "'Connecting...' now names the address that is not answering, with Retry and Re-pair, and finds the server again if its address changed",
+        ],
+    },
     "1.2.6": {
         "title": "Pairing works now, and it says what it is doing",
         "added": [

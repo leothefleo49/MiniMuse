@@ -4,6 +4,16 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-11-19
+### Fixed
+- **Watch: the chat button now sits on the bezel's curve**, lower than the two at the sides, so all three look like they rest on the edge of the round screen instead of on a straight line.
+- **Watch: the keyboard button opens the keyboard.** The field was there but nothing ever asked the watch's input method to show; it now takes focus, opens, and the keyboard's send key sends. If the watch has no keyboard app, the screen says so instead of doing nothing.
+- **Watch: the keyboard icon is the real one** and the glyphs in the round buttons are bigger (a fifth of the button as padding instead of a quarter).
+- **Watch: "Connecting..." no longer lies.** A paired watch that cannot reach its server now says which address it tried and why, with Retry and Re-pair buttons. After three misses it looks for the same server at a new address on Wi-Fi and switches to it on its own.
+- **Watch: the character animates.** The home screen plays the agent's own looped animation (the same clip the app plays beside a chat), downloaded once and cached; the still is the fallback while it loads, for faces without a clip, and if playback fails. The hero is no longer rebuilt by every state poll, so the loop is not restarted every few seconds.
+- Watch: pairing and auto-pair notices fade after a few seconds instead of becoming the permanent status.
+
+
 ## [1.2.6] - 2026-11-19
 ### Fixed
 - **Pairing with a phone never worked, and nothing said why.** The desktop app listened on this machine only, while the pairing QR handed out the network address, so the phone's request went nowhere. The desktop app and the phone app now listen on the network (every request still carries the access token; `NANOMUSE_LAN=0` on the desktop, `NANOMUSE_BIND_HOST=127.0.0.1` on the phone, puts one back on loopback).

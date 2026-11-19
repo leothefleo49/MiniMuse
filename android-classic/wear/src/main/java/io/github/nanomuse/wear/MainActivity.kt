@@ -49,6 +49,8 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.LinearInterpolator
 import android.webkit.WebResourceRequest
@@ -61,6 +63,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.VideoView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -96,6 +99,8 @@ class MainActivity : AppCompatActivity() {
     private var chatOpen = false
     private var chatInputOpen = false
     private var chatDraft = ""
+    private var chatField: EditText? = null
+    private var keyboardWarned = false
 
     // The agent's face worn full-bleed on the home screen: the studio still from the server,
     // the bundled dragon, or the emoji on its colour.
@@ -103,6 +108,21 @@ class MainActivity : AppCompatActivity() {
     private var avatarLoadedKey = ""
     private var avatarFailedKey = ""
     private var avatarLoadJob: Job? = null
+
+    // The animated face: the same mp4 the app plays, downloaded once and looped on the hero.
+    // Kept across renders (the screen rebuilds every few seconds) so it never restarts.
+    private var heroVideo: android.widget.VideoView? = null
+    private var heroVideoId = ""
+    private var heroVideoMood = ""
+    private var heroVideoFailed = mutableSetOf<String>()
+    private val heroClipRetryAt = mutableMapOf<String, Long>()
+    private var heroClipJob: Job? = null
+
+    // Why the last state fetch failed, so the home screen can say it instead of "Connecting..."
+    private var lastStateError = ""
+    private var stateFailures = 0
+    private var healAttemptAtMs = 0L
+    private var renderedFingerprint = ""
 
     private var pollJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -243,7 +263,7 @@ class MainActivity : AppCompatActivity() {
             if (agentName.isNotEmpty()) {
                 config.agentName = agentName
             }
-            statusNotice = "Auto-paired with ${config.agentName}!"
+            flash("Auto-paired with ${config.agentName}!")
             return true
         }
         if (serverUrl.isNotEmpty() && pairCode.isNotEmpty()) {
@@ -441,19 +461,94 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun stopPolling() {
+        pollJob?.cancel()
+        pollJob = null
+    }
+
+    /** A short-lived line: pairing and keyboard notices should not become the permanent
+     *  status on the home screen. */
+    private fun flash(message: String, ms: Long = 6000L) {
+        statusNotice = message
+        render()
+        mainHandler.postDelayed({
+            if (statusNotice == message) {
+                statusNotice = ""
+                render()
+            }
+        }, ms)
+    }
+
+    /** Everything the screen actually shows, so an unchanged poll can skip the rebuild. */
+    private fun fingerprint(st: WatchState): String = buildString {
+        append(st.agentName).append('|').append(st.busy).append('|')
+        append(st.avatarId).append('|').append(st.avatarEmoji).append('|')
+        append(st.approvals.joinToString { it.id + it.summary }).append('|')
+        append(st.recent.joinToString { it.role + it.text }).append('|')
+        append(st.actions.joinToString { it.label + it.prompt }).append('|')
+        append(st.cards.joinToString { it.title + it.body }).append('|')
+        append(statusNotice).append('|').append(chatOpen).append(chatInputOpen)
+    }
+
     private fun refreshState(silent: Boolean = false) {
         if (!config.isPaired) return
         lifecycleScope.launch {
             val res = client.fetchState()
             res.onSuccess { st ->
                 currentState = st
+                lastStateError = ""
+                stateFailures = 0
                 if (!silent) statusNotice = ""
-                render()
-            }.onFailure { err ->
-                if (!silent) {
-                    statusNotice = err.message ?: "Offline"
+                // A silent poll that brings nothing new must not rebuild the screen: the
+                // animated hero would restart every few seconds.
+                val fp = fingerprint(st)
+                if (!silent || fp != renderedFingerprint) {
+                    renderedFingerprint = fp
                     render()
                 }
+            }.onFailure { err ->
+                stateFailures += 1
+                lastStateError = err.message ?: err::class.java.simpleName
+                // a watch that has been asleep, or a router that handed the server a new
+                // address, leaves the saved URL pointing at nothing: look once more on Wi-Fi
+                if (stateFailures >= 3) maybeHealAddress()
+                if (!silent) {
+                    statusNotice = lastStateError
+                    render()
+                } else if (stateFailures == 3) {
+                    // the third silent miss is worth a repaint, so the reason is on screen
+                    render()
+                }
+            }
+        }
+    }
+
+    /** Find the same server at a new address and keep using it (a stale IP is the usual
+     *  reason a paired watch sits on "Connecting..." forever). */
+    private fun maybeHealAddress() {
+        val now = System.currentTimeMillis()
+        if (now - healAttemptAtMs < 30_000L) return
+        healAttemptAtMs = now
+        lifecycleScope.launch {
+            val found = LanDiscovery.scan(this@MainActivity, timeoutMs = 3000L)
+            if (found.isEmpty()) return@launch
+            val saved = WatchConfig.normalizeUrl(config.serverUrl)
+            for (srv in found) {
+                val url = WatchConfig.normalizeUrl(srv.url)
+                if (url == saved) continue
+                val previous = config.serverUrl
+                config.serverUrl = url
+                val res = client.fetchState()
+                if (res.isSuccess) {
+                    discoveredServers = found
+                    stateFailures = 0
+                    lastStateError = ""
+                    currentState = res.getOrNull()
+                    startPolling()
+                    render()
+                    return@launch
+                }
+                config.serverUrl = previous
             }
         }
     }
@@ -977,6 +1072,7 @@ class MainActivity : AppCompatActivity() {
         stopHaloAnimation()
         val col = rootCol ?: return
         col.removeAllViews()
+        currentState?.let { renderedFingerprint = fingerprint(it) }
 
         if (!config.isPaired) {
             webShellOpen = false
@@ -1248,10 +1344,12 @@ class MainActivity : AppCompatActivity() {
         hero.addView(avatarHeroView(st), FrameLayout.LayoutParams(screenW, screenW))
 
         val (statusLine, statusHex) = when {
-            st == null -> "Connecting..." to "#8AB8FF"
-            st.busy -> "Working..." to "#8AB8FF"
-            statusNotice.isNotBlank() -> statusNotice to "#FDE68A"
-            else -> "Online" to "#9BE7C4"
+            st != null && st.busy -> "Working..." to "#8AB8FF"
+            st != null && statusNotice.isNotBlank() -> statusNotice to "#FDE68A"
+            st != null -> "Online" to "#9BE7C4"
+            lastStateError.isNotBlank() && stateFailures >= 2 ->
+                "Can't reach ${hostLabel()}" to "#FCA5A5"
+            else -> "Connecting..." to "#8AB8FF"
         }
         hero.addView(
             TextView(this).apply {
@@ -1318,33 +1416,65 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        val iconRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
         val callReady = st?.call?.realtimeSupported == true
-        iconRow.addView(
-            iconButton(R.drawable.ic_call, if (callReady) "#FF2D8E" else null) { startLiveCall() },
-        )
-        iconRow.addView(
-            iconButton(R.drawable.ic_chat, "#0168FF") {
-                chatOpen = true
-                statusNotice = ""
-                render()
-            },
-        )
-        iconRow.addView(
-            iconButton(R.drawable.ic_mic, null) { startVoiceAsk() },
-        )
         hero.addView(
-            iconRow,
+            arcButtons(
+                screenW,
+                iconButton(R.drawable.ic_call, if (callReady) "#FF2D8E" else null) { startLiveCall() },
+                iconButton(R.drawable.ic_chat, "#0168FF") {
+                    chatOpen = true
+                    statusNotice = ""
+                    render()
+                },
+                iconButton(R.drawable.ic_mic, null) { startVoiceAsk() },
+            ),
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM,
-            ).apply { bottomMargin = dp(14) },
+            ).apply { bottomMargin = dp(10) },
         )
         col.addView(hero)
+
+        // A paired watch that cannot reach its server must say so, with a way out, instead of
+        // sitting on "Connecting..." for ever.
+        if (st == null && lastStateError.isNotBlank() && stateFailures >= 2) {
+            col.addView(
+                noticeCard(
+                    "Not reaching ${hostLabel()}: $lastStateError",
+                    "#2A1215",
+                    "#FCA5A5",
+                    strokeHex = "#7F1D1D",
+                ),
+            )
+            val retryRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            retryRow.addView(
+                pillButton("Retry", "#101E36", fgHex = "#93C5FD", strokeHex = "#1D4ED8") {
+                    stateFailures = 0
+                    lastStateError = ""
+                    render()
+                    refreshState()
+                }.also {
+                    it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        marginEnd = dp(4)
+                    }
+                },
+            )
+            retryRow.addView(
+                pillButton("Re-pair", "#121216", fgHex = "#E4E4E7", strokeHex = "#26262C") {
+                    config.clearPairing()
+                    currentState = null
+                    stopPolling()
+                    statusNotice = ""
+                    render()
+                }.also {
+                    it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        marginStart = dp(4)
+                    }
+                },
+            )
+            col.addView(retryRow)
+        }
 
         if (st != null && st.cards.isNotEmpty()) {
             for (card in st.cards.take(2)) {
@@ -1395,7 +1525,54 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** The face that fills the home screen: the studio still, the bundled dragon, or the emoji on its colour. */
+    /** The three round buttons. On a round screen they sit on the bezel's curve: the chat
+     *  button a little lower than the two at the sides, so all three look like they rest on
+     *  the edge instead of floating on a straight line. */
+    private fun arcButtons(screenW: Int, call: View, chat: View, voice: View): View {
+        val round = resources.configuration.isScreenRound
+        if (!round) {
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                addView(call)
+                addView(chat)
+                addView(voice)
+            }
+        }
+        val size = dp(48)
+        val sideBottom = dp(30)
+        val container = FrameLayout(this)
+        container.addView(
+            call,
+            FrameLayout.LayoutParams(size, size, Gravity.BOTTOM or Gravity.START).apply {
+                marginStart = dp(16)
+                bottomMargin = sideBottom
+            },
+        )
+        container.addView(
+            voice,
+            FrameLayout.LayoutParams(size, size, Gravity.BOTTOM or Gravity.END).apply {
+                marginEnd = dp(16)
+                bottomMargin = sideBottom
+            },
+        )
+        container.addView(
+            chat,
+            FrameLayout.LayoutParams(size, size, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                bottomMargin = dp(8)
+            },
+        )
+        container.layoutParams = LinearLayout.LayoutParams(screenW, dp(86))
+        return container
+    }
+
+    /** The address the watch is trying, short enough for the round screen. */
+    private fun hostLabel(): String {
+        val url = WatchConfig.normalizeUrl(config.serverUrl)
+        if (url.isBlank()) return "the server"
+        return url.removePrefix("http://").removePrefix("https://").trimEnd('/')
+    }
+
     private fun avatarHeroView(st: WatchState?): View {
         val id = st?.avatarId ?: "dragon"
         if (id.isBlank() || id == "emoji") {
@@ -1418,9 +1595,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val screenW = resources.displayMetrics.widthPixels
-        return ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
+        val holder = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(screenW, screenW)
+            setBackgroundColor(Color.BLACK)
+        }
+        val still = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
             val bmp = avatarBitmapFor(id)
             if (bmp != null) {
                 setImageBitmap(bmp)
@@ -1429,6 +1609,106 @@ class MainActivity : AppCompatActivity() {
                 if (id != "dragon") loadAvatarAsync(id)
             }
         }
+        holder.addView(
+            still,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        // the moving version on top of the still: the still is what shows before it is ready,
+        // on faces that have no clip, and while the clip is still downloading
+        attachHeroVideo(holder, still, id, if (st?.busy == true) "working" else "idle")
+        return holder
+    }
+
+    /** Play the agent's own animation on the home screen, looped and silent.
+     *
+     *  The same `mp4` the app plays beside a chat is fetched once (a player cannot send the
+     *  access token) and then reused; the view itself is kept between renders so a state
+     *  poll does not restart the loop. */
+    private fun attachHeroVideo(holder: FrameLayout, still: ImageView, id: String, mood: String) {
+        if (id.isBlank() || id == "emoji") return
+        val key = "$id|$mood"
+        val existing = heroVideo
+        if (existing != null && heroVideoId == id && heroVideoMood == mood) {
+            (existing.parent as? ViewGroup)?.removeView(existing)
+            holder.addView(
+                existing,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
+            return
+        }
+        if (heroVideoFailed.contains(key)) return
+        val retryAt = heroClipRetryAt[key] ?: 0L
+        if (System.currentTimeMillis() < retryAt) return
+        val safeId = id.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val clip = File(cacheDir, "avatar-$safeId-$mood.mp4")
+        if (clip.exists() && clip.length() > 10_000L) {
+            startHeroVideo(holder, still, clip, id, mood)
+            return
+        }
+        if (heroClipJob?.isActive == true) return
+        heroClipJob = lifecycleScope.launch {
+            client.fetchAvatarClip(id, mood, cacheDir).onSuccess { file ->
+                mainHandler.post {
+                    if (!config.isPaired || chatOpen || callPhase != CallPhase.OFF || voiceAskActive) {
+                        return@post
+                    }
+                    if (currentState?.avatarId != id) return@post
+                    if (holder.isAttachedToWindow) {
+                        startHeroVideo(holder, still, file, id, mood)
+                    } else {
+                        // the screen was rebuilt while the clip was on its way: draw again so
+                        // the cached clip is picked up by the view that is on screen now
+                        render()
+                    }
+                }
+            }.onFailure {
+                // a face with no clip is worth remembering; a download that failed because
+                // the watch was offline is worth trying again in a minute
+                heroClipRetryAt[key] = System.currentTimeMillis() + 60_000L
+            }
+        }
+    }
+
+    private fun startHeroVideo(holder: FrameLayout, still: ImageView, file: File, id: String, mood: String) {
+        val previous = heroVideo
+        if (previous != null) {
+            (previous.parent as? ViewGroup)?.removeView(previous)
+            try {
+                previous.stopPlayback()
+            } catch (_: Exception) {
+            }
+        }
+        val video = VideoView(this).apply {
+            setVideoPath(file.absolutePath)
+            setOnPreparedListener { mp ->
+                mp.isLooping = true
+                mp.setVolume(0f, 0f)
+                start()
+                still.alpha = 0f
+            }
+            setOnErrorListener { _, _, _ ->
+                heroVideoFailed.add("$id|$mood")
+                visibility = View.GONE
+                still.alpha = 1f
+                true
+            }
+        }
+        heroVideo = video
+        heroVideoId = id
+        heroVideoMood = mood
+        holder.addView(
+            video,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
     }
 
     private fun avatarBitmapFor(id: String): Bitmap? {
@@ -1555,6 +1835,7 @@ class MainActivity : AppCompatActivity() {
         }
         inputRow.addView(
             iconButton(R.drawable.ic_keyboard, null, sizeDp = 38) {
+                keyboardWarned = false
                 chatInputOpen = !chatInputOpen
                 render()
             },
@@ -1566,9 +1847,11 @@ class MainActivity : AppCompatActivity() {
                 setHintTextColor(Color.parseColor("#71717A"))
                 setTextColor(Color.WHITE)
                 textSize = 13f
+                isSingleLine = true
+                isFocusableInTouchMode = true
+                imeOptions = EditorInfo.IME_ACTION_SEND
                 background = outlinedRect("#121216", "#2A2A32", 14)
                 setPadding(dp(10), dp(8), dp(10), dp(8))
-                isSingleLine = true
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -1576,7 +1859,24 @@ class MainActivity : AppCompatActivity() {
                         chatDraft = s?.toString() ?: ""
                     }
                 })
+                setOnEditorActionListener { _, actionId, event ->
+                    val sendKey = actionId == EditorInfo.IME_ACTION_SEND ||
+                        (event?.keyCode == android.view.KeyEvent.KEYCODE_ENTER &&
+                            event.action == android.view.KeyEvent.ACTION_DOWN)
+                    if (sendKey) {
+                        val text = chatDraft.trim()
+                        if (text.isNotEmpty()) {
+                            chatDraft = ""
+                            chatInputOpen = false
+                            submitWatchAsk(text)
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }
             }
+            chatField = input
             inputRow.addView(
                 input,
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -1600,12 +1900,34 @@ class MainActivity : AppCompatActivity() {
             iconButton(R.drawable.ic_mic, null, sizeDp = 38) { startVoiceAsk() },
         )
         col.addView(inputRow)
+
+        // The keyboard button promises a keyboard: give the field focus and ask the watch's
+        // own input method to open. Without this the field existed but nothing ever appeared.
+        if (chatInputOpen) {
+            chatField?.let { field ->
+                field.post {
+                    field.requestFocus()
+                    val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+                    val shown = imm?.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT) == true
+                    if (!shown) {
+                        // no keyboard app on this watch: say it once, the mic still works
+                        imm?.showSoftInput(field, InputMethodManager.SHOW_FORCED)
+                        if (!keyboardWarned) {
+                            keyboardWarned = true
+                            flash("No keyboard on this watch - use the mic, or install Gboard")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /** A round icon button like the Muse hero's: a translucent circle, a white glyph, pink when active. */
     private fun iconButton(iconRes: Int, activeHex: String? = null, sizeDp: Int = 48, onClick: () -> Unit): View {
         val size = dp(sizeDp)
-        val pad = dp(sizeDp / 4)
+        // a quarter of the button on each side left the glyph tiny on a watch face; a fifth
+        // keeps the circle and makes the symbol readable at arm's length
+        val pad = dp(sizeDp / 5)
         return FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(size, size).apply {
                 marginStart = dp(6)

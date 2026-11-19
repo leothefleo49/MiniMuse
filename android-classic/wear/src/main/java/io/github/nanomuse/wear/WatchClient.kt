@@ -291,6 +291,47 @@ class WatchClient(private val config: WatchConfig) {
         }
     }
 
+    /**
+     * The animated version of the face, the same clip the app plays beside a chat: the
+     * server keeps one `mp4` per state (`idle`, `working`, `waiting`, `happy`). Downloaded
+     * to the watch because a player cannot send the token header, then looped locally.
+     */
+    suspend fun fetchAvatarClip(id: String, mood: String, cacheDir: File): Result<File> = withContext(Dispatchers.IO) {
+        val baseUrl = config.serverUrl
+        val token = config.token
+        if (baseUrl.isBlank() || token.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Not paired"))
+        }
+        val safeId = id.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val safeMood = mood.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val out = File(cacheDir, "avatar-$safeId-$safeMood.mp4")
+        if (out.exists() && out.length() > 10_000L) return@withContext Result.success(out)
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/files/avatar/$id/$safeMood.mp4")
+                .header("Authorization", "Bearer $token")
+                .get()
+                .build()
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IllegalStateException("HTTP ${resp.code}"))
+                }
+                val body = resp.body ?: return@withContext Result.failure(IllegalStateException("Empty clip"))
+                val tmp = File(cacheDir, "avatar-$safeId-$safeMood.tmp")
+                tmp.outputStream().use { body.byteStream().copyTo(it) }
+                if (tmp.length() < 10_000L) {
+                    tmp.delete()
+                    return@withContext Result.failure(IllegalStateException("No clip for this face"))
+                }
+                if (out.exists()) out.delete()
+                if (!tmp.renameTo(out)) tmp.copyTo(out, overwrite = true)
+                Result.success(out)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun ask(prompt: String, language: String = Locale.getDefault().toLanguageTag()): Result<Unit> =
         withContext(Dispatchers.IO) {
             val clean = prompt.trim()
