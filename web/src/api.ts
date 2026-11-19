@@ -597,7 +597,7 @@ export const api = {
           reject(new AuthError());
           return;
         }
-        let body: unknown = undefined;
+        let body: unknown;
         try {
           body = JSON.parse(xhr.responseText);
         } catch {

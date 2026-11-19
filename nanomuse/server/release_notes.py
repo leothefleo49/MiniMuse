@@ -17,6 +17,18 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.8": {
+        "title": "The app uses the whole screen, and the Devices page agrees with itself",
+        "added": [],
+        "improved": [
+            "The window fills a 16:9 monitor and an ultrawide: no more 1200px column with empty margins",
+            "Settings uses two columns on a wide screen and three on an ultrawide",
+            "The conversation column grows with the screen instead of staying narrow",
+        ],
+        "fixed": [
+            "A device paired directly (no account) now appears on the Devices page under 'Paired directly', is counted in the device total, and lights the sidebar dot - the same state Data controls already showed",
+        ],
+    },
     "1.2.7": {
         "title": "Watch: a keyboard that opens, an animated face, and no more 'Connecting...'",
         "added": [

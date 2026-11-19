@@ -450,8 +450,16 @@ export function SettingsScreen() {
             ))}
           </nav>
         )}
-      <div ref={bodyRef} className="flex-1 overflow-y-auto px-4 pb-8">
-        <div className={cx(wide && "mx-auto max-w-[740px]")}>
+      <div ref={bodyRef} className="flex-1 overflow-y-auto px-4 pb-8 wide:px-6 wide:pb-10">
+        {/* A desktop window used to centre a 740px column, which left a 16:9 monitor mostly
+            empty. The sections now use the width: one column on a phone or a narrow window,
+            two on a wide one, three on an ultrawide. */}
+        <div
+          className={cx(
+            wide &&
+              "mx-auto w-full max-w-none 2xl:grid 2xl:grid-cols-2 2xl:items-start 2xl:gap-5 min-[1900px]:grid-cols-3",
+          )}
+        >
         {/* who it is */}
         {show("who") && (
         <Section title={name} id="who" plain={!wide}>

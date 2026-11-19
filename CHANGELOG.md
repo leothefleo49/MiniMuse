@@ -4,6 +4,11 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.8] - 2026-11-19
+### Fixed
+- **The app fills the screen.** The main column was capped at 1200px, so even a 16:9 monitor had a wide empty margin and an ultrawide was mostly background. The cap is gone: the shell uses the whole window, and each screen takes the width it can use — the chat centres a conversation column that grows with the screen (1180 → 1500 → 1900px), Settings is one column on a phone, two on a wide screen and three on an ultrawide, and the lists and feeds use their own grids.
+- **One answer to "is this paired?".** The Devices page counted only account devices, so a phone or computer paired directly (no account) showed up in Data controls while this page said "1 device" and "no other devices yet", and the sidebar had no devices dot. The page now reads the same sync state as everything else, counts the directly paired devices, lists them under **Paired directly** (with their address, whether they are online, the last error and Unpair), and the sidebar dot lights up for them too.
+
 ## [1.2.7] - 2026-11-19
 ### Fixed
 - **Watch: the chat button now sits on the bezel's curve**, lower than the two at the sides, so all three look like they rest on the edge of the round screen instead of on a straight line.

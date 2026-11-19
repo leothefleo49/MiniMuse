@@ -352,7 +352,12 @@ export function ChatScreen() {
 
       {/* Timeline */}
       <div ref={listRef} onScroll={measure} className="relative flex-1 overflow-y-auto px-3 pb-3">
-        <div ref={contentRef} className="space-y-2.5">
+        {/* the conversation keeps a readable column while the screen fills: on a 16:9 monitor
+            it is wide, on an ultrawide it stops growing instead of stretching bubbles to 3000px */}
+        <div
+          ref={contentRef}
+          className="space-y-2.5 wide:mx-auto wide:w-full wide:max-w-[1180px] 2xl:max-w-[1500px] min-[2200px]:max-w-[1900px]"
+        >
           {/* the room the header takes; the first message starts under it, not behind it */}
           <div aria-hidden style={{ height: headerHeight }} />
           {state.hasMore[activeThread] && events.length > 0 && (
@@ -1417,7 +1422,7 @@ const AssistantBubble = memo(function AssistantBubble({
             <div
               key={i}
               className={cx(
-                "my-1 max-w-[340px] rounded-[20px] px-3.5 py-2.5 wide:max-w-[600px]",
+                "my-1 max-w-[340px] rounded-[20px] px-3.5 py-2.5 wide:max-w-[720px] 2xl:max-w-[900px]",
                 b.text.includes("⏰") || b.text.includes("Reminder from earlier")
                   ? "border border-amber-500/40 bg-amber-500/10 shadow-xs ring-1 ring-amber-500/20 text-foreground"
                   : "bg-bubble-agent",
@@ -1902,7 +1907,10 @@ export function Composer({
   };
 
   return (
-    <form onSubmit={submit} className="shrink-0 bg-bg px-3 pt-1.5 pb-1">
+    <form
+      onSubmit={submit}
+      className="shrink-0 bg-bg px-3 pt-1.5 pb-1 wide:mx-auto wide:w-full wide:max-w-[1180px] 2xl:max-w-[1500px] min-[2200px]:max-w-[1900px]"
+    >
       {busy && !waiting && (
         <div className="px-2 pb-1 text-[12px] text-muted">{t("{name} is working; anything you send now is picked up right away.", { name })}</div>
       )}

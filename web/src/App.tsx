@@ -426,9 +426,16 @@ export default function App() {
         )}
         {!state.lite && <DesktopRemoteHint />}
         {/* `tabbar-room` keeps the screens, the chat's composer included, above the floating bar;
-            a wide window has the sidebar instead and gives the room back. The room itself is
-            wider than it used to be (900px) so a desktop window is not mostly empty margin. */}
-        <main className={cx("tabbar-room mx-auto min-h-0 w-full flex-1 wide:max-w-[1200px]", !state.lite && "wide:pb-0")}>
+            a wide window has the sidebar instead and gives the room back. Nothing is capped
+            here any more: a 16:9 monitor and an ultrawide fill with the app, and each screen
+            decides its own readable width (the chat centres its conversation, settings go
+            two-column, lists use their cards' own grids). */}
+        <main
+          className={cx(
+            "tabbar-room mx-auto min-h-0 w-full flex-1 wide:max-w-none wide:px-6 2xl:px-10",
+            !state.lite && "wide:pb-0",
+          )}
+        >
           <ErrorBoundary scope="main-tab">
             <Suspense fallback={<Loading />}>
               {state.tab === "chat" && <ChatScreen />}

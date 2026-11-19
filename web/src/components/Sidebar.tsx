@@ -1,6 +1,7 @@
 import { Bug, CalendarDays, LayoutGrid, Lightbulb, MapPin, Menu, MessageCircle, MonitorSmartphone, Newspaper, Search, SlidersHorizontal, SquareCheckBig, TerminalSquare, UserRound, Wrench, X } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import { desktopBridge } from "../desktop";
+import { directPeersOnline } from "../devicePeers";
 import { useDeveloperTools } from "../devtools";
 import { useT } from "../i18n";
 import { ThreadList } from "../screens/ChatScreen";
@@ -40,7 +41,10 @@ export function Sidebar() {
   const pendingApprovals = state.pendingApprovals.length;
   const proposals = state.goals.filter((g) => g.proposal && g.status !== "cancelled").length;
   const feedUnseen = state.pendingApprovals.filter((a) => a.ts > state.feedSeenAt).length;
-  const online = (state.hub?.devices ?? []).filter((d) => !d.this && d.kind !== "web" && d.online).length;
+  const online =
+    (state.hub?.devices ?? []).filter((d) => !d.this && d.kind !== "web" && d.online).length +
+    // a device paired straight to this one (no account) is a device too
+    directPeersOnline(state.sync);
 
   const statusLine =
     pendingApprovals > 0

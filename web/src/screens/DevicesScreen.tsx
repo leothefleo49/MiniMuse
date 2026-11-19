@@ -5,6 +5,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { NoticeDialog } from "../components/NoticeDialog";
 import { SwitchModeConfirm } from "../components/SwitchModeConfirm";
 import { SyncControls } from "../components/DataControls";
+import { directPeers, directPeersOnline, peerHost } from "../devicePeers";
 import { api, chromeExtensionZipUrl } from "../api";
 import { PageBar } from "../components/BackBar";
 import { CloudCard } from "../components/CloudCard";
@@ -56,6 +57,14 @@ export function DevicesScreen() {
     } catch {
       /* offline; the live socket fills it in */
     }
+    // the devices paired straight to this one are their own list: without this the page
+    // said "1 device" while Data controls showed the paired phone
+    try {
+      const sync = await api.syncState();
+      dispatch({ type: "ws", msg: { kind: "sync", sync } });
+    } catch {
+      /* an older runtime without sync */
+    }
   };
   useEffect(() => {
     void reload();
@@ -87,12 +96,28 @@ export function DevicesScreen() {
   const localPhones = onlyUnlistedPhones(local?.phones ?? [], hubOthers);
   const localIds = new Set(localPhones.map((p) => p.id));
   const others = [...hubOthers, ...localPhones];
+  // pairing without an account: these are peers of the sync engine, not hub devices
+  const peers = directPeers(state.sync);
   const signedIn = !!hub?.account.signed_in;
   const connected = hub?.state === "connected";
   const hasThisDevice = Boolean((hub && connected) || local?.computer);
-  // the count: this device and the others (works both signed-in and local-only)
-  const total = others.length + (hasThisDevice ? 1 : 0);
-  const online = others.filter((d) => d.online).length + (hasThisDevice ? 1 : 0);
+  // the count: this device, the account's, and the directly paired ones
+  const total = others.length + peers.length + (hasThisDevice ? 1 : 0);
+  const online =
+    others.filter((d) => d.online).length +
+    directPeersOnline(state.sync) +
+    (hasThisDevice ? 1 : 0);
+
+  const unpairPeer = async (identifier: string) => {
+    try {
+      await api.syncUnpair(identifier);
+      const sync = await api.syncState().catch(() => null);
+      if (sync) dispatch({ type: "ws", msg: { kind: "sync", sync } });
+      toast(t("Unpaired."));
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  };
 
   const renameDevice = async (deviceId: string, name: string) => {
     try {
@@ -179,9 +204,9 @@ export function DevicesScreen() {
         {/* the other devices */}
         <div className="px-4 pt-4">
           <SectionLabel>{t("Other devices")}</SectionLabel>
-          {others.length === 0 ? (
+          {others.length === 0 && peers.length === 0 ? (
             <EmptyDevices hub={hub ?? undefined} signedIn={signedIn} cloudMode={state.settings?.cloud_mode} />
-          ) : (
+          ) : others.length === 0 ? null : (
             <div className="grid grid-cols-1 gap-3 @2xl:grid-cols-2">
               {others.map((d) => (
                 <DeviceCard
@@ -196,6 +221,46 @@ export function DevicesScreen() {
           )}
           <p className="px-1 pt-3 text-[12.5px] leading-[18px] text-muted">{t("A chat addressed to a device runs there; you see every step here and answer its approvals.")}</p>
         </div>
+
+        {peers.length > 0 && (
+          <div className="px-4 pt-4">
+            <SectionLabel>{t("Paired directly")}</SectionLabel>
+            <div className="grid grid-cols-1 gap-3 @2xl:grid-cols-2">
+              {peers.map((peer) => (
+                <div key={peer.url} className="rounded-2xl border border-border bg-surface px-3.5 py-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="flex items-center gap-1.5 truncate text-[14.5px] font-semibold leading-tight">
+                        <span
+                          className={cx(
+                            "h-2 w-2 shrink-0 rounded-full",
+                            peer.online ? "bg-emerald-500" : "bg-border",
+                          )}
+                        />
+                        {peer.name || peerHost(peer)}
+                      </p>
+                      <p className="mt-0.5 truncate font-mono text-[11.5px] text-muted">{peerHost(peer)}</p>
+                      <p className="mt-1 text-[12px] text-muted">
+                        {peer.last_error
+                          ? t("Not syncing: {error}", { error: peer.last_error })
+                          : peer.online
+                            ? t("Syncing directly, no account needed.")
+                            : t("Saved. It catches up when the device is online.")}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void unpairPeer(peer.name || peerHost(peer))}
+                      className="shrink-0 rounded-full border border-border px-2.5 py-1 text-[12px] font-medium text-muted hover:text-fg"
+                    >
+                      {t("Unpair")}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="px-4 pt-4">
           <SectionLabel>{t("Direct sync & offline merge")}</SectionLabel>
