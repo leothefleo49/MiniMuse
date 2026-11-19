@@ -22,8 +22,9 @@ import { WORKING_TTL_MS } from "../presence";
 import { DRAFT_THREAD, useStore, type Stream } from "../store";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { LiveCallModal } from "../components/LiveCallModal";
+import { SetupPromptCard, SetupPromptModal } from "../components/SetupPromptModal";
 import { TrashModal } from "../components/TrashModal";
-import type { AttachmentInfo, BrowserEvent, HubDevice, SkillInfo, Status, ThreadMeta, TimelineEvent, UserEvent, WorkingPresence } from "../types";
+import type { AttachmentInfo, BrowserEvent, HubDevice, SetupPromptEvent, SkillInfo, Status, ThreadMeta, TimelineEvent, UserEvent, WorkingPresence } from "../types";
 import { cx, eventCount, timeDivider, timeShort } from "../util";
 import { MuseSheet } from "./MuseSheet";
 import { countDay, countTask, StarNudgeOnce } from "../components/StarNudge";
@@ -53,8 +54,21 @@ export function ChatScreen() {
   const stream = state.streams[activeThread];
   const [activityOpen, setActivityOpen] = useState(false);
   const [callOpen, setCallOpen] = useState(false);
+  const [activeSetupPrompt, setActiveSetupPrompt] = useState<SetupPromptEvent | null>(null);
+  const seenSetupPromptsRef = useRef<Set<string>>(new Set());
   // the browser card being watched (or driven) full-screen
   const [browserView, setBrowserView] = useState<string | null>(null);
+
+  useEffect(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (ev.type === "setup_prompt" && ev.status !== "completed" && !seenSetupPromptsRef.current.has(ev.id)) {
+        seenSetupPromptsRef.current.add(ev.id);
+        setActiveSetupPrompt(ev);
+        break;
+      }
+    }
+  }, [events]);
   const name = profile?.name ?? "MiniMuse";
   // a chat addressed to another device: is that device still on the hub?
   const deviceOnline = thread?.device ? (state.hub?.devices.find((d) => d.id === thread.device)?.online ?? null) : null;
@@ -403,6 +417,7 @@ export function ChatScreen() {
                     newestReplyId={newestReplyId}
                     onReply={setReplyQuote}
                     onDeleteEvent={handleDeleteEvent}
+                    onOpenSetupPrompt={setActiveSetupPrompt}
                   />
                 ))}
                 {stream && (stream.text || stream.reasoning) && (
@@ -429,6 +444,7 @@ export function ChatScreen() {
                     newestReplyId={newestReplyId}
                     onReply={setReplyQuote}
                     onDeleteEvent={handleDeleteEvent}
+                    onOpenSetupPrompt={setActiveSetupPrompt}
                   />
                 ))}
               </>
@@ -560,6 +576,16 @@ export function ChatScreen() {
         agentName={name}
         onClose={() => setCallOpen(false)}
       />
+      <SetupPromptModal
+        prompt={activeSetupPrompt}
+        onClose={() => setActiveSetupPrompt(null)}
+        onCompleted={(_prompt, resumeText) => {
+          setActiveSetupPrompt(null);
+          if (resumeText) {
+            void send(activeThread, resumeText).then(() => jumpToBottom());
+          }
+        }}
+      />
     </div>
   );
 }
@@ -578,6 +604,7 @@ const EventView = memo(function EventView({
   newestReplyId,
   onReply,
   onDeleteEvent,
+  onOpenSetupPrompt,
 }: {
   event: TimelineEvent;
   prev?: TimelineEvent;
@@ -593,6 +620,7 @@ const EventView = memo(function EventView({
   newestReplyId?: string | null;
   onReply?: (text: string) => void;
   onDeleteEvent?: (eventId: string) => void;
+  onOpenSetupPrompt?: (ev: SetupPromptEvent) => void;
 }) {
   const onDecideThis = useCallback(
     (approved: boolean, scope: string) => onDecide(event.id, approved, scope),
@@ -659,6 +687,8 @@ const EventView = memo(function EventView({
         return <HoldCard event={event} name={name} />;
       case "avatar":
         return <AvatarOptionsCard event={event} name={name} />;
+      case "setup_prompt":
+        return <SetupPromptCard event={event} onOpen={(ev) => onOpenSetupPrompt?.(ev)} />;
       default:
         return null;
     }

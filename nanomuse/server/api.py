@@ -2239,6 +2239,92 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         except (ValueError, KeyError) as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    @app.get("/api/connections/zapier-quota", dependencies=dep)
+    async def get_zapier_quota() -> dict[str, Any]:
+        from nanomuse.connectors.zapier_quota import ZapierQuotaTracker
+
+        return ZapierQuotaTracker(svc.data_dir).status(
+            mcp_servers=list(svc.settings.mcp.servers),
+            configured_apis=svc.app.api_registry.list(),
+        )
+
+    @app.put("/api/connections/zapier-quota", dependencies=dep)
+    async def update_zapier_quota(body: dict[str, Any]) -> dict[str, Any]:
+        from nanomuse.connectors.zapier_quota import ZapierQuotaTracker
+
+        tracker = ZapierQuotaTracker(svc.data_dir)
+        tracker.update_config(
+            limit=int(body["limit"]) if body.get("limit") is not None else None,
+            used=int(body["used"]) if body.get("used") is not None else None,
+            reset=bool(body.get("reset", False)),
+        )
+        return tracker.status(
+            mcp_servers=list(svc.settings.mcp.servers),
+            configured_apis=svc.app.api_registry.list(),
+        )
+
+    @app.get("/api/connections/zapier-compare", dependencies=dep)
+    async def compare_zapier_vs_direct(service: str = "") -> dict[str, Any]:
+        from nanomuse.connectors.zapier_quota import ZapierQuotaTracker
+
+        return ZapierQuotaTracker(svc.data_dir).compare(service)
+
+    @app.get("/api/notifications/live", dependencies=dep)
+    async def get_live_notifications(limit: int = Query(30, ge=1, le=200)) -> dict[str, Any]:
+        live_file = svc.data_dir / "live_notifications.json"
+        items: list[dict[str, Any]] = []
+        if live_file.is_file():
+            try:
+                raw = json.loads(live_file.read_text("utf-8"))
+                if isinstance(raw, list):
+                    items = [r for r in raw if isinstance(r, dict)]
+            except Exception:
+                pass
+        return {"notifications": items[:limit], "count": len(items)}
+
+    @app.post("/api/notifications/live", dependencies=dep)
+    async def post_live_notification(body: dict[str, Any]) -> dict[str, Any]:
+        from datetime import UTC, datetime
+
+        live_file = svc.data_dir / "live_notifications.json"
+        items: list[dict[str, Any]] = []
+        if live_file.is_file():
+            try:
+                raw = json.loads(live_file.read_text("utf-8"))
+                if isinstance(raw, list):
+                    items = [r for r in raw if isinstance(r, dict)]
+            except Exception:
+                pass
+        item = {
+            "id": str(body.get("id") or f"notif_{int(datetime.now(UTC).timestamp() * 1000)}"),
+            "app": str(body.get("app") or body.get("package") or "System")[:80],
+            "title": str(body.get("title") or "")[:200],
+            "text": str(body.get("text") or body.get("body") or "")[:1000],
+            "device": str(body.get("device") or "")[:80],
+            "ts": str(body.get("ts") or datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")),
+        }
+        items.insert(0, item)
+        items = items[:200]
+        live_file.write_text(json.dumps(items, ensure_ascii=False, indent=2), "utf-8")
+        svc.bus.publish({"kind": "live_notification", "notification": item})
+        return {"ok": True, "notification": item}
+
+    @app.post("/api/phone/adb-pair", dependencies=dep)
+    async def pair_phone_wireless_adb(body: dict[str, Any]) -> dict[str, Any]:
+        from nanomuse.tools.connectors_tools import PhoneBridgeTool
+
+        tool = PhoneBridgeTool(
+            db_path=svc.data_dir / "personal.db",
+            workspace=svc.settings.agent.workspace,
+        )
+        res = await tool.execute(
+            action="pair_wireless_adb",
+            pair_host_port=str(body.get("pair_host_port") or ""),
+            pair_code=str(body.get("pair_code") or ""),
+            connect_host_port=str(body.get("connect_host_port") or ""),
+        )
+        return {"ok": res.ok, "output": res.output, "error": res.error}
+
     @app.put("/api/connections/gui", dependencies=dep)
     async def set_gui(body: GuiBody) -> dict[str, Any]:
         try:
@@ -4759,6 +4845,79 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         text = await asyncio.to_thread(log_export.get_error_summary)
         return PlainTextResponse(text, headers={"Cache-Control": "no-cache"})
 
+    _EXPLICIT_MEDIA_TYPES: dict[str, str] = {
+        ".mp4": "video/mp4",
+        ".webm": "video/webm",
+        ".mov": "video/quicktime",
+        ".webp": "image/webp",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".svg": "image/svg+xml",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+        ".m4a": "audio/mp4",
+        ".pdf": "application/pdf",
+        ".html": "text/html; charset=utf-8",
+        ".htm": "text/html; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".js": "application/javascript; charset=utf-8",
+        ".json": "application/json",
+    }
+
+    def _resolve_avatar_fallback(path: str, target: Path) -> Path:
+        """When an avatar mood file (e.g. avatar/<face>/idle.mp4 or dark-idle.mp4) has not
+        been materialized yet, find the matching light or dark variant in face_dir and
+        materialize or return it."""
+        parts = Path(path).parts
+        if len(parts) < 3 or parts[0] != "avatar":
+            return target
+        face_dir = target.parent
+        if not face_dir.is_dir():
+            return target
+        name_low = target.name.lower()
+        ext = target.suffix.lower()
+        if ext not in (".mp4", ".webp", ".png", ".jpg"):
+            return target
+        is_dark = name_low.startswith("dark-")
+        mood = target.stem.lower()
+        if is_dark:
+            mood = mood[5:]
+        hints_map: dict[str, tuple[str, ...]] = {
+            "idle": ("idle",),
+            "working": ("working",),
+            "waiting": ("making_something", "waiting"),
+            "happy": ("milestone_level_up", "happy"),
+            "error": ("error", "darkmode", "idle"),
+        }
+        hints = hints_map.get(mood, (mood, "idle"))
+        candidates = sorted(p for p in face_dir.rglob(f"*{ext}") if p.is_file())
+        for hint in hints:
+            for cand in candidates:
+                cn = cand.name.lower()
+                if is_dark and "darkmode" in cn and hint in cn:
+                    try:
+                        target.write_bytes(cand.read_bytes())
+                        return target
+                    except OSError:
+                        return cand
+                if not is_dark and "darkmode" not in cn and hint in cn:
+                    try:
+                        target.write_bytes(cand.read_bytes())
+                        return target
+                    except OSError:
+                        return cand
+        # Fallback to canonical idle or non-dark mood file
+        for fallback_name in (f"{mood}{ext}", f"idle{ext}"):
+            fb = face_dir / fallback_name
+            if fb.is_file():
+                return fb
+        if candidates:
+            return candidates[0]
+        return target
+
     @app.get("/api/files/{path:path}", dependencies=dep_or_signed)
     async def get_file(path: str, download: bool = False) -> Response:
         try:
@@ -4766,21 +4925,17 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from exc
         if not target.is_file():
+            target = _resolve_avatar_fallback(path, target)
+        if not target.is_file():
             raise HTTPException(404, "no such file")
-        media, _ = mimetypes.guess_type(str(target))
-        if media is None or target.suffix.lower() in (
-            ".md",
-            ".txt",
-            ".log",
-            ".csv",
-            ".json",
-            ".py",
-        ):
-            media = (
-                "text/plain; charset=utf-8"
-                if target.suffix.lower() != ".json"
-                else "application/json"
-            )
+        suf = target.suffix.lower()
+        media = _EXPLICIT_MEDIA_TYPES.get(suf)
+        if media is None:
+            media, _ = mimetypes.guess_type(str(target))
+        if suf in (".md", ".txt", ".log", ".csv", ".py", ".toml", ".yaml", ".yml"):
+            media = "text/plain; charset=utf-8"
+        elif media is None:
+            media = "application/octet-stream"
         headers: dict[str, str] = {}
         if media.startswith("text/html") or media == "image/svg+xml":
             # Files the agent wrote never run with the app's origin: no token, no API.

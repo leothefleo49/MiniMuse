@@ -55,6 +55,7 @@ from nanomuse.tools import (
     React,
     Remember,
     Reminders,
+    RequestSetupTool,
     Shell,
     ToolCollection,
     Triggers,
@@ -204,6 +205,8 @@ class NanoMuseApp:
                 resolve=lambda v: self.vault.resolve(v, strict=False),
 
                 redact=self.vault.redact,
+
+                data_dir=settings.data_dir,
 
             )
 
@@ -634,6 +637,8 @@ class NanoMuseApp:
             ExternalConnectorsTool(db_path=s.data_dir / "personal.db", workspace=ws, data_dir=s.data_dir, vault=self.vault),
 
             ApiConnectorTool(registry=self.api_registry),
+
+            RequestSetupTool(ui=self.ui, data_dir=s.data_dir),
 
             LocationTool(store=self.location, contacts=self.contacts),
 

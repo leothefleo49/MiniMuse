@@ -306,6 +306,70 @@ export interface StudioView {
   face: StudioFace | null;
 }
 
+export interface SetupPromptField {
+  key: string;
+  label: string;
+  placeholder?: string;
+  secret?: boolean;
+}
+
+export interface ZapierRecommendation {
+  tool: string;
+  calls_this_month: number;
+  preset_id: string;
+  preset_name: string;
+  base_url: string;
+  already_connected_direct: boolean;
+  reason: string;
+}
+
+export interface ZapierQuotaStatus {
+  configured: boolean;
+  servers: string[];
+  month: string;
+  used: number;
+  limit: number;
+  remaining: number;
+  percent: number;
+  level: "ok" | "moderate" | "high" | "exhausted" | string;
+  last_used_at: string;
+  by_tool: Record<string, number>;
+  should_recommend_direct: boolean;
+  summary: string;
+  recommendations: ZapierRecommendation[];
+}
+
+export interface SetupPromptEvent extends BaseEvent {
+  type: "setup_prompt";
+  kind:
+    | "permission"
+    | "api_key"
+    | "oauth"
+    | "live_notifications"
+    | "phone_control"
+    | "wireless_debugging"
+    | "pc_control"
+    | "health_wearable"
+    | "calendar"
+    | "zapier"
+    | "custom_api"
+    | string;
+  target: string;
+  preset_id?: string;
+  title: string;
+  why: string;
+  base_url?: string;
+  auth_type?: string;
+  docs_url?: string;
+  key_url?: string;
+  key_hint?: string;
+  steps?: string[];
+  fields?: SetupPromptField[];
+  resume_prompt?: string;
+  zapier_quota?: ZapierQuotaStatus | null;
+  status?: "pending" | "completed" | "dismissed";
+}
+
 export type TimelineEvent =
   | UserEvent
   | AssistantEvent
@@ -318,7 +382,8 @@ export type TimelineEvent =
   | BrowserEvent
   | HandsEvent
   | HoldEvent
-  | AvatarEvent;
+  | AvatarEvent
+  | SetupPromptEvent;
 
 export interface ThreadMeta {
   id: string;
@@ -827,6 +892,10 @@ export interface Profile {
   avatar: string;
   emoji: string;
   color: string;
+  /** "theme" (matches active light/dark/custom theme), "default" (#f1efeb), "color" (custom color), or "image" (custom background image) */
+  avatar_bg_mode?: "theme" | "default" | "color" | "image" | string;
+  avatar_bg_color?: string;
+  avatar_bg_image?: string;
   /** one line under the name */
   tagline: string;
   /** how it talks: "" | formal | casual | playful | concise */

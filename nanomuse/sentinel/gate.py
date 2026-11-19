@@ -266,9 +266,8 @@ class Sentinel:
         task = _current_task.get()
         result_policy = self.policy.evaluate(tool.name, args, assessment, tainted=self.tainted)
         decision, reasons = result_policy.decision, list(result_policy.reasons)
-        # a message to a person (SMS, e-mail, a chat) always asks, whatever the mode,
-        # whatever the permissions: the model never reaches another human on its own
-        if assessment.reaches_people and decision != Decision.DENY:
+        # a message to a person (SMS, e-mail, a chat) asks outside Hands-off (auto) mode
+        if assessment.reaches_people and decision != Decision.DENY and self.settings.mode != "auto":
             decision = Decision.ASK
             reasons.append("reaches a person: always asks, in every mode")
         approved: bool | None = None
@@ -287,16 +286,8 @@ class Sentinel:
                     task.id if task else None,
                 )
             )
-            # auto mode skips the question, except for a call that carries a warning (a
-            # dangerous-looking command, a purchase) or reaches a person: those still ask,
-            # so auto can never wave a risky or people-facing action through unattended.
-            waved_through = result_policy.tainted_ask
-            if (
-                self.settings.mode == "auto"
-                and not waved_through
-                and not assessment.warnings
-                and not assessment.reaches_people
-            ):
+            # Hands-off (auto) mode approves automatically unless an explicit deny rule matched.
+            if self.settings.mode == "auto":
                 decision = Decision.ALLOW
                 settled_by = "auto"
                 reasons.append("auto mode: approval skipped")

@@ -391,6 +391,11 @@ class Profile:
     avatar: str = "dragon"
     emoji: str = "✨"
     color: str = "#0064d4"
+    # avatar background: "theme" (matches active light/dark/custom theme), "default" (#f1efeb disc),
+    # "color" (custom hex/gradient in avatar_bg_color), or "image" (workspace path / URL in avatar_bg_image)
+    avatar_bg_mode: str = "theme"
+    avatar_bg_color: str = ""
+    avatar_bg_image: str = ""
     # one line under the name, the way Muse shows it ("Your day, sorted.")
     tagline: str = ""
     # how it talks: a tone (formal · casual · playful · concise), a length or shape of reply
@@ -453,6 +458,9 @@ class Profile:
             "avatar": self.avatar,
             "emoji": self.emoji,
             "color": self.color,
+            "avatar_bg_mode": self.avatar_bg_mode,
+            "avatar_bg_color": self.avatar_bg_color,
+            "avatar_bg_image": self.avatar_bg_image,
             "tagline": self.tagline,
             "tone": self.tone,
             "communication": self.communication,
@@ -488,6 +496,11 @@ class Profile:
         p.avatar = re.sub(r"[^a-z0-9-]", "", str(p.avatar).lower())[:32]
         p.emoji = str(p.emoji)[:8] or "✨"
         p.color = str(p.color)[:16] or "#0064d4"
+        p.avatar_bg_mode = str(p.avatar_bg_mode or "theme").strip().lower()
+        if p.avatar_bg_mode not in ("theme", "default", "color", "image"):
+            p.avatar_bg_mode = "theme"
+        p.avatar_bg_color = str(p.avatar_bg_color or "").strip()[:32]
+        p.avatar_bg_image = str(p.avatar_bg_image or "").strip()[:500]
         p.tagline = " ".join(str(p.tagline).split())[:TAGLINE_MAX]
         p.tone = str(p.tone).strip().lower()
         if p.tone not in TONES:
@@ -1342,6 +1355,9 @@ class MuseService:
             self.profile.avatar,
             self.profile.emoji,
             self.profile.color,
+            self.profile.avatar_bg_mode,
+            self.profile.avatar_bg_color,
+            self.profile.avatar_bg_image,
         )
         self.profile = Profile.from_dict(merged)
         self.profile.auto_factor = self.auto_proactivity.factor()
@@ -1359,6 +1375,9 @@ class MuseService:
             self.profile.avatar,
             self.profile.emoji,
             self.profile.color,
+            self.profile.avatar_bg_mode,
+            self.profile.avatar_bg_color,
+            self.profile.avatar_bg_image,
         ):
             # the account's other devices wear the same name and face
             self.hub.profile.changed()
@@ -2836,6 +2855,16 @@ class MuseService:
             )
             return None
         if binding.get("action") == "confirm":
+            if self.settings.sentinel.mode == "auto":
+                self.ui.emit(
+                    {
+                        "type": "notice",
+                        "level": "warn",
+                        "thread": thread.id,
+                        "text": f"{binding['text']} (Hands-off mode: continuing automatically)",
+                    }
+                )
+                return None
             from nanomuse.ui import ApprovalRequest
 
             decision = await self.ui.ask_approval(
@@ -4732,6 +4761,23 @@ class MuseService:
             self.update_profile(data["profile"])
         if (mode := data.get("sentinel_mode")) in ("ask", "task", "strict", "auto"):
             self.settings.sentinel.mode = mode
+            if mode == "auto":
+                for aid in list(self.ui.pending_approvals.keys()):
+                    self.ui.resolve_approval(
+                        aid, True, "always", "auto-approved (Hands-off mode enabled)"
+                    )
+                for t in self.threads.values():
+                    for ev in t.timeline.events:
+                        if ev.get("type") == "approval" and ev.get("status") == "pending":
+                            ev_id = str(ev.get("id") or "")
+                            if ev_id:
+                                self.ui.patch(
+                                    t.id,
+                                    ev_id,
+                                    status="approved",
+                                    scope="always",
+                                    decided_ts=now_iso(),
+                                )
         if "cloud_mode" in data or "cloud_slots" in data or "cloud_prompts" in data:
             from nanomuse.config import load_app_settings, save_app_settings
 
@@ -4848,6 +4894,8 @@ class MuseService:
             self.settings.agent.language = str(lang)[:20] or "auto"
         agent_patch: dict[str, Any] = {}
         sentinel_patch: dict[str, Any] = {}
+        if (mode := data.get("sentinel_mode")) in ("ask", "task", "strict", "auto"):
+            sentinel_patch["mode"] = mode
 
         def _agent_int(key: str, minimum: int) -> None:
             if (value := data.get(key)) is not None and isinstance(value, int) and value >= minimum:
@@ -4867,8 +4915,14 @@ class MuseService:
             if isinstance(data.get(key), list):
                 setattr(self.settings.sentinel, key, [str(t) for t in data[key]])
                 sentinel_patch[key] = [str(t) for t in data[key]]
-        if sentinel_patch:
-            stored["sentinel"] = {**stored.get("sentinel", {}), **sentinel_patch}
+        if agent_patch or sentinel_patch:
+            from nanomuse.config import load_app_settings, save_app_settings
+
+            stored = load_app_settings(self.data_dir)
+            if agent_patch:
+                stored["agent"] = {**stored.get("agent", {}), **agent_patch}
+            if sentinel_patch:
+                stored["sentinel"] = {**stored.get("sentinel", {}), **sentinel_patch}
             save_app_settings(self.data_dir, stored)
         server_patch: dict[str, Any] = {}
         if "auto_update" in data and data["auto_update"] is not None:

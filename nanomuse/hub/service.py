@@ -900,6 +900,8 @@ class HubService:
         grant (``remote_control:<device id>``), listed and revocable under Permissions like
         any other; the card goes to the device's side chat when there is one."""
         sentinel = self.svc.app.sentinel
+        if sentinel.settings.mode == "auto":
+            return True
         key = grant_key(REMOTE_CONTROL_TOOL, call.sender_id)
         if sentinel.grants.match(key) is not None:
             return True

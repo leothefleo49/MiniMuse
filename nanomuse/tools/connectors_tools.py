@@ -20,11 +20,11 @@ from nanomuse.win_proc import hidden_subprocess_kwargs
 class PhoneBridgeTool(BaseTool):
     name: str = "phone_bridge"
     description: str = (
-        "ADB bridge to a connected Android phone or Wear OS watch. Look up unknown numbers in "
+        "ADB & live bridge to a connected Android phone or Wear OS watch. Look up unknown numbers in "
         "`contacts`/`deep_memory` before asking the user; check real SMS here before characterizing a thread. "
         "Actions: status, read_sms (query/phone filter), send_sms (phone, text), call_logs, "
-        "call_transcripts, notifications, set_alarm (hour, minute, message), phone_settings "
-        "(brightness/volume/dnd/wifi/bluetooth), adb_shell (diagnostic)."
+        "call_transcripts, notifications, live_notifications, pair_wireless_adb (pair_host_port, pair_code, connect_host_port), "
+        "set_alarm (hour, minute, message), phone_settings (brightness/volume/dnd/wifi/bluetooth), adb_shell (diagnostic)."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -38,12 +38,14 @@ class PhoneBridgeTool(BaseTool):
                     "call_logs",
                     "call_transcripts",
                     "notifications",
+                    "live_notifications",
+                    "pair_wireless_adb",
                     "set_alarm",
                     "phone_settings",
                     "adb_shell",
                 ],
             },
-            "query": {"type": "string", "description": "Search filter for SMS, call logs, or transcripts"},
+            "query": {"type": "string", "description": "Search filter for SMS, call logs, notifications, or transcripts"},
             "phone": {"type": "string", "description": "Phone number (e.g. +15550101234)"},
             "text": {"type": "string", "description": "SMS body or alarm label"},
             "hour": {"type": "integer", "description": "Alarm hour (0-23)"},
@@ -51,6 +53,9 @@ class PhoneBridgeTool(BaseTool):
             "setting": {"type": "string", "description": "brightness | volume | dnd | battery"},
             "value": {"type": "string"},
             "command": {"type": "string", "description": "ADB shell command"},
+            "pair_host_port": {"type": "string", "description": "Wireless Debugging pairing IP:port (e.g. 192.168.1.129:37123)"},
+            "pair_code": {"type": "string", "description": "6-digit Wireless Debugging pairing code"},
+            "connect_host_port": {"type": "string", "description": "Wireless Debugging main connect IP:port (e.g. 192.168.1.129:41555)"},
             "limit": {"type": "integer", "description": "Max items (default 20)"},
         },
         "required": ["action"],
@@ -226,12 +231,70 @@ class PhoneBridgeTool(BaseTool):
                     break
             return ToolResult(output=json.dumps(results, ensure_ascii=False, indent=2))
 
-        if action == "notifications":
+        if action in ("notifications", "live_notifications"):
+            q = str(kwargs.get("query") or "").strip().lower()
+            live_file = self.db_path.parent / "live_notifications.json"
+            live_items: list[dict[str, Any]] = []
+            if live_file.is_file():
+                try:
+                    raw = json.loads(live_file.read_text("utf-8"))
+                    if isinstance(raw, list):
+                        live_items = [r for r in raw if isinstance(r, dict)]
+                except Exception:
+                    pass
+            if q:
+                live_items = [
+                    r
+                    for r in live_items
+                    if q in str(r.get("title") or "").lower()
+                    or q in str(r.get("text") or "").lower()
+                    or q in str(r.get("app") or "").lower()
+                ]
             code, out, err = await self._adb("shell", "dumpsys notification --noredact")
+            adb_titles: list[str] = []
+            if code == 0 and out:
+                adb_titles = re.findall(r"android\.(?:title|text)=String\s*\(([^)]+)\)", out)
+                if q:
+                    adb_titles = [t for t in adb_titles if q in t.lower()]
+            if live_items or adb_titles:
+                return ToolResult(
+                    output=json.dumps(
+                        {
+                            "live_notifications": live_items[:limit],
+                            "adb_notifications": adb_titles[:limit],
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
             if code != 0:
-                return ToolResult.fail(f"ADB notifications check failed: {err or out}")
-            titles = re.findall(r"android\.(?:title|text)=String\s*\(([^)]+)\)", out)
-            return ToolResult(output="\n".join(titles[:limit]) if titles else out[:3000])
+                return ToolResult(
+                    output=(
+                        "No live notifications captured yet and ADB notification check was unavailable "
+                        f"({(err or out).strip()}). Call `request_setup(kind='live_notifications', target='live_notifications')` "
+                        "to help the user enable Live Notifications or Wireless Debugging in one tap."
+                    )
+                )
+            return ToolResult(output=out[:3000] or "No active notifications.")
+
+        if action == "pair_wireless_adb":
+            pair_hp = str(kwargs.get("pair_host_port") or "").strip()
+            pair_code = str(kwargs.get("pair_code") or "").strip()
+            conn_hp = str(kwargs.get("connect_host_port") or "").strip()
+            steps_out: list[str] = []
+            if pair_hp and pair_code:
+                p_code, p_out, p_err = await self._adb("pair", pair_hp, pair_code)
+                steps_out.append(f"adb pair {pair_hp}: exit={p_code} {(p_out or p_err).strip()}")
+            if conn_hp:
+                c_code, c_out, c_err = await self._adb("connect", conn_hp)
+                steps_out.append(f"adb connect {conn_hp}: exit={c_code} {(c_out or c_err).strip()}")
+            if not steps_out:
+                return ToolResult.fail(
+                    "Provide `pair_host_port` + `pair_code` and/or `connect_host_port`, or call `request_setup(kind='wireless_debugging', target='wireless_debugging')` to show the interactive pairing popup."
+                )
+            _, dev_out, _ = await self._adb("devices", "-l")
+            steps_out.append(f"Connected ADB devices:\n{dev_out.strip()}")
+            return ToolResult(output="\n".join(steps_out))
 
         if action == "set_alarm":
             h = int_arg(kwargs.get("hour"), 7, 0, 23)
@@ -674,3 +737,313 @@ class AppBuilderTool(BaseTool):
             return ToolResult.fail(f"Unknown action: {action}")
         finally:
             conn.close()
+
+
+_DEFAULT_SETUP_GUIDES: dict[str, dict[str, Any]] = {
+    "wireless_debugging": {
+        "title": "Enable Developer Options & Wireless Debugging",
+        "steps": [
+            "On your Android phone or Wear OS watch, open Settings → About phone (or About watch) → Software information.",
+            "Tap 'Build number' 7 times rapidly until it says 'Developer mode has been turned on'.",
+            "Go back to Settings → Developer options and turn ON 'USB debugging' and 'Wireless debugging'.",
+            "Tap 'Wireless debugging' → 'Pair device with pairing code' and enter the IP:port, 6-digit pairing code, and main Wireless Debugging IP:port below (or tap 'Open Developer Options' on your phone).",
+        ],
+        "fields": [
+            {"key": "pair_host_port", "label": "Pairing IP & Port (e.g. 192.168.1.129:37123)", "placeholder": "192.168.1.129:37123", "secret": False},
+            {"key": "pair_code", "label": "6-Digit Pairing Code", "placeholder": "123456", "secret": False},
+            {"key": "connect_host_port", "label": "Main Wireless Debugging IP & Port (e.g. 192.168.1.129:41555)", "placeholder": "192.168.1.129:41555", "secret": False},
+        ],
+    },
+    "phone_control": {
+        "title": "Enable Full Phone Screen & Hands Control",
+        "steps": [
+            "On your Android phone, allow MiniMuse to see and tap the screen via Android Accessibility.",
+            "If Android 13+ shows 'Restricted setting', tap 'Open App Info' below → tap the ⋮ menu in the top-right corner → tap 'Allow restricted settings'.",
+            "Then tap 'Open Accessibility Settings' → Installed apps → MiniMuse → Turn ON.",
+        ],
+        "fields": [],
+    },
+    "pc_control": {
+        "title": "Enable Controlling Your PC & Phone Together",
+        "steps": [
+            "Make sure your phone and PC are paired under Settings → Devices (scan the QR code or enter a 6-digit pairing code).",
+            "Turn ON 'Remote control' and 'Screen & Hands' in Settings → Permissions so your phone can run tasks and control your PC (and vice versa).",
+        ],
+        "fields": [],
+    },
+    "live_notifications": {
+        "title": "Enable Live Notifications (Phone & PC)",
+        "steps": [
+            "Allow Notification Permission so MiniMuse can push and stream live alerts immediately.",
+            "On Android, tap 'Enable Live Notifications' below to turn on background notification streaming and Notification Access.",
+            "When Wireless Debugging is paired, MiniMuse can also inspect active phone notifications directly on demand.",
+        ],
+        "fields": [],
+    },
+    "health_wearable": {
+        "title": "Connect Health, Fitness & Wearable Data",
+        "steps": [
+            "Choose a direct wearable preset (Google Fit / Wear OS, Oura Ring, WHOOP, Fitbit, Strava, Withings, Garmin Connect) or use Android Health Connect webhook (`POST /api/ofa/health-connect`).",
+            "If using Google Fit, simply click 'Sign in with Google' or paste your API token below.",
+        ],
+        "fields": [
+            {"key": "secret", "label": "API Key / Personal Access Token (optional if using Google OAuth or Health Connect)", "placeholder": "Bearer token or API key", "secret": True},
+        ],
+    },
+    "calendar": {
+        "title": "Connect Calendar (Google, Phone Calendar, iCloud, or .ics)",
+        "steps": [
+            "On Android, tap 'Sync Phone Calendar & Contacts' for instant one-tap calendar access.",
+            "Or sign in with Google for two-way Google Calendar access, or paste any iCloud / Outlook / webcal `.ics` feed URL below.",
+        ],
+        "fields": [
+            {"key": "calendar_name", "label": "Calendar Name", "placeholder": "Personal / Work Calendar", "secret": False},
+            {"key": "calendar_url", "label": "ICS / Webcal Feed URL (optional if using Google or Phone Sync)", "placeholder": "https://calendar.google.com/calendar/ical/.../basic.ics", "secret": False},
+        ],
+    },
+    "zapier": {
+        "title": "Connect Zapier MCP (Temporary Quota) or Switch to Direct API",
+        "steps": [
+            "Open https://mcp.zapier.com/ to copy your Zapier MCP Server URL, or paste a Zapier Catch Hook URL.",
+            "Note: Zapier free plans have a strict monthly task quota (typically 100 tasks/month). MiniMuse tracks your Zapier usage and recommends free Direct APIs for services you use frequently.",
+        ],
+        "fields": [
+            {"key": "mcp_url", "label": "Zapier MCP Server URL", "placeholder": "https://mcp.zapier.com/api/mcp/s/.../mcp", "secret": True},
+            {"key": "monthly_limit", "label": "Monthly Zapier Task Quota", "placeholder": "100", "secret": False},
+        ],
+    },
+}
+
+
+class RequestSetupTool(BaseTool):
+    """Pops up an interactive Setup & Permission Modal in the MiniMuse UI whenever a task
+    needs an integration, API key, OAuth connection, OS permission, Live Notifications,
+    Health/Wearable link, Calendar feed, or Developer Options / Wireless Debugging setup."""
+
+    name: str = "request_setup"
+    description: str = (
+        "Open an interactive Setup & Permission Popup in the user's app so they can grant a permission, "
+        "connect an API/OAuth service, enable Live Notifications, connect Calendar or Health/Wearables, "
+        "set up Zapier MCP, or enable Developer Options & Wireless Debugging for full Phone/PC control. "
+        "NEVER stop and say 'I cannot do that because it is not connected' — if you cannot finish the setup "
+        "automatically by yourself, call `request_setup` to pop up the connection/permission dialog for the user!"
+    )
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": [
+                    "permission",
+                    "api_key",
+                    "oauth",
+                    "live_notifications",
+                    "phone_control",
+                    "wireless_debugging",
+                    "pc_control",
+                    "health_wearable",
+                    "calendar",
+                    "zapier",
+                    "custom_api",
+                ],
+                "description": "Category of setup or permission popup to display.",
+            },
+            "target": {
+                "type": "string",
+                "description": (
+                    "Target identifier: e.g. 'notifications', 'live_notifications', 'location', 'calendar', "
+                    "'contacts', 'camera', 'microphone', 'phone_control', 'wireless_debugging', 'pc_control', "
+                    "'health_connect', 'google', 'zapier', or any api_connector preset_id ('slack', 'notion', "
+                    "'gmail', 'google_calendar', 'google_fit', 'oura', 'whoop', 'fitbit', 'strava', 'withings', "
+                    "'garmin_connect', 'github', 'home_assistant', 'custom', etc.)."
+                ),
+            },
+            "title": {
+                "type": "string",
+                "description": "Short human-friendly title for the setup popup.",
+            },
+            "why": {
+                "type": "string",
+                "description": "1-2 sentences explaining what task you are trying to complete and why this connection/permission is needed.",
+            },
+            "preset_id": {
+                "type": "string",
+                "description": "Optional standard API preset id from api_connector (e.g. 'slack', 'notion', 'oura', 'whoop', 'google_fit').",
+            },
+            "base_url": {
+                "type": "string",
+                "description": "Base URL when setting up a custom REST/GraphQL API.",
+            },
+            "auth_type": {
+                "type": "string",
+                "enum": ["none", "bearer", "api_key_header", "api_key_query", "basic", "oauth2"],
+            },
+            "steps": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional step-by-step instructions shown in the popup (auto-filled if omitted).",
+            },
+            "fields": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string"},
+                        "label": {"type": "string"},
+                        "placeholder": {"type": "string"},
+                        "secret": {"type": "boolean"},
+                    },
+                },
+                "description": "Optional input fields to collect from the user in the popup (auto-filled if omitted).",
+            },
+            "resume_prompt": {
+                "type": "string",
+                "description": "The exact task prompt to automatically resume once the user completes the popup.",
+            },
+        },
+        "required": ["kind", "target", "why"],
+    }
+    risk: RiskLevel = RiskLevel.SAFE
+    reads_private_data: bool = False
+    egress: bool = False
+    ui: Any = None
+    data_dir: Path = DEFAULT_PERSONAL_DB.parent
+
+    def assess(self, args: dict[str, Any]) -> CallAssessment:
+        return CallAssessment(
+            risk=RiskLevel.SAFE,
+            summary=f"request_setup({args.get('kind')}:{args.get('target')})",
+        )
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        from nanomuse.connectors.api_registry import PRESET_KEY_SETUP, STANDARD_API_PRESETS
+        from nanomuse.connectors.zapier_quota import ZapierQuotaTracker, match_direct_preset
+
+        kind = str(kwargs.get("kind") or "api_key").strip()
+        target = str(kwargs.get("target") or "").strip()
+        preset_id = str(kwargs.get("preset_id") or "").strip()
+        preset = (
+            STANDARD_API_PRESETS.get(preset_id)
+            or STANDARD_API_PRESETS.get(target)
+            or match_direct_preset(target)
+        )
+        if preset and not preset_id:
+            preset_id = str(preset["id"])
+
+        guide = _DEFAULT_SETUP_GUIDES.get(kind) or _DEFAULT_SETUP_GUIDES.get(target) or {}
+        title = str(kwargs.get("title") or "").strip()
+        if not title:
+            if preset:
+                title = f"Connect {preset['name']}"
+            elif guide.get("title"):
+                title = str(guide["title"])
+            else:
+                title = f"Set up {target.replace('_', ' ').title() or kind.replace('_', ' ').title()}"
+
+        why = str(kwargs.get("why") or "Needed to complete your requested task.").strip()
+        base_url = str(kwargs.get("base_url") or (preset.get("base_url") if preset else "") or "").strip()
+        auth_type = str(kwargs.get("auth_type") or (preset.get("auth_type") if preset else "bearer") or "bearer").strip()
+        docs_url = str(preset.get("docs_url") if preset else "")
+        key_url, key_hint = PRESET_KEY_SETUP.get(preset_id, ("", ""))
+
+        steps = kwargs.get("steps")
+        if not isinstance(steps, list) or not steps:
+            if guide.get("steps"):
+                steps = list(guide["steps"])
+            elif preset:
+                steps = []
+                if key_hint:
+                    steps.append(key_hint)
+                if key_url:
+                    steps.append(f"Get your key/token at: {key_url}")
+                if preset.get("ai_guide"):
+                    steps.append(f"API Tip: {preset['ai_guide']}")
+                if not steps:
+                    steps = [f"Enter your credentials or Base URL for {preset['name']} below and click Connect."]
+            elif kind == "permission":
+                steps = [
+                    f"Tap 'Grant {target.replace('_', ' ').title()}' below so MiniMuse can access {target.replace('_', ' ')} for this task.",
+                ]
+            else:
+                steps = [
+                    "Fill in the connection details below and tap 'Connect & Continue' so MiniMuse can finish your task.",
+                ]
+
+        fields = kwargs.get("fields")
+        if not isinstance(fields, list) or not fields:
+            if "fields" in guide:
+                fields = list(guide["fields"])
+            elif kind in ("api_key", "custom_api") or preset:
+                fields = []
+                if not preset or preset_id in ("custom", "webhook_generic") or "<" in base_url:
+                    fields.append({
+                        "key": "name",
+                        "label": "API Name",
+                        "placeholder": preset["name"] if preset else (target or "Custom API"),
+                        "secret": False,
+                    })
+                    fields.append({
+                        "key": "base_url",
+                        "label": "Base URL",
+                        "placeholder": base_url or "https://api.example.com/v1",
+                        "secret": False,
+                    })
+                if auth_type != "none":
+                    fields.append({
+                        "key": "secret",
+                        "label": "API Key / Access Token",
+                        "placeholder": "Paste your API key or Bearer token",
+                        "secret": True,
+                    })
+            else:
+                fields = []
+
+        zapier_quota = None
+        if kind == "zapier" or "zapier" in target.lower():
+            try:
+                zapier_quota = ZapierQuotaTracker(self.data_dir).status()
+            except Exception:
+                zapier_quota = None
+
+        prompt_payload: dict[str, Any] = {
+            "type": "setup_prompt",
+            "kind": kind,
+            "target": target,
+            "preset_id": preset_id,
+            "title": title,
+            "why": why,
+            "base_url": base_url,
+            "auth_type": auth_type,
+            "docs_url": docs_url,
+            "key_url": key_url,
+            "key_hint": key_hint,
+            "steps": [str(s) for s in steps],
+            "fields": fields,
+            "resume_prompt": str(kwargs.get("resume_prompt") or f"Continue with the task using {title}."),
+            "zapier_quota": zapier_quota,
+            "status": "pending",
+        }
+
+        if self.ui is not None and hasattr(self.ui, "emit"):
+            ev = self.ui.emit(prompt_payload)
+            prompt_payload["id"] = ev.get("id", "")
+
+        return ToolResult(
+            output=json.dumps(
+                {
+                    "ok": True,
+                    "popup_shown": True,
+                    "title": title,
+                    "kind": kind,
+                    "target": target,
+                    "preset_id": preset_id,
+                    "message": (
+                        f"Displayed the interactive '{title}' setup popup to the user. "
+                        "Briefly let the user know the popup is open on their screen and that "
+                        "once they tap Connect/Enable in the popup, you will immediately continue."
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )

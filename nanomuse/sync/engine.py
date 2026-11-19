@@ -161,6 +161,14 @@ _CANONICAL_AVATAR_FILES = (
     "waiting.mp4",
     "error.webp",
     "error.mp4",
+    "dark-idle.webp",
+    "dark-idle.mp4",
+    "dark-working.webp",
+    "dark-working.mp4",
+    "dark-happy.webp",
+    "dark-happy.mp4",
+    "dark-waiting.webp",
+    "dark-waiting.mp4",
     "avatar-model.json",
 )
 

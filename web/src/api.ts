@@ -893,6 +893,23 @@ export const api = {
     request<Record<string, unknown>>(`/api/connections/apis/${encodeURIComponent(id)}/discover`, json({ spec_url })),
   callApiRequest: (body: Record<string, unknown>) =>
     request<Record<string, unknown>>("/api/connections/apis/request", json(body)),
+  zapierQuota: () =>
+    request<import("./types").ZapierQuotaStatus>("/api/connections/zapier-quota"),
+  updateZapierQuota: (body: { limit?: number; used?: number; reset?: boolean }) =>
+    request<import("./types").ZapierQuotaStatus>("/api/connections/zapier-quota", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  compareZapier: (service = "") =>
+    request<Record<string, unknown>>(
+      `/api/connections/zapier-compare${service ? `?service=${encodeURIComponent(service)}` : ""}`,
+    ),
+  liveNotifications: (limit = 30) =>
+    request<{ notifications: Array<{ id: string; app: string; title: string; text: string; device?: string; ts: string }>; count: number }>(
+      `/api/notifications/live?limit=${limit}`,
+    ),
+  pairPhoneWirelessAdb: (body: { pair_host_port?: string; pair_code?: string; connect_host_port?: string }) =>
+    request<{ ok: boolean; output: string; error?: string }>("/api/phone/adb-pair", json(body)),
   calendar: (days = 2, opts?: { start?: string; refresh?: boolean }) => {
     const sp = new URLSearchParams({ days: String(days) });
     if (opts?.start) sp.set("start", opts.start);

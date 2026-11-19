@@ -107,7 +107,7 @@ class Policy:
         if decision is None:
             if _match_any(tool, s.always_allow_tools):
                 decision, reasons = Decision.ALLOW, [f"'{tool}' is in always_allow_tools"]
-            elif _match_any(tool, s.always_ask_tools):
+            elif s.mode != "auto" and _match_any(tool, s.always_ask_tools):
                 decision, reasons = Decision.ASK, [f"'{tool}' is in always_ask_tools"]
 
         # 4. risk × mode
@@ -126,12 +126,10 @@ class Policy:
             if decision == Decision.ASK:
                 reasons.append(f"risk level is '{risk.value}' (mode={s.mode})")
 
-        # 5. taint tracking – can only escalate to ASK, whatever set the decision so far
-        #    (mode, always_allow_tools, always_ask_tools or a rule): an ASK it taints
-        #    carries `tainted_ask`, so a mode that skips questions does not wave it
-        #    through (step 6's warnings work the same way)
+        # 5. taint tracking – escalates to ASK outside Hands-off (auto) mode
         if (
-            s.taint_tracking
+            s.mode != "auto"
+            and s.taint_tracking
             and tainted
             and assessment.egress
             and not assessment.egress_configured
@@ -146,11 +144,10 @@ class Policy:
             )
 
         # 6. a call that looks dangerous (``rm -rf``, ``curl | sh``, code that reads the
-        # environment or deletes files) is never waved through by mode or by
-        # always_allow_tools — only an explicit rule can do that. This is what stops an
-        # unattended background pass from running it, auto mode included.
+        # environment or deletes files) asks outside Hands-off (auto) mode unless an explicit
+        # rule allows it. In Hands-off mode, everything is approved except explicit deny rules.
         if assessment.warnings:
-            if decision == Decision.ALLOW and not from_rule:
+            if decision == Decision.ALLOW and not from_rule and s.mode != "auto":
                 decision = Decision.ASK
             reasons.extend(assessment.warnings)
         return PolicyResult(decision, reasons, tainted_ask)

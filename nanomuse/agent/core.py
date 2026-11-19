@@ -618,16 +618,26 @@ class MuseAgent:
             "About pictures: name only what a picture actually shows. If it is unclear or you could not look, say so plainly. Never guess what it contains.",
             "`step` text is always English. Never write Chinese unless asked.",
         ]
-        if self.settings.agent.allow_self_improve:
+        if self.settings.agent.allow_self_improve or self.settings.sentinel.mode == "auto":
             fixed.append(
                 "Self-improve freely: when a clear capability gap appears, add the connector, "
-                "API, or tool yourself (Zapier MCP, a custom REST API via external_connectors, "
-                "an MCP server) and report what you added and how it works. Never silently."
+                "API, or tool yourself (Zapier MCP, a custom REST API via api_connector or "
+                "external_connectors, an MCP server) and report what you added and how it works. "
+                "If a permission, API key, OAuth login, or device setup is required from the user, "
+                "call `request_setup` to open the interactive setup popup instead of stopping."
             )
         else:
             fixed.append(
                 "Never change connection, permission, model or Sentinel settings on your own. "
-                "You may suggest a change once, then wait for the user to ask for it explicitly."
+                "When a task needs an integration, API key, permission, or device setup that is "
+                "not yet connected, call `request_setup` to prompt the user with an interactive "
+                "setup popup instead of stopping and saying you cannot do it."
+            )
+        if self.settings.sentinel.mode == "auto":
+            fixed.append(
+                "Hands-off mode (sentinel_mode=auto) is active: execute requested actions, tool "
+                "calls, file builds, and connector setups directly end-to-end without stopping to "
+                "ask 'May I do this?' or asking for permission first."
             )
         lines = [f"- {r}" for r in fixed]
         if self.memory is not None and self.settings.memory.enabled:
@@ -1079,6 +1089,7 @@ class MuseAgent:
         self.audit.record("user_message", content=user_input, trace_id=trace.trace_id, **attached)
 
         system_prompt = self.build_system_prompt(user_input)
+        last_sentinel_mode = self.settings.sentinel.mode
 
         # Always send the full tool set. The old fast path (tools=None for casual chat)
         # flipped the rendered prompt prefix between turn types, which broke Ollama's
@@ -1165,6 +1176,10 @@ class MuseAgent:
                         break
 
                 step += 1
+
+                if self.settings.sentinel.mode != last_sentinel_mode:
+                    last_sentinel_mode = self.settings.sentinel.mode
+                    system_prompt = self.build_system_prompt(user_input)
 
                 if self._drain_inbox():
                     logger.debug("folded queued user message(s) into the running turn")

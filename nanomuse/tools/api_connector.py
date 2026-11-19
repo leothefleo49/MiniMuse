@@ -23,13 +23,15 @@ from nanomuse.tools.base import BaseTool, CallAssessment
 class ApiConnectorTool(BaseTool):
     name: str = "api_connector"
     description: str = (
-        "Build, configure, discover, test, and call ANY external or local REST/GraphQL API "
-        "(including 36+ built-in templates: Gmail, Google Calendar/Drive/Tasks/Maps, Microsoft Graph, "
+        "Build, configure, discover, compare, test, and call ANY external or local REST/GraphQL API "
+        "(including 40+ built-in templates: Gmail, Google Calendar/Drive/Tasks/Maps/Fit, Microsoft Graph, "
         "Slack, Discord, Telegram, Twilio, GitHub, GitLab, Linear, Jira, Notion, Todoist, Trello, "
         "Asana, Airtable, ClickUp, Obsidian, Home Assistant, Philips Hue, Spotify, Strava, Fitbit, "
-        "Oura, Open-Meteo, OSRM/Nominatim, TomTom, Stripe, YNAB, Supabase, Cloudflare, OpenRouter, Webhooks). "
-        "For unfamiliar APIs, run `discover_openapi` or `request` (GET root/docs) to figure out the schema, "
-        "then `save_endpoint` so MiniMuse remembers how to read and write that API."
+        "Oura, WHOOP, Withings, Garmin Connect, CalDAV/iCloud, Open-Meteo, OSRM/Nominatim, TomTom, "
+        "Stripe, YNAB, Supabase, Cloudflare, OpenRouter, Zapier Webhooks, Custom Webhooks). "
+        "Use `compare_zapier` or `zapier_quota` to check Zapier monthly task usage and compare Zapier "
+        "against direct free API connections. For unfamiliar APIs, run `discover_openapi` or `request` "
+        "to figure out the schema, then `save_endpoint` so MiniMuse remembers how to read and write that API."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -45,6 +47,8 @@ class ApiConnectorTool(BaseTool):
                     "test_api",
                     "request",
                     "remove_api",
+                    "compare_zapier",
+                    "zapier_quota",
                 ],
             },
             "query": {"type": "string", "description": "Search filter for list_presets (category or keyword)"},
@@ -83,7 +87,7 @@ class ApiConnectorTool(BaseTool):
 
     def assess(self, args: dict[str, Any]) -> CallAssessment:
         action = str(args.get("action") or "list_apis")
-        if action in ("list_presets", "list_apis"):
+        if action in ("list_presets", "list_apis", "compare_zapier", "zapier_quota"):
             return CallAssessment(risk=RiskLevel.SAFE, summary=f"api_connector.{action}")
 
         method = str(args.get("method") or "GET").upper()
@@ -219,6 +223,23 @@ class ApiConnectorTool(BaseTool):
                 if not removed:
                     return ToolResult.fail(f"No configured API matched {api_id!r}.")
                 return ToolResult(output=f"Removed API integration {api_id}.")
+
+            if action == "zapier_quota":
+                from nanomuse.connectors.zapier_quota import ZapierQuotaTracker
+
+                st = ZapierQuotaTracker(self.registry.data_dir).status(
+                    configured_apis=self.registry.list()
+                )
+                return ToolResult(output=json.dumps(st, indent=2))
+
+            if action == "compare_zapier":
+                from nanomuse.connectors.zapier_quota import ZapierQuotaTracker
+
+                service = str(
+                    kwargs.get("query") or kwargs.get("preset_id") or kwargs.get("name") or ""
+                ).strip()
+                cmp_res = ZapierQuotaTracker(self.registry.data_dir).compare(service)
+                return ToolResult(output=json.dumps(cmp_res, indent=2))
 
             return ToolResult.fail(f"Unknown action: {action}")
         except (ValueError, KeyError) as exc:

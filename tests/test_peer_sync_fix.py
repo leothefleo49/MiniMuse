@@ -200,3 +200,129 @@ def test_watch_state_includes_threads_apps_reactions_and_clips(tmp_path: Path) -
     b2 = r2.json()
     assert b2["thread_id"] == side.id
     assert any(m["text"] == "Ate steak" for m in b2["recent"])
+
+
+def test_hands_off_mode_persists_and_auto_resolves_pending_approvals(tmp_path: Path) -> None:
+    from nanomuse.config import apply_app_settings, load_app_settings
+    from nanomuse.schema import RiskLevel
+    from nanomuse.ui import ApprovalRequest
+
+    svc = _make_service(tmp_path, "handsoff")
+    assert svc.settings.sentinel.mode != "auto"
+
+    # Simulate an in-flight approval waiting when the user switches to Hands-off mid-task
+    async def _run_check() -> None:
+        req = ApprovalRequest(
+            tool="shell",
+            args={"command": "echo hi"},
+            summary="shell: echo hi",
+            risk=RiskLevel.SENSITIVE,
+            reasons=["sensitive"],
+        )
+        task = asyncio.create_task(svc.ui.ask_approval(req))
+        await asyncio.sleep(0.05)
+        assert len(svc.ui.pending_approvals) == 1
+
+        # Switching to Hands-off ('auto') mid-task must immediately auto-resolve pending approvals
+        svc.update_settings({"sentinel_mode": "auto"})
+        verdict = await asyncio.wait_for(task, timeout=2.0)
+        assert verdict.approved is True
+        assert len(svc.ui.pending_approvals) == 0
+
+    asyncio.run(_run_check())
+    assert svc.settings.sentinel.mode == "auto"
+
+    # And sentinel.mode == 'auto' must be saved to app-settings.json and restored on restart
+    stored = load_app_settings(svc.data_dir)
+    assert stored.get("sentinel", {}).get("mode") == "auto"
+    fresh = Settings()
+    apply_app_settings(fresh, stored)
+    assert fresh.sentinel.mode == "auto"
+
+
+def test_request_setup_and_zapier_quota_tracking(tmp_path: Path) -> None:
+    svc = _make_service(tmp_path, "setup_zapier")
+    app = create_app(svc.settings, service=svc)
+    tc = TestClient(app)
+
+    # 1. Execute request_setup tool for wireless_debugging and verify setup_prompt event is emitted
+    setup_tool = svc.app.tools.get("request_setup")
+    assert setup_tool is not None
+    res = asyncio.run(
+        setup_tool.execute(
+            kind="wireless_debugging",
+            target="wireless_debugging",
+            why="Need Wireless Debugging to control your phone screen.",
+            resume_prompt="Continue phone control task.",
+        )
+    )
+    assert res.ok
+    payload = json.loads(res.output)
+    assert payload["popup_shown"] is True
+    events = svc.threads[MAIN_THREAD].timeline.events
+    assert any(ev.get("type") == "setup_prompt" and ev.get("kind") == "wireless_debugging" for ev in events)
+
+    # 2. Record Zapier calls and check quota + Direct API recommendation via API and api_connector
+    from nanomuse.connectors.zapier_quota import ZapierQuotaTracker
+
+    tracker = ZapierQuotaTracker(svc.data_dir)
+    for _ in range(3):
+        q = tracker.record_call("zapier", "slack_send_channel_message")
+    assert q["used"] == 3
+    assert q["recommend_direct"] is True
+    assert q["matched_preset"] == "slack"
+    assert "Zapier Quota Notice" in q["notice"]
+
+    r_quota = tc.get("/api/connections/zapier-quota")
+    assert r_quota.status_code == 200
+    q_body = r_quota.json()
+    assert q_body["used"] == 3
+    assert any(rec["preset_id"] == "slack" for rec in q_body["recommendations"])
+
+    api_tool = svc.app.tools.get("api_connector")
+    assert api_tool is not None
+    cmp_res = asyncio.run(api_tool.execute(action="compare_zapier", query="slack"))
+    assert cmp_res.ok
+    cmp_data = json.loads(cmp_res.output)
+    assert cmp_data["direct_preset"]["preset_id"] == "slack"
+
+    # 3. Live notifications endpoint
+    r_post = tc.post(
+        "/api/notifications/live",
+        json={"app": "Messages", "title": "Mom", "text": "Dinner at 6 PM"},
+    )
+    assert r_post.status_code == 200
+    r_get = tc.get("/api/notifications/live")
+    assert r_get.status_code == 200
+    assert r_get.json()["count"] == 1
+    assert r_get.json()["notifications"][0]["title"] == "Mom"
+
+
+def test_avatar_mp4_explicit_mime_and_dark_fallback_and_bg_profile(tmp_path: Path) -> None:
+    svc = _make_service(tmp_path, "avatar_mime")
+    face_dir = svc.workspace() / "avatar" / "1791236806916264653"
+    face_dir.mkdir(parents=True, exist_ok=True)
+    (face_dir / "avatar-1791236806916264653-1-darkmode-idle-attempt.mp4").write_bytes(b"MP4_DARK_BYTES")
+    (face_dir / "idle.mp4").write_bytes(b"MP4_LIGHT_BYTES")
+
+    svc.update_profile(
+        {
+            "avatar": "1791236806916264653",
+            "avatar_bg_mode": "color",
+            "avatar_bg_color": "#7c3aed",
+            "avatar_bg_image": "attachments/bg.png",
+        }
+    )
+    prof = svc.profile.to_dict()
+    assert prof["avatar_bg_mode"] == "color"
+    assert prof["avatar_bg_color"] == "#7c3aed"
+    assert prof["avatar_bg_image"] == "attachments/bg.png"
+
+    app = create_app(svc.settings, service=svc)
+    tc = TestClient(app)
+    r_mp4 = tc.get("/api/files/avatar/1791236806916264653/dark-idle.mp4")
+    assert r_mp4.status_code == 200
+    assert r_mp4.headers["content-type"].startswith("video/mp4")
+    assert r_mp4.content == b"MP4_DARK_BYTES"
+
+

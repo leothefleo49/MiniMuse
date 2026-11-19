@@ -24,6 +24,7 @@ import json
 import re
 from collections.abc import Callable
 from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import Any
 
 from nanomuse.config import MCPServerSettings
@@ -83,6 +84,8 @@ class MCPTool(BaseTool):
     remote_host: str | None = None
     #: seconds one call may take before it is given up as failed
     call_timeout_s: float = 120.0
+    #: optional data_dir for quota tracking (e.g. Zapier monthly task quota)
+    data_dir: Path | None = None
 
     def assess(self, args: dict[str, Any]) -> CallAssessment:
         base = super().assess(args)
@@ -123,6 +126,17 @@ class MCPTool(BaseTool):
         text = "\n".join(p for p in parts if p) or "(no output)"
         if _attr(result, "is_error", "isError", default=False):
             return ToolResult.fail(text)
+        if self.data_dir is not None:
+            from nanomuse.connectors.zapier_quota import ZapierQuotaTracker, is_zapier_server
+
+            if is_zapier_server(self.server, self.remote_host or ""):
+                try:
+                    q = ZapierQuotaTracker(self.data_dir).record_call(
+                        self.server, self.original_name
+                    )
+                    text += q.get("notice", "")
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("zapier quota record failed: {}", exc)
         return ToolResult(output=text)
 
 
@@ -139,10 +153,12 @@ class MCPManager:
         servers: list[MCPServerSettings],
         resolve: Callable[[Any], Any] | None = None,
         redact: Callable[[str], str] | None = None,
+        data_dir: Path | None = None,
     ):
         self.servers = servers
         self._resolve = resolve
         self._redact = redact
+        self._data_dir = data_dir
         self._stack = AsyncExitStack()
         self.tools: list[MCPTool] = []
 
@@ -249,6 +265,7 @@ class MCPManager:
                 original_name=t.name,
                 remote_host=cfg.remote_host,
                 call_timeout_s=cfg.call_timeout_s,
+                data_dir=self._data_dir,
             )
             self.tools.append(tool)
         return True

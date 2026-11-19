@@ -5192,7 +5192,7 @@ function MCPCard({
   data: ConnectionsData;
   onChange: () => void;
 }) {
-  const { toast } = useStore();
+  const { state, send, setTab, toast } = useStore();
   const t = useT();
   const [open, setOpen] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -5202,6 +5202,20 @@ function MCPCard({
   const [envText, setEnvText] = useState("");
   const [risk, setRisk] = useState("moderate");
   const [busy, setBusy] = useState<string | null>(null);
+  const [zapierQuota, setZapierQuota] = useState<import("../types").ZapierQuotaStatus | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    api
+      .zapierQuota()
+      .then((q) => {
+        if (active) setZapierQuota(q);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [data.mcp.length]);
 
   const add = async () => {
     setBusy("add");
@@ -5276,6 +5290,64 @@ function MCPCard({
       open={open}
       onToggle={() => setOpen(!open)}
     >
+      {zapierQuota && (
+        <div className="rounded-2xl border border-amber-500/40 bg-amber-500/5 p-3 space-y-2 mb-2">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="text-[13px] font-semibold">
+              {t("Zapier Integration & Monthly Quota")}
+            </div>
+            <span className="rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[11.5px] font-medium text-amber-700 dark:text-amber-300">
+              {zapierQuota.used} / {zapierQuota.limit} {t("tasks this month")} ({zapierQuota.remaining} {t("left")})
+            </span>
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
+            <div
+              className={cx(
+                "h-full transition-all",
+                zapierQuota.percent >= 80
+                  ? "bg-rose-500"
+                  : zapierQuota.percent >= 50
+                    ? "bg-amber-500"
+                    : "bg-emerald-500",
+              )}
+              style={{ width: `${Math.min(100, Math.max(2, zapierQuota.percent))}%` }}
+            />
+          </div>
+          <p className="text-[12px] text-muted leading-relaxed">
+            {t(
+              "Zapier enforces a monthly task quota (temporary for high-volume workflows). MiniMuse tracks your Zapier usage and recommends switching frequent services to free Direct APIs above so you never run out of quota.",
+            )}
+          </p>
+          <div className="flex items-center gap-2 flex-wrap pt-0.5">
+            <button
+              type="button"
+              onClick={() => {
+                setName("zapier");
+                setCommand("");
+                setUrl("https://mcp.zapier.com/api/mcp/s/");
+                setAdding(true);
+                setOpen(true);
+              }}
+              className={cx(secondaryBtn, "py-1 text-[12px]")}
+            >
+              {t("Quick setup Zapier MCP")}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTab("chat");
+                void send(
+                  state.activeThread,
+                  "Compare my Zapier usage against Direct APIs and help me set up direct free API connections for my most used services.",
+                );
+              }}
+              className={cx(secondaryBtn, "py-1 text-[12px]")}
+            >
+              {t("Compare & Switch to Direct API with AI")}
+            </button>
+          </div>
+        </div>
+      )}
       {data.mcp.length > 0 && (
         <ul className="space-y-1.5">
           {data.mcp.map((m) => (

@@ -7,7 +7,21 @@ import { Avatar } from "./Avatar";
 import { AvatarPicker } from "./AvatarPicker";
 
 /** The part of the profile that is who the agent is: name, tagline, face, voice. */
-export type Identity = Pick<Profile, "name" | "tagline" | "avatar" | "emoji" | "color" | "tone" | "communication" | "style" | "user_name">;
+export type Identity = Pick<
+  Profile,
+  | "name"
+  | "tagline"
+  | "avatar"
+  | "emoji"
+  | "color"
+  | "avatar_bg_mode"
+  | "avatar_bg_color"
+  | "avatar_bg_image"
+  | "tone"
+  | "communication"
+  | "style"
+  | "user_name"
+>;
 
 export const NAME_MAX = 20;
 export const TAGLINE_MAX = 60;
@@ -113,7 +127,18 @@ export function IdentityForm({
         </div>
       )}
 
-      <AvatarPicker value={{ avatar: value.avatar, emoji: value.emoji, color: value.color }} onChange={(look) => set(look)} onStudio={onStudio} />
+      <AvatarPicker
+        value={{
+          avatar: value.avatar,
+          emoji: value.emoji,
+          color: value.color,
+          avatar_bg_mode: value.avatar_bg_mode,
+          avatar_bg_color: value.avatar_bg_color,
+          avatar_bg_image: value.avatar_bg_image,
+        }}
+        onChange={(look) => set(look)}
+        onStudio={onStudio}
+      />
 
       <div>
         <label className="text-[12px] text-muted">{t("Tone")}</label>
@@ -164,6 +189,9 @@ export function identityOf(p: Partial<Profile> | null | undefined, fallbackAvata
     avatar: p?.avatar ?? fallbackAvatar,
     emoji: p?.emoji ?? "✨",
     color: p?.color ?? fallbackColor,
+    avatar_bg_mode: p?.avatar_bg_mode ?? "theme",
+    avatar_bg_color: p?.avatar_bg_color ?? "",
+    avatar_bg_image: p?.avatar_bg_image ?? "",
     tone: p?.tone ?? "",
     communication: p?.communication ?? "",
     style: p?.style ?? "",

@@ -79,6 +79,10 @@ export interface AndroidBridge {
   syncPhoneCalendarAndContacts?(): void;
   /** Discover Wear OS watches advertising Wireless Debugging mDNS (`_adb-tls-connect` / `_adb-tls-pairing`). */
   discoverWatchAdb?(): string;
+  /** Open Android Settings → Developer Options (or About Phone) to enable Wireless Debugging. */
+  openDeveloperSettings?(): void;
+  /** Open Android Settings → Notification Access / App Notifications for Live Notifications. */
+  openNotificationListenerSettings?(): void;
 }
 
 export interface WatchAdbEndpoint {

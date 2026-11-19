@@ -7,6 +7,7 @@ from nanomuse.tools.connectors_tools import (
     AppBuilderTool,
     ExternalConnectorsTool,
     PhoneBridgeTool,
+    RequestSetupTool,
 )
 from nanomuse.tools.contacts_tool import Contacts
 from nanomuse.tools.deep_memory_tools import DeepMemoryTool
@@ -53,6 +54,7 @@ __all__ = [
     "Recall",
     "Remember",
     "Reminders",
+    "RequestSetupTool",
     "SendEmail",
     "Shell",
     "Skills",

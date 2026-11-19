@@ -563,6 +563,104 @@ STANDARD_API_PRESETS: dict[str, dict[str, Any]] = {
             _endpoint("readiness", "Daily readiness", "GET", "/usercollection/daily_readiness", "Readiness scores", ["start_date", "end_date"]),
         ],
     },
+    "google_fit": {
+        "id": "google_fit",
+        "name": "Google Fit & Wear OS REST API",
+        "category": "Health & Finance",
+        "description": "Steps, heart rate, calories, sleep sessions, and smartwatch workout data via Google Fit.",
+        "base_url": "https://www.googleapis.com/fitness/v1/users/me",
+        "auth_type": "bearer",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "docs_url": "https://developers.google.com/fit/rest",
+        "test_endpoint": {"method": "GET", "path": "/dataSources"},
+        "ai_guide": "Use POST /dataset:aggregate with aggregateBy dataTypeName (e.g. com.google.step_count.delta, com.google.heart_rate.bpm) and startTimeMillis/endTimeMillis.",
+        "endpoints": [
+            _endpoint("sources", "List data sources", "GET", "/dataSources", "List connected wearable & fitness sensors"),
+            _endpoint("sessions", "List workout/sleep sessions", "GET", "/sessions", "List workout and sleep sessions", ["startTime", "endTime"]),
+            _endpoint("aggregate", "Aggregate steps/HR/calories", "POST", "/dataset:aggregate", "Aggregate health metrics", body_schema={"aggregateBy": [{"dataTypeName": "com.google.step_count.delta"}], "bucketByTime": {"durationMillis": 86400000}, "startTimeMillis": 0, "endTimeMillis": 0}),
+        ],
+    },
+    "whoop": {
+        "id": "whoop",
+        "name": "WHOOP Developer API",
+        "category": "Health & Finance",
+        "description": "WHOOP recovery score, strain, HRV, sleep stages, and workout metrics.",
+        "base_url": "https://api.prod.whoop.com/developer/v1",
+        "auth_type": "bearer",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "docs_url": "https://developer.whoop.com/api",
+        "test_endpoint": {"method": "GET", "path": "/user/profile/basic"},
+        "ai_guide": "Pass start and end ISO8601 query parameters to /recovery, /activity/sleep, and /activity/workout.",
+        "endpoints": [
+            _endpoint("profile", "Basic profile", "GET", "/user/profile/basic", "Authenticated WHOOP user profile"),
+            _endpoint("recovery", "Recovery collection", "GET", "/recovery", "HRV, resting heart rate, and recovery score", ["start", "end", "limit"]),
+            _endpoint("sleep", "Sleep collection", "GET", "/activity/sleep", "Sleep stages and performance", ["start", "end", "limit"]),
+            _endpoint("workouts", "Workout collection", "GET", "/activity/workout", "Strain and workout heart rate zones", ["start", "end", "limit"]),
+        ],
+    },
+    "withings": {
+        "id": "withings",
+        "name": "Withings Health Mate API",
+        "category": "Health & Finance",
+        "description": "Smart scale weight, body composition, blood pressure, sleep analyzer, and smart watch activity.",
+        "base_url": "https://wbsapi.withings.net/v2",
+        "auth_type": "bearer",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "docs_url": "https://developer.withings.com/api-reference",
+        "test_endpoint": {"method": "POST", "path": "/user?action=getdevice"},
+        "ai_guide": "Withings v2 endpoints use POST with action=getmeas or action=getactivity.",
+        "endpoints": [
+            _endpoint("measures", "Body weight & vitals", "POST", "https://wbsapi.withings.net/measure", "Get weight, fat mass, and BP measurements", ["action", "meastype", "startdate", "enddate"]),
+            _endpoint("sleep", "Sleep summary", "POST", "/sleep", "Get sleep metrics (action=getsummary)", ["action", "startdateymd", "enddateymd"]),
+        ],
+    },
+    "garmin_connect": {
+        "id": "garmin_connect",
+        "name": "Garmin Health & Connect API",
+        "category": "Health & Finance",
+        "description": "Garmin watch daily summaries, heart rate, Body Battery, stress, sleep, and GPS activities.",
+        "base_url": "https://apis.garmin.com/wellness-api/rest",
+        "auth_type": "bearer",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "docs_url": "https://developer.garmin.com/gc-developer-program/overview/",
+        "test_endpoint": {"method": "GET", "path": "/user/id"},
+        "ai_guide": "Query /dailies, /activities, /sleeps, and /stressDetails with uploadStartTimeInSeconds and uploadEndTimeInSeconds.",
+        "endpoints": [
+            _endpoint("dailies", "Daily health summary", "GET", "/dailies", "Steps, HR, calories, and stress", ["uploadStartTimeInSeconds", "uploadEndTimeInSeconds"]),
+            _endpoint("sleeps", "Sleep summaries", "GET", "/sleeps", "Sleep duration and stages", ["uploadStartTimeInSeconds", "uploadEndTimeInSeconds"]),
+            _endpoint("activities", "Activities & workouts", "GET", "/activities", "GPS runs, rides, and workouts", ["uploadStartTimeInSeconds", "uploadEndTimeInSeconds"]),
+        ],
+    },
+    "caldav_ics": {
+        "id": "caldav_ics",
+        "name": "CalDAV / iCloud / Nextcloud / ICS Calendar",
+        "category": "Productivity",
+        "description": "Connect Apple iCloud Calendar, Nextcloud, Fastmail, or any CalDAV / webcal .ics feed.",
+        "base_url": "https://caldav.icloud.com",
+        "auth_type": "basic",
+        "docs_url": "https://datatracker.ietf.org/doc/html/rfc4791",
+        "ai_guide": "For read-only .ics feeds, add the URL via the `calendar` tool or Settings -> Connections -> Calendar. For two-way CalDAV, store email:app-specific-password as Basic auth.",
+        "endpoints": [
+            _endpoint("propfind", "Discover calendars", "GET", "/", "Query CalDAV principal / calendar home"),
+        ],
+    },
+    "zapier_webhooks": {
+        "id": "zapier_webhooks",
+        "name": "Zapier Webhooks & Catch Hook",
+        "category": "Automation & Data",
+        "description": "Trigger Zapier Catch Hook Zaps via HTTP POST. Note: Zapier enforces a monthly task quota — use Direct API presets for frequent tasks.",
+        "base_url": "https://hooks.zapier.com/hooks/catch",
+        "auth_type": "none",
+        "docs_url": "https://zapier.com/page/webhooks/",
+        "ai_guide": "POST JSON payload to /<user_id>/<hook_id>/. Each call consumes 1 Zapier monthly task; recommend a direct API preset when used frequently.",
+        "endpoints": [
+            _endpoint("catch", "Trigger Catch Hook", "POST", "/{account_id}/{hook_id}/", "Send JSON payload to trigger a Zap", body_schema={"event": "string", "data": "object"}),
+        ],
+    },
     "open_meteo": {
         "id": "open_meteo",
         "name": "Open-Meteo Weather (No Key)",
@@ -735,6 +833,7 @@ GOOGLE_OAUTH_PRESETS: frozenset[str] = frozenset({
     "google_calendar",
     "google_tasks",
     "google_drive",
+    "google_fit",
 })
 
 PRESET_KEY_SETUP: dict[str, tuple[str, str]] = {
@@ -817,6 +916,26 @@ PRESET_KEY_SETUP: dict[str, tuple[str, str]] = {
     "oura": (
         "https://cloud.ouraring.com/personal-access-tokens",
         "Create an Oura Personal Access Token.",
+    ),
+    "whoop": (
+        "https://developer-dashboard.whoop.com/",
+        "Create a WHOOP Developer OAuth app and paste your access token.",
+    ),
+    "withings": (
+        "https://developer.withings.com/dashboard/",
+        "Create a Withings Developer app and paste your OAuth2 Bearer token.",
+    ),
+    "garmin_connect": (
+        "https://developerportal.garmin.com/",
+        "Copy your Garmin Connect / Health API token and paste it below.",
+    ),
+    "caldav_ics": (
+        "https://account.apple.com/account/manage",
+        "Generate an App-Specific Password (enter email:app-password) or paste your .ics feed URL.",
+    ),
+    "zapier_webhooks": (
+        "https://mcp.zapier.com/",
+        "Paste your Zapier Catch Hook path or connect Zapier MCP in the MCP section. Remember: Zapier has a monthly task quota.",
     ),
     "tomtom_traffic": (
         "https://developer.tomtom.com/user/me/apps",
@@ -1298,7 +1417,7 @@ class APIRegistry:
         except ValueError:
             parsed = None
 
-        return {
+        out: dict[str, Any] = {
             "ok": resp.is_success,
             "status_code": resp.status_code,
             "ms": elapsed_ms,
@@ -1307,6 +1426,16 @@ class APIRegistry:
             "text": text[:MAX_RESPONSE_CHARS] if parsed is None else "",
             "truncated": len(text) > MAX_RESPONSE_CHARS,
         }
+        if "zapier.com" in resolved_url.lower() or (conn and "zapier" in conn.preset_id.lower()):
+            try:
+                from nanomuse.connectors.zapier_quota import ZapierQuotaTracker
+
+                out["zapier_quota"] = ZapierQuotaTracker(self.data_dir).record_call(
+                    conn.id if conn else "zapier_webhook", path or resolved_url
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return out
 
     async def test(self, api_id: str) -> dict[str, Any]:
         conn = self.get(api_id)

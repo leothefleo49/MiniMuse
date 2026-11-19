@@ -1138,9 +1138,8 @@ def apply_app_settings(settings: Settings, data: dict[str, Any]) -> None:
         if isinstance(agent.get("max_context_images"), int) and agent["max_context_images"] >= 0:
             settings.agent.max_context_images = agent["max_context_images"]
     if sentinel := data.get("sentinel"):
-        # the lists the app can edit live (the mode itself still comes from config.toml /
-        # PUT /api/settings); an empty list here means "as configured", not "clear it",
-        # so a list is only applied when the app actually wrote one
+        if sentinel.get("mode") in ("ask", "task", "strict", "auto"):
+            settings.sentinel.mode = str(sentinel["mode"])
         if isinstance(sentinel.get("always_ask_tools"), list):
             settings.sentinel.always_ask_tools = [str(t) for t in sentinel["always_ask_tools"]]
         if isinstance(sentinel.get("always_allow_tools"), list):

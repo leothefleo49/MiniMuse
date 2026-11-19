@@ -238,6 +238,49 @@ class Bridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun discoverWatchAdb(): String = WearAdbDiscovery.discoverJson(activity)
 
+    /** Open Android Settings → Developer Options (or About Phone if Developer Options isn't unlocked yet). */
+    @JavascriptInterface
+    fun openDeveloperSettings() {
+        activity.runOnUiThread {
+            try {
+                activity.startActivity(
+                    android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (_: Exception) {
+                try {
+                    activity.startActivity(
+                        android.content.Intent(android.provider.Settings.ACTION_DEVICE_INFO_SETTINGS)
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+
+    /** Open Android Settings → Notification Access / App Notifications for Live Notifications. */
+    @JavascriptInterface
+    fun openNotificationListenerSettings() {
+        activity.runOnUiThread {
+            try {
+                activity.startActivity(
+                    android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (_: Exception) {
+                try {
+                    activity.startActivity(
+                        android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                            .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, activity.packageName)
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+
     companion object {
         const val NAME = "NanoMuseAndroid"
     }
