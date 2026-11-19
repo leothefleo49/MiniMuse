@@ -2152,7 +2152,6 @@ def _apply_conversation(
     turns = [t for t in conv.turns if t.role in ("user", "assistant") and t.text.strip()][
         :MAX_EVENTS_PER_CONVERSATION
     ]
-    threads_before = set(svc.threads)
     if conv.kind == "muse_main" and options.main_chat == "replace":
         made = svc.create_thread("Main chat")
         stats["threads_created"] += 1

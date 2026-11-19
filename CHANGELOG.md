@@ -4,6 +4,19 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.13] - 2026-11-19
+### Added
+- The files route now falls back to the session when a signed link has expired or its signature no longer matches, so a stale avatar link still loads instead of painting a broken image.
+- A chat's list row now shows its true message total: up to five digits with separators, then 99,999+.
+
+### Changed
+- The imported Muse avatar is chosen by the folder that holds the animation, so a profile that named a face with only stills now wears the moving one; the profile on this PC was pointed at that folder directly.
+- A chat's dates come from its messages, and the count takes the larger of the kept events and the messages the deep archive knows, surviving restarts.
+
+### Fixed
+- **A stale signed avatar link now loads instead of painting a broken image.** The files route falls back to the session when a signed link has expired or its signature no longer matches, instead of refusing it outright; the browser caches signed links for hours, and a stale one used to paint an image error. This is what made the imported Muse avatar look like an incompatible file.
+- **The true message total.** Chats imported before the counter existed get the total once from the search index that still holds every imported message.
+
 ## [1.2.12] - 2026-11-19
 ### Added
 - The files route now falls back to the session when a signed link has expired or its signature no longer matches, so a stale avatar link still loads instead of painting a broken image.

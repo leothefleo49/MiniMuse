@@ -17,6 +17,19 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.13": {
+        "title": "The avatar shows up, and the real message counts",
+        "added": [
+            "A chat's list row shows its true message total: up to five digits with separators, then 99,999+",
+        ],
+        "improved": [
+            "Chats imported before the counter existed take the total once from the search index",
+        ],
+        "fixed": [
+            "A profile avatar whose signed link had expired now loads through the session instead of showing a broken image",
+            "The imported Muse avatar is chosen by the folder that holds the animation, so a face with only stills is not worn when the moving one was imported",
+        ],
+    },
     "1.2.12": {
         "title": "The imported avatar shows up instead of a broken image",
         "added": [

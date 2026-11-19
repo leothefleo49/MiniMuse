@@ -1756,6 +1756,10 @@ class ConversationSync:
         in_seq = int(cur.get("in") or 0)
         out_seq = int(cur.get("out") or 0)
         peer_name = str(peer.get("name") or peer.get("id") or "device")
+        client = SyncClient(CloudClient(peer["url"]))
+        client.cloud.api_key = peer.get("token") or ""
+        applied = 0
+        pushed = 0
         # Ensure peer's sync store is turned on
         try:
             await client.set_enabled(True)
