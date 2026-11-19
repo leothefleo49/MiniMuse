@@ -5,6 +5,13 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 ## [Unreleased]
 
 ## [1.2.9] - 2026-11-19
+### Added
+- A one-time sync backfill: a paired device that never chose the side-chat switch reads the side chats it skipped, without pairing again.
+
+### Changed
+- The conversation list is ordered by the newest message from either person, and the desktop sidebar follows the same order instead of file/insertion order.
+- A chat's dates come from its messages rather than from when a file was imported, so an imported archive starts where its first message was.
+
 ### Fixed
 - **Imported chats sit where their messages say.** The list is ordered by the newest message from either side, and a chat's dates now come from its messages instead of from when the file was imported, so an archive imported today lands among the conversations it belongs with instead of at the end in file order. Chats imported before this rule are repaired the next time the app starts: no re-import needed.
 - **Side chats sync to your own paired devices.** Syncing them used to be opt-in, so a phone that paired received the main chat and nothing else, and every side chat stayed on the computer that wrote it. Synced side chats are the default now (the switch in Data controls still turns them off). A device that never touched the switch rewinds its sync cursor once on the first start after this build, so the side chats that were skipped arrive without pairing again.

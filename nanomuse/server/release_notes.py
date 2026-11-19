@@ -19,7 +19,9 @@ from nanomuse.logger import logger
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
     "1.2.9": {
         "title": "Imported chats in order, and side chats that reach your phone",
-        "added": [],
+        "added": [
+            "A one-time backfill: side chats a paired device skipped arrive on its next sync, without pairing again",
+        ],
         "improved": [
             "The chat list is ordered by the newest message from either person, imported chats included",
             "Chats imported before this build are put in order on the next start, without importing again",
