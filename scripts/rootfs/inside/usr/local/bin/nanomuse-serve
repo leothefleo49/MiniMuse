@@ -27,4 +27,7 @@ if [ ! -f /etc/nanomuse-mirror ]; then
   esac
 fi
 port="${NANOMUSE_SERVER_PORT:-8787}"
-exec nanomuse serve --host 127.0.0.1 --port "$port" --no-qr "$@"
+# Listen on the phone's network, not only its loopback: another device pairs with this phone
+# by scanning its QR, and that QR carries the phone's Wi-Fi address. Every request carries
+# the access token, and NANOMUSE_BIND_HOST=127.0.0.1 keeps a phone on a public network quiet.
+exec nanomuse serve --host "${NANOMUSE_BIND_HOST:-0.0.0.0}" --port "$port" --no-qr "$@"

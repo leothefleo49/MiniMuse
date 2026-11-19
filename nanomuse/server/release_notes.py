@@ -17,6 +17,20 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.6": {
+        "title": "Pairing works now, and it says what it is doing",
+        "added": [
+            "Pairing shows each step: reaching the other device, copying setup and keys, then syncing chats",
+            "Setup has a Pair a device button on every step, so it is never hidden when you resume a setup",
+            "Import & export shows upload progress while a big archive is on its way",
+        ],
+        "improved": [],
+        "fixed": [
+            "Pairing with a phone never worked: the computer app listened on this machine only while its QR handed out the network address",
+            "The pairing code now carries the port the app really uses",
+            "The other device is recorded at the address it actually reached you from, never a loopback address",
+        ],
+    },
     "1.2.5": {
         "title": "Your whole Muse export, read and checked",
         "added": [

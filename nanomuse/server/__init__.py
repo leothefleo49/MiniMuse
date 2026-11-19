@@ -98,6 +98,19 @@ def serve(
         raise SystemExit(78)
     host = host or settings.server.host
     port = port or settings.server.port
+    # what the server actually bound to, not what the config asked for: the pairing QR, the
+    # advertised addresses and every peer URL are built from here, so a --port or --host
+    # override has to land in the settings or devices are told the wrong address
+    settings.server.host = host
+    settings.server.port = int(port)
+    if host in ("127.0.0.1", "localhost", "::1"):
+        # pairing codes hand out network addresses; a loopback-only server cannot answer them
+        print(
+            "nanoMuse: listening on this machine only (127.0.0.1), so a phone cannot pair "
+            "with it. Start again with --host 0.0.0.0 to allow that.",
+            file=sys.stderr,
+            flush=True,
+        )
     taken = port_taken(host, port)
     if taken:
         # before the service starts: a second `nanomuse serve` used to open the data directory,

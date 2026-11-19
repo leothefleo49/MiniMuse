@@ -75,13 +75,16 @@ export function Onboarding() {
   const [cloudOpen, setCloudOpen] = useState(false);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [pairOpen, setPairOpen] = useState(false);
-  // "device": pair with another MiniMuse; "muse": bring over a Muse export (the prompt, the .zip)
   const [transferTab, setTransferTab] = useState<"device" | "muse">("device");
   const [nearby, setNearby] = useState<NearbyPeer[]>([]);
   const [pairTarget, setPairTarget] = useState("");
   const [pairCode, setPairCode] = useState("");
   const [bundleText, setBundleText] = useState("");
   const [pairing, setPairing] = useState(false);
+  // "" -> idle; the steps the person can actually see while pairing
+  const [pairStage, setPairStage] = useState<"" | "contacting" | "applying" | "syncing">("");
+  // set once a device is linked, so the card keeps saying so after the toast is gone
+  const [pairedWith, setPairedWith] = useState("");
   const [keepLocalLookOnPair, setKeepLocalLookOnPair] = useState(false);
   const [connectTab, setConnectTab] = useState<"all" | "google" | "calendar" | "apis">("all");
   const [quickBusy, setQuickBusy] = useState<"phone" | "free" | null>(null);
@@ -115,11 +118,13 @@ export function Onboarding() {
 
   const handlePairAndSyncSetup = async () => {
     setPairing(true);
+    setPairStage("contacting");
     try {
       if (keepLocalLookOnPair) {
         await api.syncSetDeviceOverrides({ enabled: true, keep_local_appearance: true }).catch(() => undefined);
       }
       if (bundleText.trim().startsWith("{")) {
+        setPairStage("applying");
         const parsed = JSON.parse(bundleText.trim()) as Record<string, unknown>;
         const res = await api.applySetupBundle(parsed);
         applyIncomingUiPrefs(res.ui_preferences);
@@ -138,15 +143,32 @@ export function Onboarding() {
         code: pairCode.trim(),
         sync_side_chats: true,
       });
+      setPairStage("applying");
       applyIncomingUiPrefs(res.setup_synced?.ui_preferences);
       await loadConn();
       await refreshSettings();
       toast(t("Paired with {peer} and synced setup!", { peer: res.peer ?? "device" }));
-      setPairOpen(false);
+      setPairStage("syncing");
+      await waitForSyncToSettle();
+      setPairedWith(res.peer ?? t("another device"));
+      toast(t("Synced with {peer}.", { peer: res.peer ?? "device" }));
     } catch (e) {
       toast((e as Error).message || t("Could not pair with that device."));
     } finally {
       setPairing(false);
+      setPairStage("");
+    }
+  };
+
+  /** Pairing answers as soon as the other device accepts; the first pass then runs in the
+   *  background. Follow it so the screen says "syncing" and then "done" instead of going
+   *  quiet the moment the request returns. */
+  const waitForSyncToSettle = async (): Promise<void> => {
+    const started = Date.now();
+    while (Date.now() - started < 90_000) {
+      await new Promise((r) => window.setTimeout(r, 900));
+      const st = await api.syncState().catch(() => null);
+      if (st && (st.working?.length ?? 0) === 0) return;
     }
   };
 
@@ -383,6 +405,21 @@ export function Onboarding() {
             {pairing ? <Loader2 size={14} className="animate-spin" /> : null}
             {t("Pair & Sync Setup")}
           </button>
+          {pairedWith && !pairing && (
+            <p role="status" className="flex items-center gap-1.5 text-[12px] font-medium text-accent">
+              <Check size={13} /> {t("Linked to {peer}. You can finish setup.", { peer: pairedWith })}
+            </p>
+          )}
+          {pairing && (
+            <p role="status" aria-live="polite" className="flex items-center gap-1.5 text-[12px] text-muted">
+              <Loader2 size={12} className="animate-spin" />
+              {pairStage === "contacting"
+                ? t("Reaching the other device...")
+                : pairStage === "applying"
+                  ? t("Paired. Copying its setup and keys...")
+                  : t("Syncing chats. This can take a minute...")}
+            </p>
+          )}
           </>
           )}
         </div>
@@ -404,17 +441,34 @@ export function Onboarding() {
               <span key={s} className={cx("h-1.5 rounded-full transition-all", i <= idx ? "w-5 bg-accent" : "w-1.5 bg-border")} />
             ))}
           </div>
-          <button
-            type="button"
-            onClick={() => void finish()}
-            className="inline-flex h-7 items-center justify-center rounded-full px-2.5 text-[12.5px] leading-none font-medium text-muted hover:bg-surface-2/80 hover:text-fg"
-          >
-            {t("Skip setup")}
-          </button>
+          <div className="flex items-center gap-1">
+            {!pairOpen && (
+              <button
+                type="button"
+                onClick={() => setPairOpen(true)}
+                data-testid="onboarding-pair-chip"
+                className="inline-flex h-7 items-center gap-1.5 rounded-full bg-surface-2 px-2.5 text-[12px] leading-none font-medium text-fg/80 hover:text-fg"
+              >
+                <Smartphone size={13} className="text-accent" />
+                {t("Pair a device")}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void finish()}
+              className="inline-flex h-7 items-center justify-center rounded-full px-2.5 text-[12.5px] leading-none font-medium text-muted hover:bg-surface-2/80 hover:text-fg"
+            >
+              {t("Skip setup")}
+            </button>
+          </div>
         </div>
       </header>
 
       <div className="flex-1 overflow-y-auto px-5 pb-6 wide:px-10">
+        {/* Any step, on demand: the pairing card is never "not an option" during setup */}
+        {step !== "welcome" && step !== "list" && pairOpen && (
+          <div className="pt-4">{pairDeviceSetupCard}</div>
+        )}
         {step === "welcome" && (
           <div className="flex min-h-full flex-col items-center justify-start pt-4 pb-4 text-center sm:justify-center">
             <Avatar profile={preview} size={96} />

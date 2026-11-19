@@ -17,7 +17,8 @@ import java.util.TimeZone
 
 /**
  * nanoMuse on the phone itself: an Alpine root file system unpacked from the APK, run under
- * PRoot (a user-mode chroot, no root needed), with `nanomuse serve` on the loopback.
+ * PRoot (a user-mode chroot, no root needed), with `nanomuse serve` bound to the phone's
+ * network so another device can pair with it (the token is on every request).
  *
  * What lives where under the app's files directory:
  *

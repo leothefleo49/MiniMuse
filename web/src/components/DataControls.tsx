@@ -525,6 +525,11 @@ export function SyncControls({
                   {copiedUri ? t("Copied") : t("Copy pairing link")}
                 </button>
               </div>
+              {pairCode.warning && (
+                <p className="rounded-xl bg-amber-500/10 px-2.5 py-1.5 text-[12px] leading-snug text-amber-600 dark:text-amber-400">
+                  {t(pairCode.warning)}
+                </p>
+              )}
             </div>
           )}
 

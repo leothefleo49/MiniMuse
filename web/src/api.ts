@@ -563,8 +563,17 @@ export const api = {
     return (await res.json()) as ImportResult;
   },
   /** Same upload, but the runtime reads and applies it in the background and answers at once
-   *  with a job to follow (`importJobs`); the app stays usable meanwhile. */
-  importDataBackground: async (file: Blob, name: string, options: ImportOptions): Promise<ImportJobView> => {
+   *  with a job to follow (`importJobs`); the app stays usable meanwhile.
+   *
+   *  Sent with XHR rather than fetch only because a multi-gigabyte export takes minutes to
+   *  leave the machine, and XHR is the only way to say how far the upload has got. After it
+   *  lands, the job's own progress takes over. */
+  importDataBackground: (
+    file: Blob,
+    name: string,
+    options: ImportOptions,
+    onUpload?: (percent: number) => void,
+  ): Promise<ImportJobView> => {
     const params = new URLSearchParams({
       name,
       restore_chats: String(options.restore_chats),
@@ -574,13 +583,41 @@ export const api = {
       keep_copy: String(options.keep_copy ?? true),
       background: "true",
     });
-    const headers: Record<string, string> = {};
-    const token = getToken();
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-    const res = await fetch(`/api/data/import?${params.toString()}`, { method: "POST", headers, body: file });
-    if (res.status === 401) throw new AuthError();
-    if (!res.ok) throw new Error(failureDetail(res.status, await res.json().catch(() => undefined)));
-    return ((await res.json()) as { job: ImportJobView }).job;
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `/api/data/import?${params.toString()}`);
+      const token = getToken();
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.upload.onprogress = (e) => {
+        if (!e.lengthComputable || !onUpload) return;
+        onUpload(Math.min(100, Math.round((e.loaded / Math.max(e.total, 1)) * 100)));
+      };
+      xhr.onload = () => {
+        if (xhr.status === 401) {
+          reject(new AuthError());
+          return;
+        }
+        let body: unknown = undefined;
+        try {
+          body = JSON.parse(xhr.responseText);
+        } catch {
+          body = undefined;
+        }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(new Error(failureDetail(xhr.status, body as never)));
+          return;
+        }
+        const job = (body as { job?: ImportJobView } | undefined)?.job;
+        if (!job) {
+          reject(new Error("the app did not start an import"));
+          return;
+        }
+        resolve(job);
+      };
+      xhr.onerror = () => reject(new Error("the upload could not reach the app"));
+      xhr.onabort = () => reject(new Error("the upload was stopped"));
+      xhr.send(file);
+    });
   },
   importJobs: () => request<{ jobs: ImportJobView[] }>("/api/data/import/jobs", { cache: "no-store" }),
   /** The originals kept after a transfer, newest first (reports flagged). */

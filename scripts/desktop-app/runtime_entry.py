@@ -75,6 +75,24 @@ def _token() -> str:
         return ""
 
 
+def _bind_host(settings: object) -> str:
+    """The address this app's server listens on.
+
+    The phone in your hand pairs by scanning this app's QR, so the server has to answer on
+    the network and not only on this machine. A host written in config wins; otherwise the
+    runtime listens on every interface, and ``NANOMUSE_LAN=0`` keeps it on loopback for
+    anyone who does not want it reachable from the network. Everything the app itself opens
+    (window, health checks) still goes through 127.0.0.1.
+    """
+    server = getattr(settings, "server", None)
+    configured = str(getattr(server, "host", "") or "").strip()
+    if configured and configured not in ("127.0.0.1", "localhost", "::1", ""):
+        return configured
+    if os.environ.get("NANOMUSE_LAN", "").strip().lower() in ("0", "false", "no", "off"):
+        return "127.0.0.1"
+    return "0.0.0.0"
+
+
 def _health_info(host: str, port: int, timeout: float = 2.0) -> dict[str, object] | None:
     """Return parsed ``/api/health`` JSON from ``host:port`` if a MiniMuse server answers."""
     import json
@@ -819,7 +837,11 @@ def _app_mode() -> None:
         raise
     from nanomuse import __version__
 
-    host, port = "127.0.0.1", settings.server.port
+    # Listen on the network too: a phone pairs by scanning this app's QR, and that QR carries
+    # the LAN address, so a loopback-only server could never answer it ("pairing does not
+    # work"). The window, the health probe and every self-check still use 127.0.0.1, and
+    # every request carries the access token, so this only widens reach, not access.
+    host, port = _bind_host(settings), settings.server.port
     _canonical_handoff_if_needed(host, port)
     _install_app_entry()
     if FROZEN:

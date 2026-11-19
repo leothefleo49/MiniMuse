@@ -366,6 +366,8 @@ export interface PairCodeInfo {
   urls: string[];
   pair_uri: string;
   qr_png?: string;
+  /** set when no other device could actually reach this one (loopback-only or no network) */
+  warning?: string;
 }
 
 export interface TrashedThread {

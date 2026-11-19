@@ -188,6 +188,7 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
   const [result, setResult] = useState<ImportResult | null>(null);
   const [copies, setCopies] = useState<KeptCopy[]>([]);
   const [removing, setRemoving] = useState("");
+  const [uploadPct, setUploadPct] = useState(0);
   const [copied, setCopied] = useState(false);
   const [copiedBundle, setCopiedBundle] = useState(false);
   const prompt = MUSE_PROMPT;
@@ -249,14 +250,16 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
   const startBackground = async (file: File) => {
     setBusy("file");
     setResult(null);
+    setUploadPct(0);
     try {
-      await api.importDataBackground(file, file.name, options());
+      await api.importDataBackground(file, file.name, options(), setUploadPct);
       window.dispatchEvent(new Event("nanomuse:import-started"));
       toast(t("Import started. It runs in the background: keep using the app."));
     } catch (e) {
       toast((e as Error).message);
     } finally {
       setBusy("");
+      setUploadPct(0);
     }
   };
 
@@ -436,6 +439,21 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
             }}
           />
           <p className="pt-2 text-center text-[12px] text-muted">{t("A Muse export zip, a MiniMuse export zip, or any transcript or text file, of any size.")}</p>
+          {busy === "file" && uploadPct > 0 && (
+            <div className="pt-2" role="status" aria-live="polite">
+              <div className="h-1.5 overflow-hidden rounded-full bg-surface-2">
+                <div
+                  className="h-full rounded-full bg-accent transition-[width] duration-300"
+                  style={{ width: `${uploadPct}%` }}
+                />
+              </div>
+              <p className="pt-1 text-center text-[11.5px] text-muted">
+                {uploadPct < 100
+                  ? t("Uploading {name}: {n}%", { name: fileName, n: String(uploadPct) })
+                  : t("Upload done. Reading the archive...")}
+              </p>
+            </div>
+          )}
         </div>
         <MuseDivider inset={16} />
         <div className="px-4 py-4">

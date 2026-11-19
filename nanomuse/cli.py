@@ -428,6 +428,9 @@ def desktop_app(
     from nanomuse.server import bridge_url, port_taken, serve
 
     target_host = "127.0.0.1"
+    # the window talks to 127.0.0.1, but the server itself listens on the network: a phone
+    # pairs by scanning this app's QR, which carries the LAN address
+    bind_host = "0.0.0.0"
     target_port = settings.server.port
     taken = port_taken(target_host, target_port)
     started_here = False
@@ -441,7 +444,7 @@ def desktop_app(
         t = threading.Thread(
             target=serve,
             args=(settings,),
-            kwargs={"host": target_host, "port": target_port, "print_qr": False, "on_server": server_ref.append},
+            kwargs={"host": bind_host, "port": target_port, "print_qr": False, "on_server": server_ref.append},
             daemon=True,
         )
         t.start()

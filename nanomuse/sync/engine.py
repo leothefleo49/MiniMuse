@@ -2007,13 +2007,55 @@ class ConversationSync:
         urls = candidate_urls(port, host)
         did = self.svc.hub.device_id
         name = self.svc.hub.device_name
-        return {
+        payload: dict[str, Any] = {
             **info,
             "device_id": did,
             "name": name,
             "urls": urls,
             "pair_uri": build_pair_uri(info["code"], did, name, urls),
         }
+        if not urls:
+            # every address is this machine only: a phone that scans this code cannot reach it
+            payload["warning"] = (
+                "This app is only listening on this machine, so another device cannot reach "
+                "it. Restart it with network access (server.host = 0.0.0.0) and scan again."
+            )
+        elif host in ("127.0.0.1", "localhost", "::1"):
+            payload["warning"] = (
+                "This app is listening on this machine only; the address in the code may not "
+                "answer from your phone. Restart it with server.host = 0.0.0.0."
+            )
+        return payload
+
+    @staticmethod
+    def _reachable_peer_urls(remote_urls: list[str], client_ip: str) -> list[str]:
+        """The addresses this runtime can actually dial back to reach a device that just
+        claimed a pairing code.
+
+        The claiming device lists its own addresses, and those can be wrong for us: an app
+        that advertised a default port, a phone that only ran on its own loopback, a machine
+        behind another interface. The one address we know reached us is the claim's own
+        client address, so the same host on the port it says it listens on comes first; the
+        claimed URLs follow, minus the ones that could never work from here (loopback,
+        unless the claim itself came from loopback)."""
+        claimed = [str(u).strip().rstrip("/") for u in remote_urls if str(u).strip()]
+        usable = [u for u in claimed if u.startswith(("http://", "https://"))]
+        from_loopback = client_ip in ("", "127.0.0.1", "::1", "localhost")
+        if not from_loopback:
+            usable = [u for u in usable if "127.0.0.1" not in u and "localhost" not in u]
+        port = ""
+        for url in usable:
+            hostport = url.split("://", 1)[-1].split("/", 1)[0]
+            if ":" in hostport and not hostport.endswith("]"):
+                port = hostport.rsplit(":", 1)[1]
+                break
+        out: list[str] = []
+        if client_ip and not from_loopback and port.isdigit():
+            out.append(f"http://{client_ip}:{port}")
+        for url in usable:
+            if url not in out:
+                out.append(url)
+        return out
 
     def accept_inbound_claim(
         self,
@@ -2035,7 +2077,7 @@ class ConversationSync:
         my_urls = candidate_urls(port, host)
         # If the caller also exposed URLs + a return token, record mutual peer automatically!
         if remote_urls and return_token:
-            for rurl in remote_urls:
+            for rurl in self._reachable_peer_urls(remote_urls, client_ip):
                 try:
                     add_pair(
                         self.svc.data_dir,
@@ -2101,7 +2143,8 @@ class ConversationSync:
                 "urls": my_urls,
                 "peer_token": return_token,
             }
-            last_err = "Could not reach that device"
+            last_err = "no answer"
+            tried = ", ".join(u.rstrip("/") for u in urls)
             async with httpx.AsyncClient(timeout=5.0) as hc:
                 for base in urls:
                     try:
@@ -2122,21 +2165,28 @@ class ConversationSync:
                             if isinstance(data.get("setup_bundle"), dict):
                                 bundle_res = self.apply_setup_bundle(data["setup_bundle"])
                             self.reload_peers()
-                            self.mirror_local_now()
-                            sync_res = await self.sync_peers()
+                            # the first pass can move a whole history: let the screen show its
+                            # progress (poll /api/sync/state) instead of holding the request open
+                            self.peer_sync_soon(delay=0.05)
                             return {
                                 "ok": True,
                                 "peer": r_name,
+                                "syncing": True,
                                 "sync": self.view(),
-                                "result": sync_res,
+                                "result": {"applied": 0, "pushed": 0, "peers": self.peers_view()},
                                 "setup_synced": bundle_res,
                             }
                         last_err = str(data.get("detail") or f"HTTP {r.status_code}")
                         if r.status_code in (401, 429):
+                            # the code itself was refused: the address was fine
                             raise ValueError(last_err)
                     except httpx.HTTPError as exc:
-                        last_err = str(exc)
-            raise ValueError(last_err)
+                        last_err = str(exc) or exc.__class__.__name__
+            raise ValueError(
+                f"Could not reach {tried} ({last_err}). Both devices have to be on the same "
+                "Wi-Fi or Tailscale, and the other app has to be running and allowed through "
+                "its firewall."
+            )
         if token.strip():
             base = urls[0]
             async with httpx.AsyncClient(timeout=5.0) as hc:
@@ -2152,9 +2202,15 @@ class ConversationSync:
                 self.state["side_chats"] = True
             self._save()
             self.reload_peers()
-            self.mirror_local_now()
-            sync_res = await self.sync_peers()
-            return {"ok": True, "peer": name or base, "sync": self.view(), "result": sync_res}
+            # first pass in the background: the screen follows /api/sync/state for progress
+            self.peer_sync_soon(delay=0.05)
+            return {
+                "ok": True,
+                "peer": name or base,
+                "syncing": True,
+                "sync": self.view(),
+                "result": {"applied": 0, "pushed": 0, "peers": self.peers_view()},
+            }
         raise ValueError("Provide the 6-character pairing code or the device's token")
 
     def unpair_peer(self, identifier: str) -> bool:
