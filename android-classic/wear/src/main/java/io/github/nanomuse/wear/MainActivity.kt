@@ -117,6 +117,7 @@ class MainActivity : AppCompatActivity() {
     private var heroVideoFailed = mutableSetOf<String>()
     private val heroClipRetryAt = mutableMapOf<String, Long>()
     private var heroClipJob: Job? = null
+    private var heroBreathe: AnimatorSet? = null
 
     // Why the last state fetch failed, so the home screen can say it instead of "Connecting..."
     private var lastStateError = ""
@@ -1066,6 +1067,8 @@ class MainActivity : AppCompatActivity() {
     private fun stopHaloAnimation() {
         haloAnim?.cancel()
         haloAnim = null
+        heroBreathe?.cancel()
+        heroBreathe = null
     }
 
     private fun render() {
@@ -1619,7 +1622,31 @@ class MainActivity : AppCompatActivity() {
         // the moving version on top of the still: the still is what shows before it is ready,
         // on faces that have no clip, and while the clip is still downloading
         attachHeroVideo(holder, still, id, if (st?.busy == true) "working" else "idle")
+        // no clip on its way or playing: let the still breathe, so it is never frozen
+        if (heroVideo == null) breathe(still)
         return holder
+    }
+
+    /** A slow breath on the still, so a face with no clip (the bundled dragon, a face drawn
+     *  before animations existed) is alive too. The clip cancels it when it starts. */
+    private fun breathe(still: ImageView) {
+        heroBreathe?.cancel()
+        val x = ObjectAnimator.ofFloat(still, View.SCALE_X, 1f, 1.035f).apply {
+            duration = 2400L
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = AccelerateDecelerateInterpolator()
+        }
+        val y = ObjectAnimator.ofFloat(still, View.SCALE_Y, 1f, 1.035f).apply {
+            duration = 2400L
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = AccelerateDecelerateInterpolator()
+        }
+        heroBreathe = AnimatorSet().apply {
+            playTogether(x, y)
+            start()
+        }
     }
 
     /** Play the agent's own animation on the home screen, looped and silent.
@@ -1690,6 +1717,9 @@ class MainActivity : AppCompatActivity() {
                 mp.isLooping = true
                 mp.setVolume(0f, 0f)
                 start()
+                // the real clip is playing now: drop the breathing still under it
+                heroBreathe?.cancel()
+                heroBreathe = null
                 still.alpha = 0f
             }
             setOnErrorListener { _, _, _ ->
