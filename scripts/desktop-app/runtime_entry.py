@@ -17,6 +17,7 @@ app is where a desktop search looks for apps — not only in the Downloads folde
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import os
 import sys
@@ -67,12 +68,22 @@ def _fatal(message: str) -> None:
             pass
 
 
-def _token() -> str:
+def _token(data_dir: object | None = None) -> str:
+    base = str(data_dir) if data_dir is not None else _data_dir()
     try:
-        with open(os.path.join(_data_dir(), "server_token"), encoding="utf-8") as f:
-            return f.read().strip()
+        with open(os.path.join(base, "server_token"), encoding="utf-8") as f:
+            tok = f.read().strip()
+            if tok:
+                return tok
     except OSError:
-        return ""
+        pass
+    if data_dir is not None:
+        try:
+            with open(os.path.join(_data_dir(), "server_token"), encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError:
+            pass
+    return ""
 
 
 def _bind_host(settings: object) -> str:
@@ -129,11 +140,30 @@ def _wait_for_health(port: int, wait: float = 0.0) -> bool:
         time.sleep(0.15)
 
 
-def _app_url(port: int) -> str:
-    token = _token()
+def _app_url(port: int, data_dir: object | None = None) -> str:
+    token = _token(data_dir)
     # ?shell=desktop tells the web app it is inside the native window (desktop layout at any width)
     base = f"http://127.0.0.1:{port}/?shell=desktop"
     return base if not token else f"{base}#token={token}"
+
+
+def _focus_existing_window() -> bool:
+    """On Windows, bring an already-open MiniMuse window to the foreground instead of
+    opening a second WebView2 against the same storage_dir (which throws 0x8007139F)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, "MiniMuse")
+        if hwnd:
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
 
 
 def _window_icon() -> str | None:
@@ -307,7 +337,7 @@ def _run_native_window(
         return False
 
 
-def _open_the_app(port: int, wait: float = 0.0) -> bool:
+def _open_the_app(port: int, wait: float = 0.0, data_dir: object | None = None) -> bool:
     """Open MiniMuse in its standalone window or browser when native pywebview is unavailable."""
     if os.environ.get("MINIMUSE_NO_BROWSER"):
         return False
@@ -315,7 +345,7 @@ def _open_the_app(port: int, wait: float = 0.0) -> bool:
 
     if wait:
         _wait_for_health(port, wait=wait)
-    url = _app_url(port)
+    url = _app_url(port, data_dir=data_dir)
     if not os.environ.get("BROWSER") and os.environ.get(
         "NANOMUSE_OPEN_BROWSER", ""
     ).strip().lower() not in ("1", "true", "yes"):
@@ -897,12 +927,15 @@ def _app_mode() -> None:
     taken = port_taken(host, port)
     storage_dir = settings.data_dir / "webview"
     if taken in (f"nanoMuse {__version__}", f"MiniMuse {__version__}"):
-        # The same release is already serving on this port: open our native window on it.
-        _log(f"{taken} is already running on {host}:{port}; opening native window")
+        # The same release is already serving on this port: focus its window if open,
+        # otherwise open a native window with an unlocked storage path.
+        _log(f"{taken} is already running on {host}:{port}; activating window")
+        if _focus_existing_window():
+            raise SystemExit(0)
         _wait_for_health(port, wait=10.0)
-        url = _app_url(port)
+        url = _app_url(port, data_dir=settings.data_dir)
         if not _run_native_window(url, storage_dir=storage_dir):
-            _open_the_app(port, wait=2.0)
+            _open_the_app(port, wait=2.0, data_dir=settings.data_dir)
         raise SystemExit(0)
     if taken:
         port = _next_free_port(port + 1)
@@ -933,7 +966,7 @@ def _app_mode() -> None:
             _fatal(f"MiniMuse server failed to start: {server_err[0]}")
             raise SystemExit(1)
 
-    url = _app_url(port)
+    url = _app_url(port, data_dir=settings.data_dir)
 
     def _stop_server() -> None:
         for srv in server_ref:
@@ -945,7 +978,12 @@ def _app_mode() -> None:
 
     # Fallback (headless / no GUI webview engine): open chromeless app window or browser
     # and keep serving until interrupted.
-    threading.Thread(target=_open_the_app, args=(port,), kwargs={"wait": 5.0}, daemon=True).start()
+    threading.Thread(
+        target=_open_the_app,
+        args=(port,),
+        kwargs={"wait": 5.0, "data_dir": settings.data_dir},
+        daemon=True,
+    ).start()
     try:
         while srv_thread.is_alive():
             srv_thread.join(timeout=0.5)
