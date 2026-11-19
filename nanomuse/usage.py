@@ -104,36 +104,39 @@ def usage_note(model: str, trace: dict[str, Any], now: datetime | None = None) -
 # tool calls grouped into the activities a person recognises. A tool may land in two
 # activities when it both reads and writes (the files tool): the action decides.
 _TOOL_ACTIVITIES: dict[str, str] = {
-    # reading: looking things up on the internet and in the world
-    "web_search": "reading",
-    "web_fetch": "reading",
-    "browser": "reading",
-    "read_emails": "reading",
-    "calendar": "reading",
-    "contacts": "reading",
+    # reading & browsing: looking things up on the internet and in the world
+    "web_search": "web_browsing",
+    "web_fetch": "web_browsing",
+    "browser": "web_browsing",
+    "read_emails": "email_calendar",
+    "send_email": "email_calendar",
+    "calendar": "email_calendar",
+    "contacts": "email_calendar",
     "deep_memory": "reading",
     "recall": "reading",
-    "computer_look": "reading",
-    "phone_look": "reading",
-    "phone_screen": "reading",
-    # commands: the shell, the PC's hands, the phone's hands doing things
+    "computer_look": "device_control",
+    "phone_look": "device_control",
+    "phone_screen": "device_control",
+    # commands & device control: the shell, the PC's hands, the phone's hands doing things
     "shell": "commands",
     "python_execute": "commands",
-    "pc_control": "commands",
-    "computer_act": "commands",
-    "computer_task": "commands",
-    "phone_act": "commands",
-    "phone_task": "commands",
-    "phone_tap": "commands",
+    "pc_control": "device_control",
+    "computer_act": "device_control",
+    "computer_task": "device_control",
+    "phone_act": "device_control",
+    "phone_task": "device_control",
+    "phone_tap": "device_control",
     "device_shell": "commands",
-    # APIs: connectors, the hub's other devices, mail going out
+    # APIs: connectors, the hub's other devices
     "external_connectors": "apis",
-    "app_builder": "apis",
-    "send_email": "apis",
+    "api_connector": "apis",
+    "app_builder": "app_built",
     "phone_bridge": "apis",
     "mcp": "apis",
     # coding: the coding agents
     "coding": "coding",
+    # live calls
+    "live_call": "live_calls",
     # personal tracking: local tracker and memory tools
     "ofa_tracker": "tracking",
     "remember": "tracking",
@@ -142,7 +145,7 @@ _TOOL_ACTIVITIES: dict[str, str] = {
     "reminders": "tracking",
     "triggers": "tracking",
     "skills": "tracking",
-    "devices": "commands",
+    "devices": "device_control",
     "device_files": "files",
     "device_get": "files",
     "device_put": "files",
@@ -152,12 +155,17 @@ _TOOL_ACTIVITIES: dict[str, str] = {
 
 ACTIVITIES = (
     "reading",
+    "web_browsing",
+    "email_calendar",
+    "live_calls",
+    "device_control",
     "files_read",
     "files_written",
     "commands",
     "apis",
     "coding",
     "tracking",
+    "app_built",
     "image_generation",
     "image_editing",
     "video_generation",

@@ -43,6 +43,40 @@ export function peerDisplayName(peer: SyncPeerInfo): string {
   return peerHost(peer) || (peerKind(peer) === "phone" ? "Paired phone" : "Paired computer");
 }
 
+const GENERIC_PHONE_NAMES = new Set(["phone", "android phone", "paired phone", "android", "localhost"]);
+
+/**
+ * Filter local.phones so a phone that is already in hubOthers or in sync.peers (including when
+ * the browser User-Agent reported a generic "Phone" / "Android phone" label for the same paired
+ * phone) never shows up as a duplicate second phone entry.
+ */
+export function dedupeLocalPhones(
+  localPhones: ReadonlyArray<LocalDevice>,
+  hubOthers: ReadonlyArray<HubDevice>,
+  sync: SyncState | null | undefined,
+): LocalDevice[] {
+  const hubNames = new Set(
+    hubOthers.map((d) => String(d.name ?? "").trim().toLowerCase()).filter(Boolean),
+  );
+  const pairedPhones = directPeers(sync).filter((p) => peerKind(p) === "phone");
+  const pairedPhoneNames = new Set(
+    pairedPhones.map((p) => peerDisplayName(p).trim().toLowerCase()).filter(Boolean),
+  );
+  const hasPairedPhone = pairedPhones.length > 0;
+  return localPhones.filter((p) => {
+    const nm = String(p.name ?? "").trim().toLowerCase();
+    const mdl = String(p.model ?? "").trim().toLowerCase();
+    if (nm && hubNames.has(nm)) return false;
+    if (mdl && hubNames.has(mdl)) return false;
+    if (nm && pairedPhoneNames.has(nm)) return false;
+    if (mdl && pairedPhoneNames.has(mdl)) return false;
+    if (hasPairedPhone && (GENERIC_PHONE_NAMES.has(nm) || GENERIC_PHONE_NAMES.has(mdl))) {
+      return false;
+    }
+    return true;
+  });
+}
+
 /**
  * Directly paired peers that are not already represented in hub or local device lists,
  * so the same physical phone or PC never shows up twice under different labels.
@@ -73,9 +107,7 @@ export function countDevices(
   sync: SyncState | null | undefined,
 ): { total: number; online: number } {
   const hubOthers = (hub?.devices ?? []).filter((d) => !d.this && d.kind !== "web");
-  const localPhones = (local?.phones ?? []).filter(
-    (p) => !hubOthers.some((d) => String(d.name ?? "").toLowerCase() === String(p.name ?? "").toLowerCase()),
-  );
+  const localPhones = dedupeLocalPhones(local?.phones ?? [], hubOthers, sync);
   const others = [...hubOthers, ...localPhones];
   const extraPeers = uniqueDirectPeers(sync, others);
   const connected = hub?.state === "connected";

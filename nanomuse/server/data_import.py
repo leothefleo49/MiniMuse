@@ -271,6 +271,8 @@ class ImportPlan:
     ui_prefs: dict[str, Any] = field(default_factory=dict)
     avatar_files: int = 0
     avatar_face: str = ""
+    avatar_faces: set[str] = field(default_factory=set)
+    avatar_models: dict[str, dict[str, Any]] = field(default_factory=dict)
     manifest_transcripts: set[str] = field(default_factory=set)
     # the file this plan came from, for the verification report's name
     source_name: str = ""
@@ -1536,7 +1538,8 @@ def _read_avatar_entry(
     if not rel_parts:
         return
     if len(rel_parts) == 1:
-        face = str(plan.profile_data.get("avatar") or "imported-muse")
+        m_face = re.search(r"avatar-([A-Za-z0-9]{6,})", rel_parts[0], re.IGNORECASE)
+        face = slugify(m_face.group(1)) if m_face else slugify(str(plan.profile_data.get("avatar") or "imported-muse"))
         sub = _safe_rel(rel_parts[0])
     else:
         face = slugify(rel_parts[0])
@@ -1554,15 +1557,18 @@ def _read_avatar_entry(
                     break
                 out.write(chunk)
         plan.avatar_files += 1
+        plan.avatar_faces.add(face)
         if not plan.avatar_face:
             plan.avatar_face = face
-        if target.name.lower() == "avatar-model.json" and not plan.avatar_model:
+        if target.name.lower() == "avatar-model.json":
             try:
                 parsed = json.loads(target.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 parsed = None
             if isinstance(parsed, dict):
-                plan.avatar_model = parsed
+                plan.avatar_models[face] = parsed
+                if not plan.avatar_model:
+                    plan.avatar_model = parsed
         # If an imported still is .png/.jpg/.gif for a standard mood and .webp doesn't exist yet,
         # also write <mood>.webp so the frontend's /api/files/avatar/<face>/<mood>.webp loads immediately.
         stem_low = Path(target.name).stem.lower()
@@ -1576,77 +1582,117 @@ def _read_avatar_entry(
 
 
 def _materialize_avatar_moods(svc: MuseService, plan: ImportPlan) -> None:
-    """The five stills and four clips the app asks for (``<mood>.webp`` / ``<mood>.mp4``),
-    copied out of the bundle's own files using ``avatar-model.json``'s state map, so an
-    imported face changes pose exactly like a face drawn in the studio. Existing files are
-    never overwritten, and a state with no file in the bundle is simply left alone."""
-    model = plan.avatar_model
-    if not model or not plan.avatar_face:
+    """The stills and clips the app asks for (``<mood>.webp`` / ``<mood>.mp4``),
+    copied out of the bundle's own files using ``avatar-model.json``'s state map (or
+    filename heuristics when importing standalone model zips), so every imported face
+    changes pose across situations. Safe to re-run when re-importing."""
+    faces = list(plan.avatar_faces) or ([plan.avatar_face] if plan.avatar_face else [])
+    if not faces:
         return
-    face = slugify(str(model.get("face_id") or plan.avatar_face))
-    face_dir = svc.workspace() / "avatar" / face
-    if not face_dir.is_dir():
-        return
-    webps = sorted(p for p in face_dir.rglob("*.webp"))
+    total_made = 0
+    for raw_face in faces:
+        model = plan.avatar_models.get(raw_face) or (plan.avatar_model if raw_face == plan.avatar_face else {}) or {}
+        face = slugify(str(model.get("face_id") or raw_face))
+        face_dir = svc.workspace() / "avatar" / face
+        if not face_dir.is_dir():
+            continue
+        if not model and (face_dir / "avatar-model.json").is_file():
+            try:
+                loaded = json.loads((face_dir / "avatar-model.json").read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    model = loaded
+            except Exception:
+                model = {}
+        webps = sorted(p for p in face_dir.rglob("*.webp") if p.is_file())
+        mp4s = sorted(p for p in face_dir.rglob("*.mp4") if p.is_file())
 
-    def pick(*hints: str) -> Path | None:
-        for path in webps:
-            name = path.name.lower()
-            if all(hint in name for hint in hints):
-                return path
-        return None
+        def pick_webp(*hints: str) -> Path | None:
+            for path in webps:
+                name = path.name.lower()
+                if "darkmode" not in name and all(hint in name for hint in hints):
+                    return path
+            for path in webps:
+                name = path.name.lower()
+                if all(hint in name for hint in hints):
+                    return path
+            return None
 
-    active_name = str(model.get("active_image") or "")
-    active = face_dir / active_name if active_name else None
-    if active is not None and not active.is_file():
-        active = None
-    stills: dict[str, Path | None] = {
-        "idle": pick("static", "idle") or active,
-        "working": pick("static", "working"),
-        "waiting": pick("static", "making_something"),
-        "happy": pick("static", "milestone_level_up"),
-        "error": next(
-            (p for p in webps if p.name.lower().endswith("-darkmode.webp")), None
-        )
-        or active,
-    }
-    variants = model.get("animated_variants_mp4")
-    variants = variants if isinstance(variants, dict) else {}
-    clips: dict[str, Any] = {
-        "idle": variants.get("idle"),
-        "working": variants.get("working"),
-        "waiting": variants.get("waiting_for_subagents") or variants.get("waiting"),
-        "happy": variants.get("milestone_level_up") or variants.get("happy"),
-    }
-    made = 0
-    for mood, source in stills.items():
-        if source is None or not source.is_file():
-            continue
-        target = face_dir / f"{mood}.webp"
-        if target.exists():
-            continue
-        try:
-            target.write_bytes(source.read_bytes())
-            made += 1
-        except OSError as exc:
-            logger.warning("could not materialize avatar mood %s: %s", mood, exc)
-    for mood, source_name in clips.items():
-        if not isinstance(source_name, str) or not source_name:
-            continue
-        # the state map names a file, which may sit in a subfolder of the bundle
-        wanted = Path(source_name).name.lower()
-        source = next(
-            (p for p in face_dir.rglob("*") if p.is_file() and p.name.lower() == wanted), None
-        )
-        target = face_dir / f"{mood}.mp4"
-        if target.exists() or source is None:
-            continue
-        try:
-            target.write_bytes(source.read_bytes())
-            made += 1
-        except OSError as exc:
-            logger.warning("could not materialize avatar clip %s: %s", mood, exc)
-    plan.avatar_materialized += made
+        def pick_mp4(*hints: str) -> Path | None:
+            for path in mp4s:
+                name = path.name.lower()
+                if "darkmode" not in name and "attempt" not in name and all(hint in name for hint in hints):
+                    return path
+            for path in mp4s:
+                name = path.name.lower()
+                if all(hint in name for hint in hints):
+                    return path
+            return None
+
+        active_name = str(model.get("active_image") or "")
+        active = face_dir / active_name if active_name else None
+        if active is not None and not active.is_file():
+            active = None
+        if active is None:
+            active = pick_webp("-1") or (webps[0] if webps else None)
+
+        stills: dict[str, Path | None] = {
+            "idle": pick_webp("static", "idle") or pick_webp("idle") or active,
+            "working": pick_webp("static", "working") or pick_webp("working") or active,
+            "waiting": pick_webp("static", "making_something") or pick_webp("making_something") or pick_webp("waiting") or active,
+            "happy": pick_webp("static", "milestone_level_up") or pick_webp("milestone") or pick_webp("happy") or active,
+            "error": next((p for p in webps if p.name.lower().endswith("-darkmode.webp")), None) or active,
+        }
+        variants = model.get("animated_variants_mp4")
+        variants = variants if isinstance(variants, dict) else {}
+        call_anims = model.get("call_idle_animations_mp4")
+        call_anims = call_anims if isinstance(call_anims, dict) else {}
+        clips: dict[str, Any] = {
+            "idle": variants.get("idle") or (pick_mp4("-1.mp4").name if pick_mp4("-1.mp4") else None),
+            "working": variants.get("working") or (pick_mp4("working").name if pick_mp4("working") else None),
+            "waiting": (
+                variants.get("making_something")
+                or variants.get("waiting_for_subagents")
+                or variants.get("waiting")
+                or (pick_mp4("making_something").name if pick_mp4("making_something") else None)
+            ),
+            "happy": (
+                variants.get("milestone_level_up")
+                or variants.get("happy")
+                or (pick_mp4("milestone").name if pick_mp4("milestone") else None)
+            ),
+            "call": (
+                call_anims.get("light")
+                or call_anims.get("dark")
+                or (pick_mp4("call", "light", "idle").name if pick_mp4("call", "light", "idle") else None)
+            ),
+        }
+        for mood, source in stills.items():
+            if source is None or not source.is_file():
+                continue
+            target = face_dir / f"{mood}.webp"
+            if target.resolve() == source.resolve():
+                continue
+            try:
+                target.write_bytes(source.read_bytes())
+                total_made += 1
+            except OSError as exc:
+                logger.warning("could not materialize avatar mood %s: %s", mood, exc)
+        for mood, source_name in clips.items():
+            if not isinstance(source_name, str) or not source_name:
+                continue
+            wanted = Path(source_name).name.lower()
+            source = next(
+                (p for p in face_dir.rglob("*") if p.is_file() and p.name.lower() == wanted), None
+            )
+            target = face_dir / f"{mood}.mp4"
+            if source is None or target.resolve() == source.resolve():
+                continue
+            try:
+                target.write_bytes(source.read_bytes())
+                total_made += 1
+            except OSError as exc:
+                logger.warning("could not materialize avatar clip %s: %s", mood, exc)
+    plan.avatar_materialized += total_made
 
 
 def _read_thread_entry(archive: zipfile.ZipFile, member: str, plan: ImportPlan) -> None:
@@ -1990,6 +2036,11 @@ def _verify_import(plan: ImportPlan, options: ImportOptions) -> dict[str, Any] |
                 f"{label}: the archive declares {declared}, this import staged {staged}"
                 "  (more than declared, so nothing is missing)"
             )
+        elif plan.duplicates > 0 and (staged + plan.duplicates) >= declared:
+            lines.append(
+                f"{label}: the archive declares {declared}, this import staged {staged}"
+                f"  ({declared - staged} already present from an earlier import)"
+            )
         else:
             ok = False
             lines.append(
@@ -2040,12 +2091,7 @@ def _write_verify_report(svc: MuseService, plan: ImportPlan, verify: dict[str, A
 
 
 def _avatar_to_wear(svc: MuseService, plan: ImportPlan, cur_prof: dict[str, Any]) -> str:
-    """Which face folder the profile should name after this import.
-
-    The bundle is stored under its folder name, and that is not always the name in the Muse
-    profile (a face called "goku" lived in a numeric folder, with the animation in the
-    numeric one). The folder that actually holds the imported animation wins, so the avatar
-    moves after the import instead of showing a still with no clips."""
+    """Which face folder the profile should name after this import."""
     if not plan.avatar_face:
         return str(cur_prof.get("avatar") or "")
     root = svc.workspace() / "avatar"
@@ -2054,8 +2100,8 @@ def _avatar_to_wear(svc: MuseService, plan: ImportPlan, cur_prof: dict[str, Any]
     chosen_dir = root / chosen if chosen else None
     has_webp = bool(chosen_dir and (chosen_dir / "idle.webp").is_file())
     imported_has_clip = (imported / "idle.mp4").is_file()
-    chosen_has_clip = bool(chosen_dir and (chosen_dir / "idle.mp4").is_file())
-    if imported.is_dir() and (imported_has_clip and not chosen_has_clip or not has_webp):
+    imported_has_webp = (imported / "idle.webp").is_file()
+    if imported.is_dir() and (imported_has_clip or imported_has_webp or not has_webp):
         return plan.avatar_face
     return chosen or plan.avatar_face
 
@@ -2075,7 +2121,7 @@ def apply_plan(svc: MuseService, plan: ImportPlan, options: ImportOptions) -> di
         # the face the profile names must be the folder that holds the imported animation
         cur_prof["avatar"] = _avatar_to_wear(svc, plan, cur_prof)
         try:
-            svc.update_profile(**cur_prof)
+            svc.update_profile(cur_prof)
             profile_updated = True
         except Exception as exc:
             logger.warning("could not apply imported profile: %s", exc)

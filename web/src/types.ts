@@ -306,6 +306,30 @@ export interface StudioView {
   face: StudioFace | null;
 }
 
+export interface AvatarLibraryAsset {
+  file: string;
+  path: string;
+  kind: "video" | "image";
+  label: string;
+  size: number;
+  canonical: boolean;
+}
+
+export interface AvatarLibraryFace {
+  id: string;
+  name: string;
+  style: string;
+  preview: string;
+  situations: Record<string, string>;
+  assets: AvatarLibraryAsset[];
+}
+
+export interface AvatarLibraryView {
+  active: string;
+  faces: AvatarLibraryFace[];
+  situations: Array<{ id: string; label: string }>;
+}
+
 export interface SetupPromptField {
   key: string;
   label: string;
@@ -491,6 +515,8 @@ export interface SyncState {
   device_overrides?: {
     enabled: boolean;
     keep_local_appearance: boolean;
+    keep_local_sentinel?: boolean;
+    keep_local_notifications?: boolean;
     default_model: string;
   };
 }
@@ -896,6 +922,14 @@ export interface Profile {
   avatar_bg_mode?: "theme" | "default" | "color" | "image" | string;
   avatar_bg_color?: string;
   avatar_bg_image?: string;
+  /** "theme" (matches theme accent/avatar color), "color" (custom border color), or "none" */
+  avatar_border_mode?: "theme" | "color" | "none" | string;
+  avatar_border_color?: string;
+  /** 0..100 border glow intensity (default 55) */
+  avatar_border_glow?: number;
+  /** Custom situation -> animation/image filename mapping */
+  avatar_situation_clips?: Record<string, string>;
+  updated_at?: number;
   /** one line under the name */
   tagline: string;
   /** how it talks: "" | formal | casual | playful | concise */

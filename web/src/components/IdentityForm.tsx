@@ -17,6 +17,10 @@ export type Identity = Pick<
   | "avatar_bg_mode"
   | "avatar_bg_color"
   | "avatar_bg_image"
+  | "avatar_border_mode"
+  | "avatar_border_color"
+  | "avatar_border_glow"
+  | "avatar_situation_clips"
   | "tone"
   | "communication"
   | "style"
@@ -135,6 +139,10 @@ export function IdentityForm({
           avatar_bg_mode: value.avatar_bg_mode,
           avatar_bg_color: value.avatar_bg_color,
           avatar_bg_image: value.avatar_bg_image,
+          avatar_border_mode: value.avatar_border_mode,
+          avatar_border_color: value.avatar_border_color,
+          avatar_border_glow: value.avatar_border_glow,
+          avatar_situation_clips: value.avatar_situation_clips,
         }}
         onChange={(look) => set(look)}
         onStudio={onStudio}
@@ -192,6 +200,10 @@ export function identityOf(p: Partial<Profile> | null | undefined, fallbackAvata
     avatar_bg_mode: p?.avatar_bg_mode ?? "theme",
     avatar_bg_color: p?.avatar_bg_color ?? "",
     avatar_bg_image: p?.avatar_bg_image ?? "",
+    avatar_border_mode: p?.avatar_border_mode ?? "theme",
+    avatar_border_color: p?.avatar_border_color ?? "",
+    avatar_border_glow: typeof p?.avatar_border_glow === "number" ? p.avatar_border_glow : 55,
+    avatar_situation_clips: p?.avatar_situation_clips ?? {},
     tone: p?.tone ?? "",
     communication: p?.communication ?? "",
     style: p?.style ?? "",

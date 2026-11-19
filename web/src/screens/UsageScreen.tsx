@@ -1,9 +1,35 @@
-import { BarChart3, Cpu, Database, FileCode2, FileText, Film, Globe, Image as ImageIcon, MessageSquareCode, Pencil, Plus, RefreshCw, Sparkles, TerminalSquare, Trash2, Video } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  AppWindow,
+  BarChart3,
+  ChevronLeft,
+  ChevronRight,
+  Cpu,
+  Database,
+  FileCode2,
+  FileSpreadsheet,
+  FileText,
+  Film,
+  Globe,
+  Headphones,
+  Image as ImageIcon,
+  Mail,
+  MessageSquareCode,
+  MonitorSmartphone,
+  Pencil,
+  Phone,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  TerminalSquare,
+  Trash2,
+  Video,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { PageBar } from "../components/BackBar";
 import { LoadError } from "../components/LoadError";
 import { MuseCard, MuseDivider, MuseSectionLabel } from "../components/MuseList";
+import { CURRENCIES, formatUsdInCurrency, usePreferredCurrency, type CurrencyCode } from "../currency";
 import { useStore } from "../store";
 import { useT } from "../i18n";
 import type { UsageLimitRow, UsageSummary } from "../types";
@@ -12,25 +38,22 @@ import { cx, relativeTime } from "../util";
 /**
  * Usage — what this MiniMuse spent and did, read from the local ledger (`usage.jsonl`)
  * on the runtime, no account needed. Turns per model with their tokens (the thinking
- * tokens included), the dollar estimate off the provider rate cards, and what the turns
- * did: reading, files, commands, API calls, coding, tracking, and the pictures and
- * clips written or analyzed. Turns on a local model cost nothing, so the dollar total
- * only covers the priced cloud models.
+ * tokens included), the estimated cost off the provider rate cards (converted to your
+ * preferred currency), and what the turns did: live voice calls, web browsing, email &
+ * calendar, device control, reading & building specific file types, commands, API calls,
+ * coding, tracking, and pictures and clips.
  */
 
 const RANGES: Array<{ id: number; label: string }> = [
   { id: 1, label: "24 hours" },
   { id: 7, label: "7 days" },
   { id: 30, label: "30 days" },
+  { id: 90, label: "90 days" },
 ];
 
 /** "29.0k" for the big counts, plain digits under it. */
 function fmtTokens(n: number): string {
   return n >= 10_000 ? `${(n / 1000).toFixed(1)}k` : n.toLocaleString();
-}
-
-function fmtCost(usd: number): string {
-  return usd >= 1 ? `$${usd.toFixed(2)}` : `$${usd.toFixed(4)}`;
 }
 
 /** "1.2 GB" / "430 MB" for the RAM lines. */
@@ -63,6 +86,8 @@ function StatLine({ label, value, icon }: { label: string; value: string; icon: 
 export function UsageScreen({ embedded = false }: { embedded?: boolean } = {}) {
   const { setTab } = useStore();
   const t = useT();
+  const [currency, setCurrency] = usePreferredCurrency();
+  const fmtCost = (usd: number) => formatUsdInCurrency(usd, currency);
   const [days, setDays] = useState(7);
   const [model, setModel] = useState("");
   const [allModels, setAllModels] = useState<string[]>([]);
@@ -110,15 +135,29 @@ export function UsageScreen({ embedded = false }: { embedded?: boolean } = {}) {
       : [];
 
   const refreshBtn = (
-    <button
-      type="button"
-      onClick={() => void load(days, model)}
-      aria-label={t("Refresh")}
-      title={t("Refresh")}
-      className="flex h-9 w-9 items-center justify-center rounded-full text-muted hover:bg-surface-2 hover:text-fg"
-    >
-      <RefreshCw size={17} className={cx(refreshing && "animate-spin")} />
-    </button>
+    <div className="flex items-center gap-1.5">
+      <select
+        value={currency}
+        onChange={(e) => setCurrency(e.target.value as CurrencyCode)}
+        aria-label={t("Preferred currency")}
+        className="rounded-full border border-border bg-surface-2/80 px-2.5 py-1 text-[12px] font-medium text-fg outline-none"
+      >
+        {CURRENCIES.map((c) => (
+          <option key={c.code} value={c.code}>
+            {c.code}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={() => void load(days, model)}
+        aria-label={t("Refresh")}
+        title={t("Refresh")}
+        className="flex h-9 w-9 items-center justify-center rounded-full text-muted hover:bg-surface-2 hover:text-fg"
+      >
+        <RefreshCw size={17} className={cx(refreshing && "animate-spin")} />
+      </button>
+    </div>
   );
 
   return (
@@ -224,7 +263,11 @@ export function UsageScreen({ embedded = false }: { embedded?: boolean } = {}) {
             <MuseCard className="mb-1">
               <ActivityRows
                 rows={[
-                  { key: "reading", label: t("Reading (web, mail, screens)"), icon: <Globe size={19} />, n: data.activities.reading },
+                  { key: "live_calls", label: t("Live voice calls"), icon: <Phone size={19} />, n: data.activities.live_calls },
+                  { key: "web_browsing", label: t("Web browsing & research"), icon: <Globe size={19} />, n: data.activities.web_browsing },
+                  { key: "email_calendar", label: t("Email, calendar & contacts"), icon: <Mail size={19} />, n: data.activities.email_calendar },
+                  { key: "device_control", label: t("Device & screen control"), icon: <MonitorSmartphone size={19} />, n: data.activities.device_control },
+                  { key: "reading", label: t("Memory & general reading"), icon: <Globe size={19} />, n: data.activities.reading },
                   { key: "files_read", label: t("Files read"), icon: <FileText size={19} />, n: data.activities.files_read },
                   { key: "files_written", label: t("Files written"), icon: <FileCode2 size={19} />, n: data.activities.files_written },
                   { key: "commands", label: t("Commands (shell, PC)"), icon: <TerminalSquare size={19} />, n: data.activities.commands },
@@ -236,11 +279,21 @@ export function UsageScreen({ embedded = false }: { embedded?: boolean } = {}) {
               />
             </MuseCard>
 
-            {/* pictures and clips */}
-            <MuseSectionLabel>{t("Pictures and clips")}</MuseSectionLabel>
+            {/* reading & building specific file types + pictures and clips */}
+            <MuseSectionLabel>{t("Files, apps & media")}</MuseSectionLabel>
             <MuseCard className="mb-1">
               <ActivityRows
                 rows={[
+                  { key: "app_built", label: t("Building apps (HTML / UI)"), icon: <AppWindow size={19} />, n: (data.activities.app_built ?? 0) + (data.media.app_built ?? 0) },
+                  { key: "pdf_read", label: t("Reading PDFs"), icon: <FileText size={19} />, n: data.media.pdf_read },
+                  { key: "pdf_built", label: t("Building PDFs"), icon: <FileText size={19} />, n: data.media.pdf_built },
+                  { key: "document_read", label: t("Reading documents (Word / Markdown)"), icon: <FileText size={19} />, n: data.media.document_read },
+                  { key: "document_built", label: t("Building documents (Word / Markdown)"), icon: <FileText size={19} />, n: data.media.document_built },
+                  { key: "spreadsheet_read", label: t("Reading spreadsheets (CSV / Excel)"), icon: <FileSpreadsheet size={19} />, n: data.media.spreadsheet_read },
+                  { key: "spreadsheet_built", label: t("Building spreadsheets (CSV / Excel)"), icon: <FileSpreadsheet size={19} />, n: data.media.spreadsheet_built },
+                  { key: "code_read", label: t("Reading code files"), icon: <FileCode2 size={19} />, n: data.media.code_read },
+                  { key: "code_built", label: t("Building code files"), icon: <FileCode2 size={19} />, n: data.media.code_built },
+                  { key: "audio_read", label: t("Reading audio files"), icon: <Headphones size={19} />, n: data.media.audio_read },
                   { key: "image_generation", label: t("Images generated"), icon: <ImageIcon size={19} />, n: data.media.image_generation },
                   { key: "image_editing", label: t("Images edited"), icon: <Pencil size={19} />, n: data.media.image_editing },
                   { key: "video_generation", label: t("Videos generated"), icon: <Video size={19} />, n: data.media.video_generation },
@@ -248,7 +301,7 @@ export function UsageScreen({ embedded = false }: { embedded?: boolean } = {}) {
                   { key: "photo_analysis", label: t("Photos analyzed"), icon: <ImageIcon size={19} />, n: data.media.photo_analysis },
                   { key: "video_analysis", label: t("Videos analyzed"), icon: <Film size={19} />, n: data.media.video_analysis },
                 ]}
-                empty={t("No pictures or clips in this range.")}
+                empty={t("No files, apps, or media in this range.")}
               />
             </MuseCard>
 
@@ -283,7 +336,7 @@ export function UsageScreen({ embedded = false }: { embedded?: boolean } = {}) {
             {/* per day */}
             <MuseSectionLabel>{t("Turns per day")}</MuseSectionLabel>
             <MuseCard className="mb-1">
-              <PerDay perDay={data.per_day} />
+              <PerDay perDay={data.per_day} rangeDays={days} />
             </MuseCard>
 
             {/* recent turns */}
@@ -564,21 +617,77 @@ function ActivityRows({ rows, empty }: { rows: Array<{ key: string; label: strin
   );
 }
 
-/** The turns per day as small bars; the tallest day fills the row, empty days are a hairline. */
-function PerDay({ perDay }: { perDay: UsageSummary["per_day"] }) {
-  const max = Math.max(...perDay.map((d) => d.turns), 1);
+/** The turns per day as 7-day pages with left/right arrows to switch weeks across 7d, 30d, or 90d. */
+function PerDay({ perDay, rangeDays }: { perDay: UsageSummary["per_day"]; rangeDays: number }) {
+  const t = useT();
+  const [pageOffset, setPageOffset] = useState(0);
+
+  useEffect(() => {
+    setPageOffset(0);
+  }, [rangeDays, perDay.length]);
+
+  const allDays = useMemo(() => {
+    const byDay = new Map(perDay.map((d) => [d.day, d]));
+    const total = Math.max(7, rangeDays);
+    const out: Array<{ day: string; turns: number }> = [];
+    const now = new Date();
+    for (let i = total - 1; i >= 0; i--) {
+      const dt = new Date(now.getTime() - i * 86_400_000);
+      const iso = dt.toISOString().slice(0, 10);
+      out.push({ day: iso, turns: byDay.get(iso)?.turns ?? 0 });
+    }
+    return out;
+  }, [perDay, rangeDays]);
+
+  const maxOffset = Math.max(0, allDays.length - 7);
+  const clampedOffset = Math.min(pageOffset, maxOffset);
+  const endIdx = allDays.length - clampedOffset;
+  const startIdx = Math.max(0, endIdx - 7);
+  const slice = allDays.slice(startIdx, endIdx);
+  const max = Math.max(...slice.map((d) => d.turns), 1);
+
+  const canGoPrev = clampedOffset < maxOffset;
+  const canGoNext = clampedOffset > 0;
+  const labelRange = slice.length > 0 ? `${slice[0].day.slice(5)} – ${slice[slice.length - 1].day.slice(5)}` : "";
+
   return (
-    <div className="flex items-end gap-1.5 px-4 pb-3 pt-4">
-      {perDay.map((d) => (
-        <div key={d.day} className="flex min-w-0 flex-1 flex-col items-center gap-1">
-          <div
-            className="w-full rounded-sm bg-accent/70"
-            style={{ height: `${Math.max(3, Math.round((d.turns / max) * 64))}px` }}
-            title={`${d.day}: ${d.turns}`}
-          />
-          <span className="w-full truncate text-center text-[10.5px] leading-3 text-muted">{d.day.slice(5)}</span>
-        </div>
-      ))}
+    <div className="px-3 pb-3 pt-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <button
+          type="button"
+          disabled={!canGoPrev}
+          onClick={() => setPageOffset((o) => Math.min(maxOffset, o + 7))}
+          aria-label={t("Previous 7 days")}
+          title={t("Previous 7 days")}
+          className="flex h-7 w-7 items-center justify-center rounded-full border border-border text-fg transition hover:bg-surface-2 disabled:opacity-30"
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <span className="text-[12px] font-medium text-muted tabular-nums">{labelRange}</span>
+        <button
+          type="button"
+          disabled={!canGoNext}
+          onClick={() => setPageOffset((o) => Math.max(0, o - 7))}
+          aria-label={t("Next 7 days")}
+          title={t("Next 7 days")}
+          className="flex h-7 w-7 items-center justify-center rounded-full border border-border text-fg transition hover:bg-surface-2 disabled:opacity-30"
+        >
+          <ChevronRight size={16} />
+        </button>
+      </div>
+      <div className="flex items-end gap-2 px-1 pt-1">
+        {slice.map((d) => (
+          <div key={d.day} className="flex min-w-0 flex-1 flex-col items-center gap-1">
+            <span className="text-[10px] leading-3 text-muted tabular-nums">{d.turns > 0 ? d.turns : ""}</span>
+            <div
+              className={cx("w-full rounded-sm transition-all", d.turns > 0 ? "bg-accent/75" : "bg-border/60")}
+              style={{ height: `${Math.max(3, Math.round((d.turns / max) * 64))}px` }}
+              title={`${d.day}: ${d.turns}`}
+            />
+            <span className="w-full truncate text-center text-[10.5px] leading-3 text-muted">{d.day.slice(5)}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

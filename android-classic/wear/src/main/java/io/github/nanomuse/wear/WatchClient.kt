@@ -253,11 +253,59 @@ data class WatchUpdateInfo(
 
 class WatchClient(private val config: WatchConfig) {
     private val http = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(25, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(20, TimeUnit.SECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
         .build()
+
+    /**
+     * Zero-typing Wi-Fi auto-claim: asks a server on the same Wi-Fi network for a watch token
+     * (`GET /api/watch/auto-claim`). Works whenever the user generated a pairing code or opened
+     * the Smartwatch tab on their phone/PC, or on private LANs.
+     */
+    suspend fun autoClaim(rawUrl: String): Result<String> = withContext(Dispatchers.IO) {
+        val baseUrl = WatchConfig.normalizeUrl(rawUrl)
+        if (baseUrl.isBlank()) return@withContext Result.failure(IllegalArgumentException("No server address"))
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/watch/auto-claim")
+                .get()
+                .build()
+            http.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    val msg = extractError(text).ifBlank { "HTTP ${resp.code}" }
+                    return@withContext Result.failure(IllegalStateException(msg))
+                }
+                val obj = JSONObject(text)
+                val token = obj.optString("token")
+                if (token.isBlank()) {
+                    return@withContext Result.failure(IllegalStateException("Missing watch token"))
+                }
+                val name = obj.optString("name", "MiniMuse").ifBlank { "MiniMuse" }
+                config.serverUrl = baseUrl
+                config.token = token
+                config.agentName = name
+                Result.success(name)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun autoClaimFirst(candidates: List<String>): Result<String> {
+        if (candidates.isEmpty()) {
+            return Result.failure(IllegalArgumentException("No MiniMuse found on Wi-Fi yet. Make sure your phone or PC has MiniMuse open on the same Wi-Fi."))
+        }
+        var last: Throwable? = null
+        for (url in candidates) {
+            val res = autoClaim(url)
+            if (res.isSuccess) return res
+            last = res.exceptionOrNull()
+        }
+        return Result.failure(IllegalStateException(last?.message ?: "Auto-connect failed"))
+    }
 
     suspend fun claimCode(rawUrl: String, rawCode: String): Result<String> = withContext(Dispatchers.IO) {
         val baseUrl = WatchConfig.normalizeUrl(rawUrl)

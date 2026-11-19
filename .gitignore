@@ -81,3 +81,7 @@ cloud/data/
 # signing: never publish the key store or its passwords
 keystore.properties
 *.jks.pw
+
+.venv-build/
+dist-installer/
+

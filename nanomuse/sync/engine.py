@@ -235,6 +235,8 @@ class ConversationSync:
             "device_overrides": {
                 "enabled": False,
                 "keep_local_appearance": False,
+                "keep_local_sentinel": False,
+                "keep_local_notifications": False,
                 "default_model": "",
             },
         }
@@ -340,6 +342,8 @@ class ConversationSync:
                 self.state["device_overrides"] = {
                     "enabled": bool(ov.get("enabled", False)),
                     "keep_local_appearance": bool(ov.get("keep_local_appearance", False)),
+                    "keep_local_sentinel": bool(ov.get("keep_local_sentinel", False)),
+                    "keep_local_notifications": bool(ov.get("keep_local_notifications", False)),
                     "default_model": str(ov.get("default_model") or ""),
                 }
 
@@ -1767,31 +1771,94 @@ class ConversationSync:
 
         self._peer_task = loop.create_task(_run(), name="sync-peers")
 
-    def _refresh_peer_urls(self) -> None:
-        """A phone's Wi-Fi address changes; its beacon keeps the same device id. Take the
-        address from the beacon so a paired device that is clearly on the Wi-Fi is not stuck
-        'offline' at an address it no longer has."""
+    def _refresh_peer_urls(self) -> bool:
+        """A phone's or laptop's Wi-Fi address changes when moving networks; its beacon or
+        active scan keeps the same device id. Update ``pairs.json`` while preserving the
+        vault key reference so a paired device on a new Wi-Fi IP reconnects automatically."""
         nearby = self.discovery.list_nearby()
         if not nearby:
-            return
+            return False
         by_id = {str(n.get("id") or ""): n for n in nearby if n.get("id")}
+        by_name = {
+            str(n.get("name") or "").strip().lower(): n
+            for n in nearby
+            if n.get("name") and str(n.get("name")).strip().lower() != "localhost"
+        }
+        from nanomuse.sync.peer import save_pairs
+
+        stored = load_pairs(self.svc.data_dir)
         changed = False
-        for peer in self.peers:
-            pid = str(peer.get("id") or "")
-            found = by_id.get(pid)
+        for item in stored:
+            pid = str(item.get("id") or "")
+            pname = str(item.get("name") or "").strip().lower()
+            found = by_id.get(pid) or (by_name.get(pname) if pname else None)
             if not found:
                 continue
             urls = found.get("urls") or []
             new = str((urls[0] if urls else found.get("url")) or "").strip().rstrip("/")
-            old = str(peer.get("url") or "").strip().rstrip("/")
+            old = str(item.get("url") or "").strip().rstrip("/")
             if new and new != old:
-                peer["url"] = new
+                item["url"] = new
+                changed = True
+            if not pid and found.get("id"):
+                item["id"] = str(found["id"])
+                changed = True
+            if found.get("kind") in ("phone", "computer", "tablet", "watch") and item.get("kind") != found.get("kind"):
+                item["kind"] = str(found["kind"])
                 changed = True
         if changed:
-            from nanomuse.sync.peer import save_pairs
-
-            save_pairs(self.svc.data_dir, self.peers)
+            save_pairs(self.svc.data_dir, stored)
             self.reload_peers()
+        else:
+            for item in self.peers:
+                pid = str(item.get("id") or "")
+                pname = str(item.get("name") or "").strip().lower()
+                found = by_id.get(pid) or (by_name.get(pname) if pname else None)
+                if not found:
+                    continue
+                urls = found.get("urls") or []
+                new = str((urls[0] if urls else found.get("url")) or "").strip().rstrip("/")
+                old = str(item.get("url") or "").strip().rstrip("/")
+                if new and new != old:
+                    item["url"] = new
+                    changed = True
+        return changed
+
+    def note_inbound_peer_contact(
+        self,
+        device_id: str,
+        sender_ip: str,
+        port: int = 8787,
+        urls: list[str] | None = None,
+        name: str = "",
+        kind: str = "",
+    ) -> bool:
+        """Record a peer's live IP when it contacts us over HTTP, healing stale IPs on any Wi-Fi."""
+        did = str(device_id or "").strip()
+        ip = str(sender_ip or "").strip()
+        if not did or did == self.svc.hub.device_id:
+            return False
+        p = int(port or 8787)
+        cand_urls = [u.strip().rstrip("/") for u in (urls or []) if u and u.strip().startswith(("http://", "https://"))]
+        if ip and not ip.startswith("127.") and ip != "testclient":
+            direct = f"http://{ip}:{p}"
+            if direct not in cand_urls:
+                cand_urls.insert(0, direct)
+        if not cand_urls:
+            return False
+        self.discovery.ingest_beacon(
+            {
+                "type": "nanomuse_peer",
+                "id": did,
+                "name": name or ip or did,
+                "kind": kind or "phone",
+                "port": p,
+                "urls": cand_urls,
+                "pair_ready": False,
+            },
+            sender_ip=ip if not ip.startswith("127.") and ip != "testclient" else "",
+        )
+        return self._refresh_peer_urls()
 
     async def sync_peers(self) -> dict[str, Any]:
         """Bidirectionally pull, merge, and push with every paired device in pairs.json."""
@@ -1826,20 +1893,48 @@ class ConversationSync:
 
     async def _refresh_peer_identity(self, peer: dict[str, str]) -> None:
         """Ask the peer's /v1/sync/hello for its real name, kind, and device_id so stale
-        'localhost' names or previously collided IDs heal automatically."""
+        'localhost' names or previously collided IDs heal automatically, and scan the
+        current Wi-Fi /24 if the peer moved to a new IP address."""
         import httpx
+        from nanomuse.sync.discovery import candidate_urls
 
         base = str(peer.get("url") or "").strip().rstrip("/")
         if not base:
             return
+        my_port = int(getattr(self.svc.settings.server, "port", 8787) or 8787)
+        my_kind = "phone" if self.svc.app.device is not None else "computer"
+        headers = {
+            "X-Nanomuse-Device-Id": self.svc.hub.device_id,
+            "X-Nanomuse-Device-Name": self.svc.hub.device_name,
+            "X-Nanomuse-Device-Kind": my_kind,
+            "X-Nanomuse-Device-Port": str(my_port),
+            "X-Nanomuse-Device-Urls": ",".join(candidate_urls(my_port)[:3]),
+        }
+        info: dict[str, Any] | None = None
         try:
             async with httpx.AsyncClient(timeout=2.5) as hc:
-                r = await hc.get(base + "/v1/sync/hello")
-                if r.status_code != 200:
-                    return
-                info = r.json()
+                r = await hc.get(base + "/v1/sync/hello", headers=headers)
+                if r.status_code == 200:
+                    info = r.json()
         except Exception:
-            return
+            info = None
+        if info is None:
+            # Peer unreachable at stored URL: scan current Wi-Fi / hotspot subnet in case its IP changed
+            await self.discovery.active_wifi_scan(port=my_port)
+            if self._refresh_peer_urls():
+                pid = str(peer.get("id") or "")
+                for updated_peer in self.peers:
+                    if pid and updated_peer.get("id") == pid and updated_peer.get("url"):
+                        peer["url"] = updated_peer["url"]
+                        base = str(peer["url"]).rstrip("/")
+                        break
+                try:
+                    async with httpx.AsyncClient(timeout=2.5) as hc:
+                        r = await hc.get(base + "/v1/sync/hello", headers=headers)
+                        if r.status_code == 200:
+                            info = r.json()
+                except Exception:
+                    info = None
         if not isinstance(info, dict):
             return
         remote_name = str(info.get("name") or "").strip()
@@ -2186,22 +2281,52 @@ class ConversationSync:
         counts = {"memories": 0, "goals": 0, "reminders": 0, "apps": 0, "profile": False}
         overrides = dict(
             self.state.get("device_overrides")
-            or {"enabled": False, "keep_local_appearance": False, "default_model": ""}
+            or {
+                "enabled": False,
+                "keep_local_appearance": False,
+                "keep_local_sentinel": False,
+                "keep_local_notifications": False,
+                "default_model": "",
+            }
         )
-        keep_appearance = bool(overrides.get("enabled", False)) and bool(
-            overrides.get("keep_local_appearance", False)
-        )
+        ov_on = bool(overrides.get("enabled", False))
+        keep_appearance = ov_on and bool(overrides.get("keep_local_appearance", False))
+        keep_sentinel = ov_on and bool(overrides.get("keep_local_sentinel", False))
+        keep_notifications = ov_on and bool(overrides.get("keep_local_notifications", False))
 
-        # 1. Profile — prefer custom non-default identity/avatar over bare defaults
+        # 1. Profile — sync newer profile updates and prefer custom non-default identity/avatar
         incoming_prof = payload.get("profile")
         if isinstance(incoming_prof, dict) and incoming_prof:
             cur_prof = self.svc.profile.to_dict()
             changed = False
             defaults = {"name": ("MiniMuse", "nanoMuse", ""), "avatar": ("dragon", "none", "")}
+            in_updated = float(incoming_prof.get("updated_at") or 0.0)
+            cur_updated = float(cur_prof.get("updated_at") or 0.0)
+            incoming_is_newer = in_updated > cur_updated and in_updated > 0.0
+            appearance_keys = {
+                "color",
+                "emoji",
+                "avatar",
+                "avatar_bg_mode",
+                "avatar_bg_color",
+                "avatar_bg_image",
+                "avatar_border_mode",
+                "avatar_border_color",
+                "avatar_border_glow",
+                "avatar_situation_clips",
+            }
             for k, v in incoming_prof.items():
                 if k not in cur_prof:
                     continue
-                if keep_appearance and k in ("color", "emoji", "avatar"):
+                if keep_appearance and k in appearance_keys:
+                    continue
+                if keep_notifications and k in ("quiet_hours", "proactivity", "goal_interval_minutes"):
+                    continue
+                if incoming_is_newer and v is not None and cur_prof.get(k) != v:
+                    if k in defaults and str(v).strip() in defaults[k] and str(cur_prof.get(k) or "").strip() not in defaults[k]:
+                        continue
+                    cur_prof[k] = v
+                    changed = True
                     continue
                 if isinstance(v, str):
                     vs = v.strip()
@@ -2214,7 +2339,6 @@ class ConversationSync:
                             cur_prof[k] = vs
                             changed = True
                         elif vs not in defaults[k] and k == "avatar" and cur_val != vs:
-                            # Prefer a face that has animated files in incoming manifest
                             in_manifest = payload.get("avatar_manifest") or []
                             if any(
                                 isinstance(m, dict) and m.get("face") == vs and str(m.get("rel", "")).endswith(".mp4")
@@ -2225,7 +2349,7 @@ class ConversationSync:
                     elif not cur_val or (k == "style" and len(vs) > len(cur_val)):
                         cur_prof[k] = vs
                         changed = True
-                elif isinstance(v, (bool, int)) and cur_prof.get(k) is None:
+                elif isinstance(v, (bool, int, dict)) and not cur_prof.get(k):
                     cur_prof[k] = v
                     changed = True
             if changed:
@@ -2509,12 +2633,22 @@ class ConversationSync:
         """Configure optional device-specific settings (disabled by default)."""
         cur = dict(
             self.state.get("device_overrides")
-            or {"enabled": False, "keep_local_appearance": False, "default_model": ""}
+            or {
+                "enabled": False,
+                "keep_local_appearance": False,
+                "keep_local_sentinel": False,
+                "keep_local_notifications": False,
+                "default_model": "",
+            }
         )
         if body.get("enabled") is not None:
             cur["enabled"] = bool(body["enabled"])
         if body.get("keep_local_appearance") is not None:
             cur["keep_local_appearance"] = bool(body["keep_local_appearance"])
+        if body.get("keep_local_sentinel") is not None:
+            cur["keep_local_sentinel"] = bool(body["keep_local_sentinel"])
+        if body.get("keep_local_notifications") is not None:
+            cur["keep_local_notifications"] = bool(body["keep_local_notifications"])
         if body.get("default_model") is not None:
             cur["default_model"] = str(body["default_model"]).strip()
         self.state["device_overrides"] = cur
@@ -2613,10 +2747,17 @@ class ConversationSync:
 
         overrides = dict(
             self.state.get("device_overrides")
-            or {"enabled": False, "keep_local_appearance": False, "default_model": ""}
+            or {
+                "enabled": False,
+                "keep_local_appearance": False,
+                "keep_local_sentinel": False,
+                "keep_local_notifications": False,
+                "default_model": "",
+            }
         )
         ov_enabled = bool(overrides.get("enabled", False))
         keep_appearance = ov_enabled and bool(overrides.get("keep_local_appearance", False))
+        keep_sentinel = ov_enabled and bool(overrides.get("keep_local_sentinel", False))
         override_model = str(overrides.get("default_model") or "").strip() if ov_enabled else ""
 
         # 1. Vault keys
@@ -2645,6 +2786,10 @@ class ConversationSync:
             local_llm = dict(merged.get("llm") or {})
             for k, v in incoming.items():
                 if k in DEVICE_LOCAL_SETTINGS_KEYS:
+                    continue
+                if keep_appearance and k == "ui":
+                    continue
+                if keep_sentinel and k in ("sentinel", "permissions"):
                     continue
                 merged[k] = v
             if keep_appearance and local_agent:

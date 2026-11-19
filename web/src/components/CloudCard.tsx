@@ -80,12 +80,12 @@ export function CloudCard({
     ? account?.is_model
       ? t("{hint} · model and hub", { hint: account.hint })
       : t("{hint} · hub", { hint: account?.hint ?? "" })
-    : t("Free. One account for all your devices, and a model to start with.");
+    : t("Hosted by nanoMuse (upstream project). Includes a small free starter usage allowance.");
 
   return (
     <Card
       icon={<Cloud size={20} />}
-      title={t("MiniMuse Cloud")}
+      title={t("nanoMuse Cloud")}
       summary={summary}
       status={status}
       open={open}
@@ -94,20 +94,20 @@ export function CloudCard({
       {signedIn ? (
         <div className="space-y-3">
           <p className="text-[13px] text-muted leading-relaxed">
-            {t("Signed in as {hint}. Your devices meet here; the Cloud model comes with a free allowance.", { hint: account?.hint ?? "" })}
+            {t("Signed in to nanoMuse Cloud (the upstream project MiniMuse is forked from) as {hint}. Includes a small free starter usage allowance.", { hint: account?.hint ?? "" })}
           </p>
           <div className="-mx-4 border-y border-border/60">
-            <MuseSwitchRow label={t("Use MiniMuse Cloud models")} checked={modelsOn} disabled={busy !== null} onChange={(v) => void setModels(v)} />
+            <MuseSwitchRow label={t("Use nanoMuse Cloud models")} checked={modelsOn} disabled={busy !== null} onChange={(v) => void setModels(v)} />
           </div>
           <p className="text-[12.5px] text-muted leading-relaxed">
             {modelsOn
-              ? t("MiniMuse Cloud is one of the sources for the chat, the hands, pictures and clips; what runs on it comes off your allowance.")
-              : t("Off: nothing runs on MiniMuse Cloud unless you choose it yourself. You stay signed in for sync and your devices.")}
+              ? t("nanoMuse Cloud is one of the sources for the chat, the hands, pictures and clips; what runs on it comes off your nanoMuse starter allowance.")
+              : t("Off: nothing runs on nanoMuse Cloud unless you choose it yourself. You can also sync privately on your own devices without any hosted cloud.")}
           </p>
           <div className="flex flex-wrap gap-2">
             {!account?.is_model && (
               <button type="button" disabled={busy !== null} onClick={() => void makeModel()} className={primaryBtn}>
-                {busy === "model" ? <Loader2 size={15} className="animate-spin" /> : null} {t("Use the Cloud model")}
+                {busy === "model" ? <Loader2 size={15} className="animate-spin" /> : null} {t("Use nanoMuse Cloud model")}
               </button>
             )}
             <button type="button" disabled={busy !== null} onClick={() => void signOut()} className={secondaryBtn}>
@@ -121,7 +121,7 @@ export function CloudCard({
           useAsModel={useAsModel}
           autoFocus={false}
           onSignedIn={() => {
-            toast(t("Signed in to MiniMuse Cloud."));
+            toast(t("Signed in to nanoMuse Cloud."));
             onChange();
           }}
         />

@@ -525,3 +525,84 @@ class LanDiscovery:
             fresh.append(item)
         fresh.sort(key=lambda r: (not r.get("pair_ready"), r.get("name", "").lower()))
         return fresh
+
+    async def active_wifi_scan(self, port: int = 8787, timeout_s: float = 0.45) -> list[dict[str, Any]]:
+        """Actively probe the current Wi-Fi / hotspot /24 subnet for MiniMuse devices
+        (PC or phone) on `/v1/sync/hello`. Works even when the Wi-Fi router blocks UDP
+        broadcast packets (coffee shops, hotels, school/office Wi-Fi, mobile hotspots)."""
+        import httpx
+
+        if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("NANOMUSE_TEST_LAN_DISCOVERY") != "1":
+            return self.list_nearby()
+        now = time.monotonic()
+        last_scan = float(getattr(self, "_last_active_scan", 0.0) or 0.0)
+        if now - last_scan < 8.0:
+            return self.list_nearby()
+        self._last_active_scan = now
+
+        my_ips = local_ipv4_addrs()
+        if not my_ips:
+            return self.list_nearby()
+        p = int(port or 8787)
+        candidates: list[str] = []
+        seen_ips: set[str] = set(my_ips)
+        for my_ip in my_ips[:2]:
+            parts = my_ip.split(".")
+            if len(parts) != 4:
+                continue
+            prefix = f"{parts[0]}.{parts[1]}.{parts[2]}."
+            # Only scan standard private Wi-Fi/hotspot subnets
+            if not (
+                parts[0] == "192"
+                or parts[0] == "10"
+                or (parts[0] == "172" and 16 <= int(parts[1]) <= 31)
+            ):
+                continue
+            for host_num in range(1, 255):
+                ip = f"{prefix}{host_num}"
+                if ip not in seen_ips:
+                    seen_ips.add(ip)
+                    candidates.append(ip)
+
+        if not candidates:
+            return self.list_nearby()
+
+        sem = asyncio.Semaphore(48)
+        my_urls = ",".join(candidate_urls(p)[:3])
+        headers = {
+            "X-Nanomuse-Device-Id": self.device_id,
+            "X-Nanomuse-Device-Name": str(self._name_fn() or ""),
+            "X-Nanomuse-Device-Kind": self.kind,
+            "X-Nanomuse-Device-Port": str(p),
+            "X-Nanomuse-Device-Urls": my_urls,
+        }
+
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            async def _probe(ip: str) -> None:
+                async with sem:
+                    url = f"http://{ip}:{p}"
+                    try:
+                        r = await client.get(f"{url}/v1/sync/hello", headers=headers)
+                        if r.status_code != 200:
+                            return
+                        info = r.json()
+                    except Exception:
+                        return
+                    if not isinstance(info, dict) or not info.get("id"):
+                        return
+                    self.ingest_beacon(
+                        {
+                            "type": "nanomuse_peer",
+                            "id": info.get("id"),
+                            "name": info.get("name") or ip,
+                            "kind": info.get("kind") or "computer",
+                            "port": p,
+                            "urls": [url],
+                            "pair_ready": bool(info.get("pair_ready")),
+                            "version": info.get("version") or "",
+                        },
+                        sender_ip=ip,
+                    )
+
+            await asyncio.gather(*(_probe(ip) for ip in candidates), return_exceptions=True)
+        return self.list_nearby()

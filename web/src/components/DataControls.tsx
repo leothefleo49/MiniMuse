@@ -195,15 +195,16 @@ export function SyncControls({
     async (quiet = false) => {
       setDiscovering(true);
       try {
-        const res = await api.syncDiscover();
+        const res = await api.syncDiscover(true);
         setNearby(res.nearby ?? []);
+        await load();
       } catch (e) {
         if (!quiet) toast((e as Error).message);
       } finally {
         setDiscovering(false);
       }
     },
-    [toast],
+    [load, toast],
   );
 
   const claimPair = useCallback(
@@ -644,6 +645,34 @@ export function SyncControls({
                         void run(
                           () => api.syncSetDeviceOverrides({ keep_local_appearance: e.target.checked }),
                           t("Saved device appearance preference."),
+                        )
+                      }
+                      className="rounded border-border"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-2">
+                    <span className="text-fg">{t("Keep this device's own safety / Hands-off mode & permissions")}</span>
+                    <input
+                      type="checkbox"
+                      checked={!!sync.device_overrides.keep_local_sentinel}
+                      onChange={(e) =>
+                        void run(
+                          () => api.syncSetDeviceOverrides({ keep_local_sentinel: e.target.checked }),
+                          t("Saved device safety preference."),
+                        )
+                      }
+                      className="rounded border-border"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-2">
+                    <span className="text-fg">{t("Keep this device's own notification & quiet hours settings")}</span>
+                    <input
+                      type="checkbox"
+                      checked={!!sync.device_overrides.keep_local_notifications}
+                      onChange={(e) =>
+                        void run(
+                          () => api.syncSetDeviceOverrides({ keep_local_notifications: e.target.checked }),
+                          t("Saved device notification preference."),
                         )
                       }
                       className="rounded border-border"

@@ -48,9 +48,9 @@ export function MuseHeader({
   scrim?: boolean;
 }) {
   return (
-    <header className={cx("safe-top relative shrink-0 pt-3 pb-1 bg-transparent", scrim && "header-scrim", className)}>
-      <div className="flex flex-col items-center px-16">
-        <button type="button" onClick={onAvatar} aria-label={name} className="relative rounded-full p-1">
+    <header className={cx("safe-top relative shrink-0 pt-4 pb-1 bg-transparent overflow-visible", scrim && "header-scrim", className)}>
+      <div className="flex flex-col items-center px-16 overflow-visible">
+        <button type="button" onClick={onAvatar} aria-label={name} className="relative rounded-full p-1.5 overflow-visible">
           <Avatar profile={profile} status={status} size={size} />
           {badge !== undefined && badge > 0 && (
             <span className="pointer-events-none absolute -right-0.5 top-0 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-bg bg-rose-500 px-1 text-[10.5px] font-bold text-white">

@@ -22,6 +22,12 @@ from nanomuse.usage import estimate_turn_cost, tool_activity_counts
 
 IMAGE_EXTS = ("png", "jpg", "jpeg", "gif", "webp")
 VIDEO_EXTS = ("mp4", "mov", "webm", "avi", "mkv", "m4v")
+AUDIO_EXTS = ("mp3", "wav", "m4a", "ogg", "flac", "aac")
+PDF_EXTS = ("pdf",)
+DOC_EXTS = ("doc", "docx", "rtf", "odt", "md", "txt")
+SHEET_EXTS = ("csv", "tsv", "xls", "xlsx", "ods")
+APP_EXTS = ("html", "htm", "jsx", "tsx", "vue", "svelte")
+CODE_EXTS = ("py", "js", "ts", "kt", "java", "go", "rs", "c", "cpp", "cs", "sh", "ps1", "sql", "json", "yaml", "yml", "toml", "css")
 
 
 def media_kind(name: str) -> str:
@@ -30,6 +36,23 @@ def media_kind(name: str) -> str:
         return "image"
     if ext in VIDEO_EXTS:
         return "video"
+    return ""
+
+
+def file_category(name: str) -> str:
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext in PDF_EXTS:
+        return "pdf"
+    if ext in SHEET_EXTS:
+        return "spreadsheet"
+    if ext in APP_EXTS:
+        return "app"
+    if ext in CODE_EXTS:
+        return "code"
+    if ext in DOC_EXTS:
+        return "document"
+    if ext in AUDIO_EXTS:
+        return "audio"
     return ""
 
 
@@ -58,6 +81,10 @@ class UsageLedger:
         cache = min(int(trace.get("cache_tokens") or 0), prompt)
         completion = int(trace.get("completion_tokens") or 0)
         reasoning = int(trace.get("reasoning_tokens") or 0)
+        act_counts = tool_activity_counts(trace.get("tool_names") or [], tool_actions)
+        if str(source or "").lower() in ("call", "live_call", "voice"):
+            act_counts["live_calls"] = act_counts.get("live_calls", 0) + 1
+        media_counts = self._media_counts(artifacts, attachments)
         entry: dict[str, Any] = {
             "ts": ts,
             "thread": thread,
@@ -71,8 +98,8 @@ class UsageLedger:
             "duration_s": round(float(trace.get("duration_s") or 0), 2),
             "tool_calls": int(trace.get("tool_calls") or 0),
             "model_calls": int(trace.get("model_calls") or 0),
-            "activities": tool_activity_counts(trace.get("tool_names") or [], tool_actions),
-            "media": self._media_counts(artifacts, attachments),
+            "activities": act_counts,
+            "media": media_counts,
         }
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,20 +127,44 @@ class UsageLedger:
             "video_editing": 0,
             "photo_analysis": 0,
             "video_analysis": 0,
+            "pdf_read": 0,
+            "document_read": 0,
+            "spreadsheet_read": 0,
+            "code_read": 0,
+            "audio_read": 0,
+            "app_built": 0,
+            "pdf_built": 0,
+            "document_built": 0,
+            "spreadsheet_built": 0,
+            "code_built": 0,
         }
         for a in artifacts or []:
-            kind = media_kind(str(a.get("path") or a.get("name") or ""))
+            fname = str(a.get("path") or a.get("name") or "")
+            kind = media_kind(fname)
             action = str(a.get("action") or "")
-            if not kind:
+            if kind:
+                key = f"{kind}_{'editing' if action == 'update' else 'generation'}"
+                counts[key] = counts.get(key, 0) + 1
                 continue
-            key = f"{kind}_{'editing' if action == 'update' else 'generation'}"
-            counts[key] = counts.get(key, 0) + 1
+            fcat = file_category(fname)
+            if fcat:
+                bkey = f"{fcat}_built"
+                if bkey in counts:
+                    counts[bkey] += 1
         for a in attachments or []:
-            kind = media_kind(str(a.get("name") or a.get("path") or ""))
+            fname = str(a.get("name") or a.get("path") or "")
+            kind = media_kind(fname)
             if kind == "image":
                 counts["photo_analysis"] += 1
-            elif kind == "video":
+                continue
+            if kind == "video":
                 counts["video_analysis"] += 1
+                continue
+            fcat = file_category(fname)
+            if fcat:
+                rkey = f"{fcat}_read"
+                if rkey in counts:
+                    counts[rkey] += 1
         return counts
 
     # ------------------------------------------------------------------ reading

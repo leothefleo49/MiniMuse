@@ -7,6 +7,7 @@ import { PageBar } from "../components/BackBar";
 import { inputCls, primaryBtn, secondaryBtn } from "../components/Form";
 import { SignIn } from "../components/SignIn";
 import { StarNudgeOnce, useCloudConfig } from "../components/StarNudge";
+import { CURRENCIES, formatCnyWithNative, formatFromCny, usePreferredCurrency, type CurrencyCode } from "../currency";
 import { useT, intlLocale } from "../i18n";
 import { useStore } from "../store";
 import { ownKeyLine } from "../region";
@@ -52,17 +53,17 @@ export function AccountScreen() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageBar title={t("Account")} description={signedIn ? t("Personal MiniMuse Cloud & Cloud Relay") : t("Personal MiniMuse Cloud & Cloud Relay")} />
+      <PageBar title={t("Account")} description={t("Private Self-Hosted Cloud & Optional nanoMuse Cloud")} />
 
       <div className="flex-1 overflow-y-auto px-4 pb-8 space-y-4">
         <PersonalCloudSection />
 
         {!signedIn ? (
-          <Section title={t("MiniMuse Cloud Relay (Optional)")}>
+          <Section title={t("nanoMuse Cloud (Optional · Upstream Project)")}>
             <p className="text-[13.5px] text-muted leading-relaxed">
-              {t("Optional cloud relay account. MiniMuse syncs your devices directly for free without requiring an external cloud subscription.")}
+              {t("Hosted by nanoMuse (the open-source project MiniMuse is forked from). Includes a minimal free starter usage allowance. Verification emails come from nanoMuse and may arrive in your Spam folder. You do not need this for private device sync.")}
             </p>
-            <SignIn onSignedIn={() => toast(t("Signed in to MiniMuse Cloud."))} />
+            <SignIn onSignedIn={() => toast(t("Signed in to nanoMuse Cloud."))} />
           </Section>
         ) : (
           <>
@@ -92,6 +93,33 @@ function PersonalCloudSection() {
   const [status, setStatus] = useState<PersonalCloudStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [customCloudUrl, setCustomCloudUrl] = useState<string>(() => {
+    try {
+      return localStorage.getItem("nm.customCloudUrl") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [syncingCustom, setSyncingCustom] = useState(false);
+
+  const connectCustomCloud = async () => {
+    const clean = customCloudUrl.trim();
+    if (!clean) return;
+    try {
+      localStorage.setItem("nm.customCloudUrl", clean);
+    } catch {
+      /* ignore */
+    }
+    setSyncingCustom(true);
+    try {
+      await api.syncPairClaim({ target: clean, sync_side_chats: true });
+      toast(t("Connected to your private cloud server."));
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setSyncingCustom(false);
+    }
+  };
 
   const loadStatus = async () => {
     try {
@@ -128,9 +156,9 @@ function PersonalCloudSection() {
   };
 
   return (
-    <Section title={t("Your Free Personal MiniMuse Cloud ($0 Self-Hosted)")}>
+    <Section title={t("Your Private Cloud (Hosted Only By You — $0)")}>
       <p className="text-[13.5px] text-muted leading-relaxed">
-        {t("Access your own MiniMuse from anywhere without subscriptions or upstream fees. Uses direct P2P sync, your Tailscale mesh IP, or a free Cloudflare Quick Tunnel.")}
+        {t("MiniMuse creates a private cloud for you on your own devices — not hosted by anyone else. Uses direct Wi-Fi P2P sync, your Tailscale mesh IP, a free Cloudflare Quick Tunnel, or your own self-hosted sync server.")}
       </p>
       {status && (
         <div className="space-y-2.5 text-[13px]">
@@ -196,6 +224,28 @@ function PersonalCloudSection() {
               {status.tunnel.running ? t("Stop Tunnel") : t("Start Free Tunnel")}
             </button>
           </div>
+
+          <div className="rounded-2xl border border-border/60 bg-bg px-3.5 py-2.5 space-y-2">
+            <div className="text-[12px] font-medium text-fg">{t("Sync to your own cloud / self-hosted server (optional)")}</div>
+            <div className="flex flex-wrap gap-2">
+              <input
+                type="url"
+                value={customCloudUrl}
+                onChange={(e) => setCustomCloudUrl(e.target.value)}
+                placeholder="https://my-private-muse.example.com"
+                className="min-w-[180px] flex-1 rounded-xl border border-border bg-surface px-3 py-1.5 text-[12.5px] outline-none focus:ring-2 focus:ring-accent/40"
+              />
+              <button
+                type="button"
+                disabled={syncingCustom || !customCloudUrl.trim()}
+                onClick={() => void connectCustomCloud()}
+                className={secondaryBtn}
+              >
+                {syncingCustom ? <Loader2 size={13} className="animate-spin" /> : null}
+                {t("Connect & Sync")}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </Section>
@@ -247,6 +297,7 @@ function Identity({ account, me }: { account: CloudAccount | null; me: CloudMe |
 
 function Allowance({ me, onChanged }: { me: CloudMe; onChanged: () => void }) {
   const t = useT();
+  const [currency, setCurrency] = usePreferredCurrency();
   const spend = me.spend;
   // relay 0.5: one pool for good; a 0.4 relay still answers with the day's cap in the old names
   const grant = spend.grant ?? spend.daily_cap ?? 0;
@@ -254,8 +305,8 @@ function Allowance({ me, onChanged }: { me: CloudMe; onChanged: () => void }) {
   const left = spend.left ?? (spend.unlimited ? null : Math.max(0, grant - spent));
   const limited = !spend.unlimited && grant > 0;
   const pct = limited ? Math.min(100, Math.round((spent / grant) * 100)) : 0;
-  const rate = spend.usd_cny ?? 0;
-  const usd = (cny: number) => (rate > 0 ? ` ≈ $${(cny / rate).toFixed(2)}` : "");
+  const rate = spend.usd_cny && spend.usd_cny > 0 ? spend.usd_cny : 7.25;
+  const native = (cny: number) => (currency === "CNY" ? "" : ` ≈ ${formatFromCny(cny, currency, rate)}`);
   const exhausted = limited && (left ?? 0) <= 0;
   const warn = limited && !exhausted && (spend.warn ?? pct >= 80);
   const info = {
@@ -268,29 +319,50 @@ function Allowance({ me, onChanged }: { me: CloudMe; onChanged: () => void }) {
     guidance: spend.guidance,
   };
   return (
-    <Section title={t("Free allowance")}>
+    <Section title={t("nanoMuse Cloud starter allowance")}>
+      <div className="flex items-center justify-between gap-2 text-[12px] text-muted">
+        <span>{t("Minimal free starter allowance from nanoMuse Cloud (converted to your currency)")}</span>
+        <select
+          value={currency}
+          onChange={(e) => setCurrency(e.target.value as CurrencyCode)}
+          aria-label={t("Preferred currency")}
+          className="rounded-lg border border-border bg-bg px-2 py-1 text-[12px] text-fg outline-none"
+        >
+          {CURRENCIES.map((c) => (
+            <option key={c.code} value={c.code}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      </div>
       <div className="flex items-end justify-between gap-3">
         <div>
-          <div className="text-[28px] font-bold tracking-tight leading-none">
+          <div className="text-[26px] font-bold tracking-tight leading-none">
             {limited ? (
               <>
-                ¥{(left ?? 0).toFixed(2)}
-                <span className="text-[14px] font-medium text-muted"> {t("left of ¥{grant}", { grant: grant.toFixed(0) })}</span>
+                {formatFromCny(left ?? 0, currency, rate)}
+                {currency !== "CNY" && (
+                  <span className="ml-1.5 text-[14px] font-medium text-muted">(¥{(left ?? 0).toFixed(2)})</span>
+                )}
               </>
             ) : (
-              <>¥{spent.toFixed(2)}</>
+              <>{formatCnyWithNative(spent, currency, rate)}</>
             )}
           </div>
           <div className="mt-1 text-[12.5px] text-muted">
             {limited
-              ? t("¥{spent} used{usd}; the allowance does not reset.", { spent: spent.toFixed(2), usd: usd(spent) })
+              ? t("left of {grant} · ¥{spent} used{usd}; the allowance does not reset.", {
+                  grant: formatCnyWithNative(grant, currency, rate),
+                  spent: spent.toFixed(2),
+                  usd: native(spent),
+                })
               : t("No limit on this account.")}
           </div>
         </div>
         <div className="text-right text-[12.5px] text-muted">
           <div>{t("All time")}</div>
-          <div className="text-[15px] font-semibold text-fg">¥{spend.total.toFixed(2)}</div>
-          {rate > 0 && <div className="text-[11.5px]">≈ ${(spend.total / rate).toFixed(2)}</div>}
+          <div className="text-[15px] font-semibold text-fg">{formatFromCny(spend.total, currency, rate)}</div>
+          {currency !== "CNY" && <div className="text-[11.5px]">¥{spend.total.toFixed(2)}</div>}
         </div>
       </div>
       {limited && (

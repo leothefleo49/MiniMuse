@@ -23,15 +23,22 @@ export function isDragon(id: string | undefined | null): boolean {
   return !id || id === DRAGON || RETIRED.has(id);
 }
 
+function withCacheBust(url: string, updatedAt?: number): string {
+  if (!updatedAt || updatedAt <= 0) return url;
+  const v = Math.floor(updatedAt);
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}v=${v}`;
+}
+
 /**
  * A face from the avatar studio: `profile.avatar` is its id, the stills live in the workspace
  * under `avatar/<id>/` (idle · working · waiting · happy · error, webp) and come through the
  * files API — the same five moods the dragon has.
+ * Every device always uses the canonical pose file so camera angles and animations match 100%.
  */
-export function studioUrl(id: string, mood: string, dark = false): string {
+export function studioUrl(id: string, mood: string, _dark = false, updatedAt?: number): string {
   const still: DragonMood = mood === "working" || mood === "waiting" || mood === "happy" || mood === "error" ? mood : "idle";
-  const prefix = dark ? "dark-" : "";
-  return fileUrl(`avatar/${id}/${prefix}${still}.webp`);
+  return withCacheBust(fileUrl(`avatar/${id}/${still}.webp`), updatedAt);
 }
 
 export function dragonUrl(mood: string): string {
@@ -57,8 +64,23 @@ export function dragonClipUrl(mood: string): string | null {
  * makes them after the stills when its endpoint has a video model; a face may have none, in
  * which case the request fails and the still stays (see Avatar).
  */
-export function studioClipUrl(id: string, mood: string, dark = false): string | null {
+export function studioClipUrl(
+  id: string,
+  mood: string,
+  _dark = false,
+  updatedAt?: number,
+  situationClips?: Record<string, string>,
+): string | null {
+  const custom = situationClips?.[mood] || (mood !== "error" ? situationClips?.[clipMood(mood)] : undefined);
+  if (custom) {
+    const lower = custom.toLowerCase();
+    if (lower.endsWith(".mp4") || lower.endsWith(".webm")) {
+      return withCacheBust(fileUrl(`avatar/${id}/${custom}`), updatedAt);
+    }
+    if (lower.endsWith(".webp") || lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif")) {
+      return null;
+    }
+  }
   if (mood === "error") return null;
-  const prefix = dark ? "dark-" : "";
-  return fileUrl(`avatar/${id}/${prefix}${clipMood(mood)}.mp4`);
+  return withCacheBust(fileUrl(`avatar/${id}/${clipMood(mood)}.mp4`), updatedAt);
 }

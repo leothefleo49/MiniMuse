@@ -5,7 +5,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { NoticeDialog } from "../components/NoticeDialog";
 import { SwitchModeConfirm } from "../components/SwitchModeConfirm";
 import { SyncControls } from "../components/DataControls";
-import { countDevices, peerDisplayName, peerHost, peerKind, uniqueDirectPeers } from "../devicePeers";
+import { countDevices, dedupeLocalPhones, peerDisplayName, peerHost, peerKind, uniqueDirectPeers } from "../devicePeers";
 import { api, chromeExtensionZipUrl } from "../api";
 import { PageBar } from "../components/BackBar";
 import { CloudCard } from "../components/CloudCard";
@@ -92,8 +92,9 @@ export function DevicesScreen() {
   };
 
   const hubOthers = (hub?.devices ?? []).filter((d) => !d.this && d.kind !== "web");
-  // the phones talking to this MiniMuse directly (no account) sit with the signed-in ones
-  const localPhones = onlyUnlistedPhones(local?.phones ?? [], hubOthers);
+  // the phones talking to this MiniMuse directly (no account) sit with the signed-in ones,
+  // deduplicated against any paired phone peer in state.sync
+  const localPhones = dedupeLocalPhones(onlyUnlistedPhones(local?.phones ?? [], hubOthers), hubOthers, state.sync);
   const localIds = new Set(localPhones.map((p) => p.id));
   const others = [...hubOthers, ...localPhones];
   // pairing without an account: unified with Other devices, deduplicated against hub/local entries

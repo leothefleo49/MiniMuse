@@ -4,6 +4,8 @@ import type {
   ApiEndpoint,
   ApiPreset,
   AttachmentInfo,
+  AvatarLibraryView,
+  Profile,
   CalendarData,
   CalendarEvent,
   CallCapabilities,
@@ -338,7 +340,10 @@ export const api = {
   /** "Delete synced conversations": the relay's store emptied, the switch and the local chats kept */
   syncDelete: () => request<SyncState>("/api/sync/delete", json({})),
   syncPull: () => request<SyncState & { applied: number }>("/api/sync/pull", json({})),
-  syncDiscover: () => request<{ nearby: NearbyPeer[]; device_id: string; name: string; urls: string[] }>("/api/sync/discover"),
+  syncDiscover: (scan = false) =>
+    request<{ nearby: NearbyPeer[]; device_id: string; name: string; urls: string[] }>(
+      scan ? "/api/sync/discover?scan=true" : "/api/sync/discover",
+    ),
   syncPairCode: () => request<PairCodeInfo>("/api/sync/pair/code", json({})),
   syncPairClaim: (body: { target: string; code?: string; token?: string; name?: string; sync_side_chats?: boolean }) =>
     request<{
@@ -347,8 +352,13 @@ export const api = {
       sync: SyncState;
       setup_synced?: { applied?: boolean; ui_preferences?: Record<string, string> | null; profile?: Record<string, string>; onboarded?: boolean };
     }>("/api/sync/pair/claim", json(body)),
-  syncSetDeviceOverrides: (body: { enabled?: boolean; keep_local_appearance?: boolean; default_model?: string }) =>
-    request<SyncState>("/api/sync/device-overrides", { method: "PUT", body: JSON.stringify(body) }),
+  syncSetDeviceOverrides: (body: {
+    enabled?: boolean;
+    keep_local_appearance?: boolean;
+    keep_local_sentinel?: boolean;
+    keep_local_notifications?: boolean;
+    default_model?: string;
+  }) => request<SyncState>("/api/sync/device-overrides", { method: "PUT", body: JSON.stringify(body) }),
   exportSetupBundle: () => request<Record<string, unknown>>("/api/sync/setup-bundle"),
   applySetupBundle: (bundle: Record<string, unknown>) =>
     request<{ applied?: boolean; ui_preferences?: Record<string, string> | null; profile?: Record<string, string>; onboarded?: boolean }>(
@@ -361,6 +371,21 @@ export const api = {
     request<{ ok: boolean; applied: number; pushed: number } & SyncState>("/api/sync/now", json({})),
   /** the avatar studio: whether a face can be drawn, and the session under way */
   avatarView: () => request<StudioView>("/api/avatar"),
+  avatarLibrary: () => request<AvatarLibraryView>("/api/avatar/library"),
+  avatarSetSituations: (faceId: string, situations: Record<string, string>) =>
+    request<{ ok: boolean; face_id: string; situations: Record<string, string>; profile: Profile }>(
+      `/api/avatar/${encodeURIComponent(faceId)}/situations`,
+      { method: "PUT", body: JSON.stringify({ situations }) },
+    ),
+  avatarUploadAsset: (faceId: string, file: File, situation = "") =>
+    request<{ ok: boolean; kind: string; face_id?: string; file?: string; faces?: string[]; profile?: Profile }>(
+      `/api/avatar/${encodeURIComponent(faceId || "custom")}/upload?name=${encodeURIComponent(file.name)}${situation ? `&situation=${encodeURIComponent(situation)}` : ""}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      },
+    ),
   /** a session; `thread` "" runs it from the studio screen, without a card in the chat */
   avatarBegin: (description: string, thread = "main", style = "muse") =>
     request<StudioSession & { available?: boolean; message?: string }>("/api/avatar/begin", json({ description, thread, style })),

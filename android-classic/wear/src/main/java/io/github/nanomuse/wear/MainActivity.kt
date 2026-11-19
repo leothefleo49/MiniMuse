@@ -1352,8 +1352,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderPairScreen(col: LinearLayout) {
         col.addView(brandHeader("MiniMuse", "Pair Watch", dotHex = "#3B82F6"))
-        col.addView(subText("On your phone or PC: Settings, Smartwatch, then Generate pairing code."))
-        col.addView(subText("The watch pairs itself over Wi-Fi or a typed address."))
+        col.addView(subText("Fastest: open MiniMuse on your phone or PC on the same Wi-Fi, then tap Auto-Connect below (no typing needed)."))
 
         if (statusNotice.isNotBlank()) {
             col.addView(noticeCard(statusNotice, "#0F1B33", "#93C5FD", strokeHex = "#1E3A8A"))
@@ -1367,13 +1366,54 @@ class MainActivity : AppCompatActivity() {
             setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
         }
 
+        col.addView(
+            pillButton(
+                if (scanningLan) "Searching Wi-Fi..." else "Auto-Connect on Wi-Fi",
+                "#0168FF",
+                strokeHex = "#3B82F6",
+            ) {
+                if (scanningLan) return@pillButton
+                val typed = urlInput.text?.toString().orEmpty()
+                scanningLan = true
+                statusNotice = "Finding MiniMuse on Wi-Fi..."
+                render()
+                lifecycleScope.launch {
+                    val found = LanDiscovery.scan(this@MainActivity, timeoutMs = 3600L)
+                    if (found.isNotEmpty()) discoveredServers = found
+                    scanningLan = false
+                    val cands = WatchClient.pairingCandidates(typed, config.serverUrl, discoveredServers.map { it.url })
+                    val res = client.autoClaimFirst(cands)
+                    res.onSuccess {
+                        statusNotice = ""
+                        refreshState()
+                        startPolling()
+                    }.onFailure { err ->
+                        statusNotice = err.message ?: "Could not auto-connect"
+                        render()
+                    }
+                }
+            },
+        )
+
         if (discoveredServers.isNotEmpty()) {
             col.addView(sectionLabel("Found on Wi-Fi"))
             for (srv in discoveredServers) {
                 col.addView(
-                    pillButton(srv.name, "#121215", strokeHex = "#2A2A32") {
+                    pillButton("Connect ${srv.name}", "#121215", strokeHex = "#2A2A32") {
                         urlInput.setText(srv.url)
-                        statusNotice = "Selected ${srv.name}"
+                        statusNotice = "Connecting to ${srv.name}..."
+                        render()
+                        lifecycleScope.launch {
+                            val res = client.autoClaim(srv.url)
+                            res.onSuccess {
+                                statusNotice = ""
+                                refreshState()
+                                startPolling()
+                            }.onFailure {
+                                statusNotice = "Selected ${srv.name} — enter 6-digit code below"
+                                render()
+                            }
+                        }
                     },
                 )
             }
@@ -1390,19 +1430,29 @@ class MainActivity : AppCompatActivity() {
             },
         )
 
-        col.addView(sectionLabel("Server address (optional if found above)"))
-        col.addView(urlInput)
-        col.addView(sectionLabel("6-digit pairing code"))
+        col.addView(sectionLabel("Or pair with 6-digit code"))
         col.addView(codeInput)
+        col.addView(sectionLabel("Server address (optional if on Wi-Fi)"))
+        col.addView(urlInput)
 
         col.addView(
-            pillButton("Pair Watch", "#0168FF", strokeHex = "#3B82F6") {
+            pillButton("Pair with Code", "#142442", fgHex = "#93C5FD", strokeHex = "#2563EB") {
                 val u = urlInput.text?.toString().orEmpty()
                 val c = codeInput.text?.toString().orEmpty()
                 statusNotice = "Pairing..."
                 render()
                 lifecycleScope.launch {
-                    val res = client.claimFirst(WatchClient.pairingCandidates(u, config.serverUrl, discoveredServers.map { it.url }), c)
+                    var cands = WatchClient.pairingCandidates(u, config.serverUrl, discoveredServers.map { it.url })
+                    if (cands.isEmpty()) {
+                        val found = LanDiscovery.scan(this@MainActivity, timeoutMs = 3500L)
+                        if (found.isNotEmpty()) discoveredServers = found
+                        cands = WatchClient.pairingCandidates(u, config.serverUrl, discoveredServers.map { it.url })
+                    }
+                    val res = if (c.trim().length < 4 && cands.isNotEmpty()) {
+                        client.autoClaimFirst(cands)
+                    } else {
+                        client.claimFirst(cands, c)
+                    }
                     res.onSuccess {
                         statusNotice = ""
                         refreshState()

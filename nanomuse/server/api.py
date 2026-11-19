@@ -2445,6 +2445,220 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         except StudioError as exc:
             raise _studio_http(exc) from exc
 
+    def _friendly_clip_label(rel_name: str) -> str:
+        low = rel_name.lower()
+        if "call-dark" in low:
+            return f"Voice Call · Dark ({rel_name})"
+        if "call-light" in low:
+            return f"Voice Call · Light ({rel_name})"
+        if "making_something" in low and "darkmode" in low:
+            return f"Making Something · Dark ({rel_name})"
+        if "making_something" in low:
+            return f"Making Something / Waiting ({rel_name})"
+        if "milestone_level_up" in low and "darkmode" in low:
+            return f"Milestone / Level Up · Dark ({rel_name})"
+        if "milestone_level_up" in low:
+            return f"Milestone / Happy ({rel_name})"
+        if "waking" in low:
+            return f"Waking Up ({rel_name})"
+        if "working" in low and "darkmode" in low:
+            return f"Working · Dark ({rel_name})"
+        if "working" in low:
+            return f"Working ({rel_name})"
+        if "idle" in low and "darkmode" in low:
+            return f"Idle · Dark ({rel_name})"
+        if "-1.mp4" in low or low == "idle.mp4":
+            return f"Default Idle ({rel_name})"
+        return rel_name
+
+    def _inspect_avatar_face(face_dir: Path) -> dict[str, Any]:
+        face_id = face_dir.name
+        model: dict[str, Any] = {}
+        if (face_dir / "avatar-model.json").is_file():
+            with contextlib.suppress(Exception):
+                raw = json.loads((face_dir / "avatar-model.json").read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    model = raw
+        face_meta: dict[str, Any] = {}
+        if (face_dir / "face.json").is_file():
+            with contextlib.suppress(Exception):
+                raw_f = json.loads((face_dir / "face.json").read_text(encoding="utf-8"))
+                if isinstance(raw_f, dict):
+                    face_meta = raw_f
+
+        canonical_mp4s = {"idle.mp4", "working.mp4", "waiting.mp4", "happy.mp4", "call.mp4", "error.mp4"}
+        all_mp4s = sorted(
+            p.relative_to(face_dir).as_posix()
+            for p in face_dir.rglob("*")
+            if p.is_file() and p.suffix.lower() in (".mp4", ".webm") and not p.name.lower().startswith("dark-")
+        )
+        source_mp4s = [rel for rel in all_mp4s if Path(rel).name.lower() not in canonical_mp4s]
+        display_mp4s = source_mp4s if source_mp4s else all_mp4s
+
+        all_stills = sorted(
+            p.relative_to(face_dir).as_posix()
+            for p in face_dir.rglob("*")
+            if p.is_file() and p.suffix.lower() in (".webp", ".png", ".jpg", ".jpeg", ".gif") and not p.name.lower().startswith("dark-")
+        )
+
+        variants = model.get("animated_variants_mp4") if isinstance(model.get("animated_variants_mp4"), dict) else {}
+        call_anims = model.get("call_idle_animations_mp4") if isinstance(model.get("call_idle_animations_mp4"), dict) else {}
+        custom_sits = model.get("situation_clips") if isinstance(model.get("situation_clips"), dict) else {}
+        prof_sits = svc.profile.avatar_situation_clips if svc.profile.avatar == face_id else {}
+
+        situations: dict[str, str] = {
+            "idle": str(prof_sits.get("idle") or custom_sits.get("idle") or variants.get("idle") or (display_mp4s[0] if display_mp4s else "idle.mp4")),
+            "working": str(prof_sits.get("working") or custom_sits.get("working") or variants.get("working") or "working.mp4"),
+            "waiting": str(prof_sits.get("waiting") or custom_sits.get("waiting") or variants.get("making_something") or variants.get("waiting") or "waiting.mp4"),
+            "happy": str(prof_sits.get("happy") or custom_sits.get("happy") or variants.get("milestone_level_up") or variants.get("happy") or "happy.mp4"),
+            "call": str(prof_sits.get("call") or custom_sits.get("call") or call_anims.get("light") or "call.mp4"),
+            "error": str(prof_sits.get("error") or custom_sits.get("error") or "error.webp"),
+        }
+        for extra_k, extra_v in {**custom_sits, **prof_sits}.items():
+            if extra_k and extra_v and extra_k not in situations:
+                situations[str(extra_k)] = str(extra_v)
+
+        return {
+            "id": face_id,
+            "name": str(face_meta.get("description") or model.get("visual_description") or f"3D Avatar {face_id}")[:72],
+            "description": str(model.get("visual_description") or face_meta.get("description") or ""),
+            "clips": [{"file": rel, "label": _friendly_clip_label(rel)} for rel in display_mp4s],
+            "stills": all_stills[:40],
+            "situations": situations,
+            "has_clips": len(all_mp4s) > 0,
+        }
+
+    @app.get("/api/avatar/library", dependencies=dep)
+    async def get_avatar_library() -> dict[str, Any]:
+        """List all imported Muse 3D moving avatar models and studio faces, their clips, and situation mappings."""
+        root = svc.workspace() / "avatar"
+        faces: list[dict[str, Any]] = []
+        if root.is_dir():
+            for d in sorted(root.iterdir()):
+                if d.is_dir() and not d.name.startswith("."):
+                    if any(d.glob("*.webp")) or any(d.glob("*.mp4")) or (d / "avatar-model.json").is_file():
+                        faces.append(_inspect_avatar_face(d))
+        return {"faces": faces, "active": svc.profile.avatar}
+
+    @app.put("/api/avatar/{face_id}/situations", dependencies=dep)
+    async def put_avatar_situations(face_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Customize which animation clip or still plays in each situation (idle, working, waiting, happy, call, error, or custom)."""
+        clean_face = re.sub(r"[^a-zA-Z0-9_-]", "", face_id.strip())
+        face_dir = svc.workspace() / "avatar" / clean_face
+        if not face_dir.is_dir():
+            raise HTTPException(404, f"Avatar face '{clean_face}' not found")
+        sits_in = body.get("situations") if isinstance(body.get("situations"), dict) else body
+        if not isinstance(sits_in, dict):
+            raise HTTPException(400, "Provide a situations mapping object")
+
+        clean_sits: dict[str, str] = {}
+        for sit, rel_file in sits_in.items():
+            sit_key = re.sub(r"[^a-z0-9_-]", "", str(sit).strip().lower())[:32]
+            rel_str = str(rel_file or "").strip()
+            if not sit_key or not rel_str:
+                continue
+            clean_sits[sit_key] = rel_str
+            # Materialize <sit_key>.mp4 or <sit_key>.webp in face_dir so all devices load it directly
+            cand = (face_dir / rel_str).resolve()
+            with contextlib.suppress(ValueError, OSError):
+                cand.relative_to(face_dir.resolve())
+                if cand.is_file():
+                    ext = cand.suffix.lower()
+                    if ext in (".mp4", ".webm"):
+                        dst = face_dir / f"{sit_key}.mp4"
+                        if dst.resolve() != cand.resolve():
+                            dst.write_bytes(cand.read_bytes())
+                    elif ext in (".webp", ".png", ".jpg", ".jpeg", ".gif"):
+                        dst = face_dir / f"{sit_key}.webp"
+                        if dst.resolve() != cand.resolve():
+                            dst.write_bytes(cand.read_bytes())
+
+        model_file = face_dir / "avatar-model.json"
+        model_data: dict[str, Any] = {}
+        if model_file.is_file():
+            with contextlib.suppress(Exception):
+                raw = json.loads(model_file.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    model_data = raw
+        model_data["face_id"] = clean_face
+        model_data["situation_clips"] = {**(model_data.get("situation_clips") or {}), **clean_sits}
+        with contextlib.suppress(OSError):
+            model_file.write_text(json.dumps(model_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        svc.update_profile({"avatar": clean_face, "avatar_situation_clips": model_data["situation_clips"]})
+        return {"ok": True, "face": _inspect_avatar_face(face_dir), "profile": svc.profile.to_dict()}
+
+    @app.post("/api/avatar/{face_id}/upload", dependencies=dep)
+    async def upload_avatar_clip_or_model(
+        face_id: str,
+        request: Request,
+        name: str = Query("animation.mp4"),
+        situation: str = Query(""),
+    ) -> dict[str, Any]:
+        """Upload a custom .mp4/.webm/.webp/.png/.gif animation or a .zip Muse 3D avatar model bundle."""
+        import io
+        import zipfile
+
+        raw_bytes = await request.body()
+        if not raw_bytes:
+            raise HTTPException(400, "Uploaded file is empty")
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", Path(name).name) or "custom.mp4"
+        ext = Path(safe_name).suffix.lower()
+
+        if ext == ".zip":
+            # A zipped Muse 3D model / animation bundle: extract into workspace/avatar/<new_face_id>/
+            m_id = re.search(r"([0-9]{8,})", safe_name)
+            target_face = m_id.group(1) if m_id else re.sub(r"[^a-z0-9-]", "-", Path(safe_name).stem.lower()).strip("-")[:32] or f"model-{int(time.time())}"
+            if face_id and face_id not in ("new", "dragon", ""):
+                target_face = re.sub(r"[^a-zA-Z0-9_-]", "", face_id)
+            face_dir = svc.workspace() / "avatar" / target_face
+            face_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+                    for member in zf.namelist():
+                        if member.endswith("/") or ".." in member:
+                            continue
+                        m_path = Path(member)
+                        if m_path.suffix.lower() in (".mp4", ".webm", ".webp", ".png", ".jpg", ".jpeg", ".gif", ".json"):
+                            rel_parts = [p for p in m_path.parts if p not in (".", "..", "__MACOSX") and not p.startswith(".")]
+                            if not rel_parts:
+                                continue
+                            out_file = face_dir / rel_parts[-1] if len(rel_parts) == 1 else face_dir.joinpath(*rel_parts[-2:])
+                            out_file.parent.mkdir(parents=True, exist_ok=True)
+                            out_file.write_bytes(zf.read(member))
+            except zipfile.BadZipFile as exc:
+                raise HTTPException(400, f"Invalid zip archive: {exc}") from exc
+            from nanomuse.server.data_import import ImportPlan, _materialize_avatar_moods
+
+            plan = ImportPlan(avatar_face=target_face, avatar_faces={target_face})
+            _materialize_avatar_moods(svc, plan)
+            svc.update_profile({"avatar": target_face})
+            return {"ok": True, "face": _inspect_avatar_face(face_dir), "profile": svc.profile.to_dict()}
+
+        clean_face = re.sub(r"[^a-zA-Z0-9_-]", "", face_id.strip()) or "custom-avatar"
+        if clean_face == "dragon":
+            clean_face = svc.profile.avatar if svc.profile.avatar and svc.profile.avatar != "dragon" else "custom-avatar"
+        face_dir = svc.workspace() / "avatar" / clean_face
+        face_dir.mkdir(parents=True, exist_ok=True)
+        dst = face_dir / safe_name
+        dst.write_bytes(raw_bytes)
+
+        sit_key = re.sub(r"[^a-z0-9_-]", "", situation.strip().lower())[:32]
+        if sit_key:
+            if ext in (".mp4", ".webm"):
+                (face_dir / f"{sit_key}.mp4").write_bytes(raw_bytes)
+            elif ext in (".webp", ".png", ".jpg", ".jpeg", ".gif"):
+                (face_dir / f"{sit_key}.webp").write_bytes(raw_bytes)
+                if sit_key == "idle" or not (face_dir / "idle.webp").is_file():
+                    (face_dir / "idle.webp").write_bytes(raw_bytes)
+            cur_sits = dict(svc.profile.avatar_situation_clips or {})
+            cur_sits[sit_key] = safe_name
+            svc.update_profile({"avatar": clean_face, "avatar_situation_clips": cur_sits})
+        elif not (face_dir / "idle.mp4").is_file() and ext in (".mp4", ".webm"):
+            (face_dir / "idle.mp4").write_bytes(raw_bytes)
+
+        return {"ok": True, "uploaded": safe_name, "face": _inspect_avatar_face(face_dir), "profile": svc.profile.to_dict()}
+
     @app.get("/api/phone", dependencies=dep)
     async def phone_status() -> dict[str, Any]:
         view = svc.phone_view()
@@ -2646,9 +2860,15 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         return svc.sync.view()
 
     @app.get("/api/sync/discover", dependencies=dep)
-    async def sync_discover() -> dict[str, Any]:
+    async def sync_discover(scan: bool = False) -> dict[str, Any]:
+        nearby = svc.sync.discovery.list_nearby()
+        if scan or not nearby:
+            nearby = await svc.sync.discovery.active_wifi_scan(
+                port=int(svc.settings.server.port or 8787)
+            )
+            svc.sync._refresh_peer_urls()
         return {
-            "nearby": svc.sync.discovery.list_nearby(),
+            "nearby": nearby,
             "device_id": svc.hub.device_id,
             "name": svc.hub.device_name,
             "urls": svc.sync.view().get("urls", []),
@@ -3432,9 +3652,42 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         watch_codes.pop(cleaned, None)
         return {
             "ok": True,
-            "token": svc.token,
+            "token": svc.token or "local-watch",
             "name": svc.profile.name,
             "version": svc.settings_view()["version"],
+            "call": call_capabilities(svc),
+        }
+
+    @app.get("/api/watch/auto-claim")
+    async def auto_claim_watch(request: Request) -> dict[str, Any]:
+        """Zero-typing Wear OS watch auto-pairing over local Wi-Fi when on the same private
+        LAN or when a watch pairing code window is active on this phone or computer."""
+        now = time.time()
+        for k, exp in list(watch_codes.items()):
+            if exp < now:
+                watch_codes.pop(k, None)
+        client_host = (request.client.host if request.client else "") or ""
+        is_private_lan = (
+            client_host in ("127.0.0.1", "::1", "localhost", "testclient")
+            or client_host.startswith(("192.168.", "10.", "100."))
+            or bool(re.match(r"^172\.(1[6-9]|2[0-9]|3[0-1])\.", client_host))
+        )
+        if not watch_codes and not is_private_lan:
+            return {
+                "ok": False,
+                "pair_ready": False,
+                "name": svc.profile.name,
+                "version": svc.settings_view()["version"],
+            }
+        st = await asyncio.to_thread(personal_cloud.status, probe_tailscale=True)
+        return {
+            "ok": True,
+            "pair_ready": True,
+            "token": svc.token or "local-watch",
+            "name": svc.profile.name,
+            "version": svc.settings_view()["version"],
+            "best_url": st.get("best_url") or "",
+            "lan_urls": st.get("lan_urls") or [],
             "call": call_capabilities(svc),
         }
 
@@ -4035,8 +4288,9 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                 )
 
             # 1. Look around first: what is already attached, and what does the network offer?
+            #    Use generous timeouts so laggy/slow watches have plenty of time to answer.
             devs = _list_adb_devices(adb, probe_watch=True)
-            found = _browse_mdns_watch_adb(adb, timeout_s=1.4)
+            found = _browse_mdns_watch_adb(adb, timeout_s=2.8)
             skip_hosts = phone_hosts_of(devs, found["connect"] + found["pairing"])
             pairing_eps = [ep for ep in found["pairing"] if ep["host"] not in skip_hosts]
 
@@ -4063,7 +4317,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                             "(No Developer options? Settings -> About watch -> Software info, tap Build number 7 times.)",
                             devs,
                         )
-                p_out = run_adb("pair", target_hp, pair_code, timeout=25)
+                p_out = run_adb("pair", target_hp, pair_code, timeout=45)
                 steps_log.append(f"pair {target_hp}: {p_out}")
                 if "successfully paired" not in p_out.lower():
                     return _fail(
@@ -4080,13 +4334,19 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                 explicit_connect = pair_hp  # the user typed only IP:port (legacy "Debug over Wi-Fi")
             attempted_failures: list[str] = []
             if explicit_connect:
-                c_out = run_adb("connect", explicit_connect, timeout=20)
-                steps_log.append(f"connect {explicit_connect}: {c_out}")
-                if "connected" not in c_out.lower() or "failed" in c_out.lower():
+                connected_ok = False
+                for attempt in range(3):
+                    c_out = run_adb("connect", explicit_connect, timeout=35)
+                    steps_log.append(f"connect({attempt + 1}) {explicit_connect}: {c_out}")
+                    if "connected" in c_out.lower() and "failed" not in c_out.lower():
+                        connected_ok = True
+                        break
+                    _time.sleep(1.5)
+                if not connected_ok:
                     attempted_failures.append(explicit_connect)
             else:
-                # right after pairing the watch publishes its connect service a moment later
-                deadline = _time.monotonic() + (9.0 if paired_host else 0.0)
+                # right after pairing a laggy watch can take 10-20s to publish its connect service
+                deadline = _time.monotonic() + (22.0 if paired_host else 0.0)
                 tried: set[str] = set()
                 while True:
                     eps = [
@@ -4099,7 +4359,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                     ]
                     for ep in eps:
                         tried.add(ep["host_port"])
-                        c_out = run_adb("connect", ep["host_port"], timeout=15)
+                        c_out = run_adb("connect", ep["host_port"], timeout=30)
                         steps_log.append(f"mdns connect {ep['host_port']}: {c_out}")
                         if "connected" not in c_out.lower() or "failed" in c_out.lower():
                             attempted_failures.append(ep["host_port"])
@@ -4108,8 +4368,8 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                         break
                     if _time.monotonic() >= deadline:
                         break
-                    _time.sleep(1.0)
-                    found = _browse_mdns_watch_adb(adb, timeout_s=1.0)
+                    _time.sleep(1.2)
+                    found = _browse_mdns_watch_adb(adb, timeout_s=1.8)
 
             devs = _list_adb_devices(adb, probe_watch=True)
 
@@ -4195,6 +4455,12 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                     devs,
                 )
 
+            if chosen_target:
+                # Wake up the watch display before pushing the APK so a laggy watch does not
+                # throttle Wi-Fi or drop ADB mid-transfer.
+                with contextlib.suppress(Exception):
+                    run_adb("-s", chosen_target, "shell", "input", "keyevent", "224", timeout=6)
+                    run_adb("-s", chosen_target, "shell", "svc", "power", "stayon", "true", timeout=6)
             cmd = [adb]
             if chosen_target:
                 cmd.extend(["-s", chosen_target])
@@ -4204,7 +4470,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=120,
+                    timeout=240,
                     check=False,
                     **hidden_subprocess_kwargs(),
                 )
@@ -4219,11 +4485,14 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                         cmd_no_g,
                         capture_output=True,
                         text=True,
-                        timeout=120,
+                        timeout=240,
                         check=False,
                         **hidden_subprocess_kwargs(),
                     )
                     out = (proc.stdout or proc.stderr or "").strip()
+            if chosen_target:
+                with contextlib.suppress(Exception):
+                    run_adb("-s", chosen_target, "shell", "svc", "power", "stayon", "false", timeout=6)
             if proc.returncode != 0:
                 return _fail("install_failed", out or f"adb exited with status {proc.returncode}")
 
@@ -5166,7 +5435,19 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     from nanomuse.sync.peer import make_peer_router
 
     @app.get("/v1/sync/hello")
-    async def peer_hello() -> dict[str, Any]:
+    async def peer_hello(request: Request) -> dict[str, Any]:
+        peer_did = request.headers.get("x-nanomuse-device-id", "").strip()
+        if peer_did:
+            raw_urls = [u.strip() for u in request.headers.get("x-nanomuse-device-urls", "").split(",") if u.strip()]
+            with contextlib.suppress(Exception):
+                svc.sync.note_inbound_peer_contact(
+                    device_id=peer_did,
+                    sender_ip=request.client.host if request.client else "",
+                    port=int(request.headers.get("x-nanomuse-device-port") or 8787),
+                    urls=raw_urls,
+                    name=request.headers.get("x-nanomuse-device-name", ""),
+                    kind=request.headers.get("x-nanomuse-device-kind", ""),
+                )
         is_android = os.environ.get("NANOMUSE_DEVICE", "").strip().lower() == "android"
         return {
             "id": svc.hub.device_id,

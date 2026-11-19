@@ -154,6 +154,9 @@ export function SignIn({
         submit();
       }}
     >
+      <div className="rounded-2xl border border-border/60 bg-surface-2/60 px-3 py-2 text-[12px] leading-relaxed text-muted">
+        {t("Optional account hosted by nanoMuse (the open-source project MiniMuse is forked from). Includes a minimal free starter usage allowance. Verification emails come from nanoMuse and may land in your Spam / Junk folder.")}
+      </div>
       <div className="grid grid-cols-2 gap-1 rounded-2xl bg-surface-2/70 p-1 text-[13px] font-medium">
         <ModeButton active={mode === "code"} onClick={() => setMode("code")} icon={<MessageSquareText size={14} />} label={t("With a code")} />
         <ModeButton active={mode === "password"} onClick={() => setMode("password")} icon={<KeyRound size={14} />} label={t("With a password")} />

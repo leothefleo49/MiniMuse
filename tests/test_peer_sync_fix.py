@@ -326,3 +326,85 @@ def test_avatar_mp4_explicit_mime_and_dark_fallback_and_bg_profile(tmp_path: Pat
     assert r_mp4.content == b"MP4_DARK_BYTES"
 
 
+def test_avatar_library_situations_border_glow_and_ip_healing(tmp_path: Path) -> None:
+    svc = _make_service(tmp_path, "avatar_lib")
+    face_dir = svc.workspace() / "avatar" / "1791236806916264653"
+    face_dir.mkdir(parents=True, exist_ok=True)
+    (face_dir / "idle.mp4").write_bytes(b"CANONICAL_IDLE_MP4")
+    (face_dir / "avatar-1791236806916264653-1-making_something.mp4").write_bytes(b"MAKING_SOMETHING_MP4")
+    (face_dir / "idle.webp").write_bytes(b"IDLE_WEBP")
+
+    svc.update_profile(
+        {
+            "avatar": "1791236806916264653",
+            "avatar_border_mode": "color",
+            "avatar_border_color": "#0891b2",
+            "avatar_border_glow": 70,
+        }
+    )
+    prof = svc.profile.to_dict()
+    assert prof["avatar_border_mode"] == "color"
+    assert prof["avatar_border_color"] == "#0891b2"
+    assert prof["avatar_border_glow"] == 70
+
+    app = create_app(svc.settings, service=svc)
+    tc = TestClient(app)
+
+    # 1. Avatar library lists face and assets
+    r_lib = tc.get("/api/avatar/library")
+    assert r_lib.status_code == 200
+    lib = r_lib.json()
+    assert any(f["id"] == "1791236806916264653" for f in lib["faces"])
+
+    # 2. Customize situation animation mapping
+    r_sit = tc.put(
+        "/api/avatar/1791236806916264653/situations",
+        json={"situations": {"waiting": "avatar-1791236806916264653-1-making_something.mp4"}},
+    )
+    assert r_sit.status_code == 200
+    assert (face_dir / "waiting.mp4").read_bytes() == b"MAKING_SOMETHING_MP4"
+    assert svc.profile.avatar_situation_clips.get("waiting") == "avatar-1791236806916264653-1-making_something.mp4"
+
+    # 3. Inbound peer contact heals changed Wi-Fi IP address
+    svc.sync.peers = [
+        {
+            "id": "phone-zflip7",
+            "name": "Galaxy Z Flip 7",
+            "kind": "phone",
+            "url": "http://192.168.1.50:8787",
+            "token": "tok123",
+        }
+    ]
+    healed = svc.sync.note_inbound_peer_contact(
+        device_id="phone-zflip7",
+        sender_ip="10.0.0.88",
+        port=8787,
+        name="Galaxy Z Flip 7",
+        kind="phone",
+    )
+    assert healed is True
+    assert svc.sync.peers[0]["url"] == "http://10.0.0.88:8787"
+
+    # 4. Device overrides for sentinel & notifications
+    r_ov = tc.put(
+        "/api/sync/device-overrides",
+        json={
+            "enabled": True,
+            "keep_local_appearance": True,
+            "keep_local_sentinel": True,
+            "keep_local_notifications": True,
+        },
+    )
+    assert r_ov.status_code == 200
+    ov = r_ov.json()["device_overrides"]
+    assert ov["enabled"] is True
+    assert ov["keep_local_sentinel"] is True
+    assert ov["keep_local_notifications"] is True
+
+    # 5. Zero-typing watch auto-claim works over local network
+    r_wc = tc.get("/api/watch/auto-claim")
+    assert r_wc.status_code == 200
+    assert r_wc.json()["token"]
+
+
+

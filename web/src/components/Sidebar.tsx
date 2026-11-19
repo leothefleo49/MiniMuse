@@ -1,4 +1,4 @@
-import { Bug, CalendarDays, LayoutGrid, Lightbulb, MapPin, Maximize2, Menu, MessageCircle, Minimize2, MonitorSmartphone, Newspaper, Search, SlidersHorizontal, SquareCheckBig, TerminalSquare, UserRound, Wrench, X } from "lucide-react";
+import { Bug, CalendarDays, LayoutGrid, Lightbulb, MapPin, Maximize2, Menu, MessageCircle, Minimize2, MonitorSmartphone, Newspaper, PanelLeftClose, PanelLeftOpen, Search, SlidersHorizontal, SquareCheckBig, TerminalSquare, UserRound, Wrench, X } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import { desktopBridge, toggleDesktopFullscreen, useDesktopFullscreen } from "../desktop";
 import { directPeersOnline } from "../devicePeers";
@@ -34,6 +34,24 @@ export function Sidebar() {
   const [activityOpen, setActivityOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [chatsCollapsed, setChatsCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("nm.sidebar.chatsCollapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleChatsCollapsed = () => {
+    setChatsCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("nm.sidebar.chatsCollapsed", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  };
   const menuRef = useRef<HTMLDivElement>(null);
   const developer = useDeveloperTools();
   const desktopFs = useDesktopFullscreen();
@@ -194,12 +212,37 @@ export function Sidebar() {
         <MuseSheet open={activityOpen} onClose={() => setActivityOpen(false)} />
       </aside>
 
-      {/* the chats, beside the rail while the chat is open */}
-      {state.tab === "chat" && (
+      {/* the chats, beside the rail while the chat is open (collapsible on desktop) */}
+      {state.tab === "chat" && chatsCollapsed && (
+        <div className="flex h-full shrink-0 flex-col items-center border-r border-border bg-surface/40 px-1 pt-3">
+          <div className="titlebar-room" />
+          <button
+            type="button"
+            onClick={toggleChatsCollapsed}
+            aria-label={t("Show chats sidebar")}
+            title={t("Show chats sidebar")}
+            className="flex h-8 w-8 items-center justify-center rounded-xl text-fg/70 transition hover:bg-surface-2 hover:text-fg"
+          >
+            <PanelLeftOpen size={17} />
+          </button>
+        </div>
+      )}
+      {state.tab === "chat" && !chatsCollapsed && (
         <section className="flex h-full w-[248px] shrink-0 flex-col border-r border-border bg-surface/40" aria-label={t("Chats")}>
           <div className="titlebar-room" />
           <div className="px-3 pb-2 pt-4">
-            <h2 className="px-1 text-[15px] font-semibold tracking-tight">{t("Chats")}</h2>
+            <div className="flex items-center justify-between gap-1 px-1">
+              <h2 className="text-[15px] font-semibold tracking-tight">{t("Chats")}</h2>
+              <button
+                type="button"
+                onClick={toggleChatsCollapsed}
+                aria-label={t("Minimize chats sidebar")}
+                title={t("Minimize chats sidebar")}
+                className="flex h-7 w-7 items-center justify-center rounded-lg text-muted transition hover:bg-surface-2 hover:text-fg"
+              >
+                <PanelLeftClose size={16} />
+              </button>
+            </div>
             <label className="mt-2 flex items-center gap-2 rounded-xl bg-surface-2 px-2.5 py-1.5 text-muted focus-within:ring-2 focus-within:ring-accent/40">
               <Search size={14} className="shrink-0" />
               <input

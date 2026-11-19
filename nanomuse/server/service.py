@@ -396,6 +396,13 @@ class Profile:
     avatar_bg_mode: str = "theme"
     avatar_bg_color: str = ""
     avatar_bg_image: str = ""
+    # avatar border & glow: separate from background ("theme" | "color" | "none")
+    avatar_border_mode: str = "theme"
+    avatar_border_color: str = ""
+    avatar_border_glow: int = 55
+    # custom situation -> clip/image filename map for the active avatar face
+    avatar_situation_clips: dict[str, str] = field(default_factory=dict)
+    updated_at: float = 0.0
     # one line under the name, the way Muse shows it ("Your day, sorted.")
     tagline: str = ""
     # how it talks: a tone (formal · casual · playful · concise), a length or shape of reply
@@ -461,6 +468,11 @@ class Profile:
             "avatar_bg_mode": self.avatar_bg_mode,
             "avatar_bg_color": self.avatar_bg_color,
             "avatar_bg_image": self.avatar_bg_image,
+            "avatar_border_mode": self.avatar_border_mode,
+            "avatar_border_color": self.avatar_border_color,
+            "avatar_border_glow": self.avatar_border_glow,
+            "avatar_situation_clips": dict(self.avatar_situation_clips or {}),
+            "updated_at": self.updated_at,
             "tagline": self.tagline,
             "tone": self.tone,
             "communication": self.communication,
@@ -501,6 +513,27 @@ class Profile:
             p.avatar_bg_mode = "theme"
         p.avatar_bg_color = str(p.avatar_bg_color or "").strip()[:32]
         p.avatar_bg_image = str(p.avatar_bg_image or "").strip()[:500]
+        p.avatar_border_mode = str(p.avatar_border_mode or "theme").strip().lower()
+        if p.avatar_border_mode not in ("theme", "color", "none"):
+            p.avatar_border_mode = "theme"
+        p.avatar_border_color = str(p.avatar_border_color or "").strip()[:32]
+        try:
+            p.avatar_border_glow = max(0, min(100, int(p.avatar_border_glow)))
+        except (TypeError, ValueError):
+            p.avatar_border_glow = 55
+        raw_sit = data.get("avatar_situation_clips")
+        if isinstance(raw_sit, dict):
+            p.avatar_situation_clips = {
+                str(k).strip().lower()[:40]: str(v).strip()[:200]
+                for k, v in raw_sit.items()
+                if k and v
+            }
+        else:
+            p.avatar_situation_clips = {}
+        try:
+            p.updated_at = float(data.get("updated_at") or p.updated_at or 0.0)
+        except (TypeError, ValueError):
+            p.updated_at = 0.0
         p.tagline = " ".join(str(p.tagline).split())[:TAGLINE_MAX]
         p.tone = str(p.tone).strip().lower()
         if p.tone not in TONES:
@@ -988,21 +1021,25 @@ class MuseService:
         phone_svc = getattr(self, "phone", None)
         link = phone_svc.status() if phone_svc is not None else {}
         if link.get("connected") and link.get("device"):
-            dev = link["device"]
-            raw_name = str(dev.get("name") or "Phone")
-            model_name = self._friendly_device_model(
-                raw_name,
-                raw_name,
-                int(dev.get("width") or 0),
-                int(dev.get("height") or 0),
-            )
-            add_phone(
-                f"phone:{raw_name}",
-                model_name,
-                True,
-                ["open", "screen"],
-                str(dev.get("os") or "Android"),
-            )
+            if is_android_runtime:
+                if "screen" not in computer["actions"]:
+                    computer["actions"].append("screen")
+            else:
+                dev = link["device"]
+                raw_name = str(dev.get("name") or "Phone")
+                model_name = self._friendly_device_model(
+                    raw_name,
+                    raw_name,
+                    int(dev.get("width") or 0),
+                    int(dev.get("height") or 0),
+                )
+                add_phone(
+                    f"phone:{raw_name}",
+                    model_name,
+                    True,
+                    ["open", "screen"],
+                    str(dev.get("os") or "Android"),
+                )
         seen: set[str] = set()
         live_clients = getattr(self, "_live_clients", {})
         sources = [
@@ -1074,6 +1111,24 @@ class MuseService:
                     str(src.get("platform_version") or ""),
                     kind="tablet" if "mobile" not in lower else "phone",
                 )
+        paired_phones = [
+            p
+            for p in getattr(getattr(self, "sync", None), "peers", []) or []
+            if str(p.get("kind") or "").lower() in ("phone", "tablet")
+            or str(p.get("id") or "").lower().startswith("phone-")
+        ]
+        if paired_phones:
+            paired_names = {
+                str(p.get("name") or "").strip().lower()
+                for p in paired_phones
+                if p.get("name")
+            }
+            generic_names = {"phone", "android phone", "paired phone", "android", "localhost"}
+            for k in list(phones.keys()):
+                pname = str(phones[k].get("name") or "").strip().lower()
+                pmodel = str(phones[k].get("model") or "").strip().lower()
+                if pname in generic_names or pmodel in generic_names or pname in paired_names or pmodel in paired_names:
+                    phones.pop(k, None)
         return {
             "computer": computer,
             "phones": sorted(phones.values(), key=lambda r: not r["online"]),
@@ -1343,6 +1398,8 @@ class MuseService:
                 else (self.profile.proactivity if self.profile.proactive else "default")
             )
         data.pop("proactive", None)
+        if "updated_at" not in data:
+            data["updated_at"] = time.time()
         merged = {**self.profile.to_dict(), **data}
         merged.pop("proactive", None)
         before = (
