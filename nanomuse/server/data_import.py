@@ -2039,6 +2039,27 @@ def _write_verify_report(svc: MuseService, plan: ImportPlan, verify: dict[str, A
         logger.warning("could not write the import verification report: %s", exc)
 
 
+def _avatar_to_wear(svc: MuseService, plan: ImportPlan, cur_prof: dict[str, Any]) -> str:
+    """Which face folder the profile should name after this import.
+
+    The bundle is stored under its folder name, and that is not always the name in the Muse
+    profile (a face called "goku" lived in a numeric folder, with the animation in the
+    numeric one). The folder that actually holds the imported animation wins, so the avatar
+    moves after the import instead of showing a still with no clips."""
+    if not plan.avatar_face:
+        return str(cur_prof.get("avatar") or "")
+    root = svc.workspace() / "avatar"
+    imported = root / plan.avatar_face
+    chosen = str(cur_prof.get("avatar") or "")
+    chosen_dir = root / chosen if chosen else None
+    has_webp = bool(chosen_dir and (chosen_dir / "idle.webp").is_file())
+    imported_has_clip = (imported / "idle.mp4").is_file()
+    chosen_has_clip = bool(chosen_dir and (chosen_dir / "idle.mp4").is_file())
+    if imported.is_dir() and (imported_has_clip and not chosen_has_clip or not has_webp):
+        return plan.avatar_face
+    return chosen or plan.avatar_face
+
+
 def apply_plan(svc: MuseService, plan: ImportPlan, options: ImportOptions) -> dict[str, Any]:
     """Turn the staged plan into chats, on the event loop: threads are created or merged
     in time order, the agent's transcript learns the imported messages, the deep archive
@@ -2051,6 +2072,8 @@ def apply_plan(svc: MuseService, plan: ImportPlan, options: ImportOptions) -> di
                 cur_prof[k] = v.strip()
         if plan.avatar_face and not plan.profile_data.get("avatar"):
             cur_prof["avatar"] = plan.avatar_face
+        # the face the profile names must be the folder that holds the imported animation
+        cur_prof["avatar"] = _avatar_to_wear(svc, plan, cur_prof)
         try:
             svc.update_profile(**cur_prof)
             profile_updated = True

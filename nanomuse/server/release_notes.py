@@ -17,6 +17,19 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.10": {
+        "title": "Real message counts, a phone that listens, and the Muse avatar after a re-pair",
+        "added": [
+            "A chat's message count is its true total (up to five digits, then 99,999+)",
+            "The phone's runtime listens on its network on its own, so a computer can pair with it and push chats",
+        ],
+        "improved": [
+            "A re-pair, or a different data folder, is noticed: the other device reads the history from the start instead of trusting a cursor from the old store",
+        ],
+        "fixed": [
+            "The imported Muse avatar is chosen by the folder that holds the animation, so a face with only stills is not worn when the moving one was imported",
+        ],
+    },
     "1.2.9": {
         "title": "Imported chats in order, and side chats that reach your phone",
         "added": [

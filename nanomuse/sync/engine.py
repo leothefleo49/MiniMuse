@@ -171,6 +171,8 @@ class ConversationSync:
             "mains": {},
             # direct peers: peer key -> {"in": int, "out": int, "last_sync_at": str}
             "peer_cursors": {},
+            # direct peers: peer key -> the id of the store their cursor counts in
+            "peer_stores": {},
             "deleted_cids": [],
             "deleted_mids": [],
             "device_overrides": {
@@ -265,6 +267,10 @@ class ConversationSync:
                     str(k): dict(v)
                     for k, v in data["peer_cursors"].items()
                     if isinstance(v, dict)
+                }
+            if isinstance(data.get("peer_stores"), dict):
+                self.state["peer_stores"] = {
+                    str(k): str(v) for k, v in data["peer_stores"].items() if v
                 }
             if isinstance(data.get("deleted_cids"), list):
                 self.state["deleted_cids"] = [str(c) for c in data["deleted_cids"] if c]
@@ -1734,6 +1740,20 @@ class ConversationSync:
         # 1. Pull missed changes from peer in seq order
         for _ in range(MAX_ROUNDS):
             out = await client.changes(in_seq, PAGE, scope=self.scope)
+            # a different store behind the same peer (paired again, or the other app now
+            # uses another data folder) has a new sequence space: a saved cursor that
+            # points into the old one would silently skip everything
+            store = str(out.get("store") or "")
+            if store:
+                known = self.state.setdefault("peer_stores", {})
+                previous = known.get(pkey)
+                known[pkey] = store
+                if previous and previous != store:
+                    in_seq = 0
+                    out_seq = 0
+                    cur["in"] = 0
+                    cur["out"] = 0
+                    self._save()
             convs = [c for c in out.get("conversations") or [] if isinstance(c, dict)]
             msgs = [m for m in out.get("messages") or [] if isinstance(m, dict)]
             convs.sort(key=lambda c: int(c.get("seq") or 0))

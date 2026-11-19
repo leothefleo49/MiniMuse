@@ -24,6 +24,7 @@ import json
 import re
 import sqlite3
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -159,6 +160,20 @@ class SyncPeerStore:
         ).fetchone()
         return int(row["n"] or 0)
 
+    def store_id(self) -> str:
+        """A name for this store's sequence space. A device that pairs again - or that is
+        pointed at a different data folder - gets a new id, so the other side knows its
+        saved cursor belongs to a different store and reads from the beginning instead of
+        waiting forever for seq numbers that will never come."""
+        with self._tx() as c:
+            row = c.execute("SELECT v FROM sync_meta WHERE k='store_id'").fetchone()
+            if row and row["v"]:
+                return str(row["v"])
+            sid = uuid.uuid4().hex
+            c.execute("INSERT OR REPLACE INTO sync_meta(k, v) VALUES('store_id', ?)", (sid,))
+            c.commit()
+            return sid
+
     # ------------------------------------------------------------------ state
     def enabled(self) -> bool:
         with self._tx() as c:
@@ -178,6 +193,7 @@ class SyncPeerStore:
         return {
             "enabled": self.enabled(),
             "cursor": cursor,
+            "store": self.store_id(),
             "counts": {"conversations": convs, "messages": msgs},
             "limits": dict(LIMITS),
             "working": [
@@ -287,6 +303,7 @@ class SyncPeerStore:
             more = len(conversations) == limit or len(messages) == limit
         out: dict[str, Any] = {
             "cursor": cursor,
+            "store": self.store_id(),
             "more": more,
             "conversations": conversations,
             "messages": messages,

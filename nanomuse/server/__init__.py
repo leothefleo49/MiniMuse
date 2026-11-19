@@ -74,6 +74,24 @@ def port_taken(host: str, port: int, timeout: float = 0.5) -> str | None:
     return "another program"
 
 
+def bind_host_for(host: str) -> str:
+    """The address to listen on, with the Android rule applied.
+
+    A phone's runtime is the phone itself; its loopback answers only the phone, so a
+    computer could never pair with it or push a conversation. The app sets
+    ``NANOMUSE_DEVICE=android``, which is enough to know better than a shell script from an
+    older build that still passes ``--host 127.0.0.1``. ``NANOMUSE_BIND_HOST=127.0.0.1``
+    opts out for anyone who wants the phone quiet on a public network."""
+    if (
+        os.environ.get("NANOMUSE_DEVICE") == "android"
+        and host in ("127.0.0.1", "localhost", "::1")
+        and str(os.environ.get("NANOMUSE_BIND_HOST") or "").strip().lower()
+        not in ("127.0.0.1", "localhost", "::1")
+    ):
+        return "0.0.0.0"
+    return host
+
+
 def serve(
     settings: Settings,
     host: str | None = None,
@@ -96,7 +114,7 @@ def serve(
     if problem:
         print(f"nanoMuse: {problem}", file=sys.stderr, flush=True)
         raise SystemExit(78)
-    host = host or settings.server.host
+    host = bind_host_for(host or settings.server.host)
     port = port or settings.server.port
     # what the server actually bound to, not what the config asked for: the pairing QR, the
     # advertised addresses and every peer URL are built from here, so a --port or --host

@@ -587,7 +587,7 @@ class Thread:
             "last_message_at": self.last_message_ts(),
             "busy": self.busy,
             "queued": self.inbox.qsize(),
-            "events": len(self.timeline.events),
+            "events": self.timeline.total,
         }
         if self.device:
             meta["device"] = self.device

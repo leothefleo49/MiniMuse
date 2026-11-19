@@ -4,6 +4,18 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.10] - 2026-11-19
+### Added
+- A chat's message count is its real total now, not the size of the window the conversation keeps in memory: five digits with separators, then **99,999+**.
+- The phone's runtime listens on the phone's network by itself. The Android app says `NANOMUSE_DEVICE=android`, so a runtime started by an older shell still passing `--host 127.0.0.1` is corrected instead of leaving the phone half-connected (`NANOMUSE_BIND_HOST=127.0.0.1` opts out).
+
+### Changed
+- A chat's stored sync cursor is tied to the store it counts in: a re-pair or another data folder makes the other device read from the beginning instead of trusting numbers from the old store.
+
+### Fixed
+- **A chat whose stored cursor belongs to a different sync store starts over** instead of waiting for sequence numbers that will never come. Re-pairing, or pointing the app at another data folder, changes the store id; the other side now notices and reads from the beginning, so the phone gets the history after a re-pair.
+- **The imported Muse avatar is the one the profile wears.** When the profile names a face that only has stills while the bundle sits in another folder with the animation, the import now chooses the folder that has the moving clip; an avatar imported with the Muse data animates instead of showing a frozen still.
+
 ## [1.2.9] - 2026-11-19
 ### Added
 - A one-time sync backfill: a paired device that never chose the side-chat switch reads the side chats it skipped, without pairing again.

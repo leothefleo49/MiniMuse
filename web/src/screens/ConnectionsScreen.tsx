@@ -86,7 +86,7 @@ import type {
   SharedConnector,
   TestResult,
 } from "../types";
-import { cx, relativeTime } from "../util";
+import { cx, eventCount, relativeTime } from "../util";
 
 /** the runtime's preset for the account's model, present in `providers` while signed in */
 const CLOUD_PRESET = "nanomuse_cloud";
@@ -4025,7 +4025,7 @@ export function CalendarCard({
 
   const total = c.feeds.reduce((n, f) => n + f.events, 0);
   const broken = c.feeds.filter((f) => f.error).length;
-  const evs = (n: number) => (n === 1 ? t("1 event") : t("{n} events", { n }));
+  const evs = (n: number) => (n === 1 ? t("1 event") : t("{n} events", { n: eventCount(n) }));
   const status = c.configured
     ? broken
       ? { text: t("{n} not reading", { n: broken }), tone: "warn" }

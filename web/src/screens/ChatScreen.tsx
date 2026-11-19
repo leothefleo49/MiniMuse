@@ -24,7 +24,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { LiveCallModal } from "../components/LiveCallModal";
 import { TrashModal } from "../components/TrashModal";
 import type { AttachmentInfo, BrowserEvent, HubDevice, SkillInfo, Status, ThreadMeta, TimelineEvent, UserEvent, WorkingPresence } from "../types";
-import { cx, timeDivider, timeShort } from "../util";
+import { cx, eventCount, timeDivider, timeShort } from "../util";
 import { MuseSheet } from "./MuseSheet";
 import { countDay, countTask, StarNudgeOnce } from "../components/StarNudge";
 import { noteStopped, StopAskCard, Thumbs, useStopAsk } from "../components/Feedback";
@@ -2207,7 +2207,7 @@ export function ThreadList({
                 {th.busy && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400 animate-pulse" />}
               </div>
               <div className={cx("text-muted", compact ? "text-[11.5px]" : "text-[12px]")}>
-                {t("{n} events", { n: th.events })} · {timeShort(th.updated_at)}
+                {t("{n} events", { n: eventCount(th.events) })} · {timeShort(th.updated_at)}
               </div>
             </button>
             <button

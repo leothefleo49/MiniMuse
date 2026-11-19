@@ -49,6 +49,9 @@ class Timeline:
         self.path = path
         self.max_events = max_events
         self.events: list[dict[str, Any]] = []
+        # every event this conversation ever had, including the ones the in-memory window
+        # dropped: the list shows "12,431 events", not "2000" (written into the file below)
+        self.total = 0
         self._index: dict[str, dict[str, Any]] = {}
         self._flush_handle: asyncio.TimerHandle | None = None
         self._writing: asyncio.Future[Any] | None = None
@@ -69,10 +72,17 @@ class Timeline:
             if isinstance(ev, dict) and "id" in ev:
                 self.events.append(ev)
                 self._index[ev["id"]] = ev
+        recorded = data.get("total")
+        # older files did not record it: the events they hold are all that is known
+        self.total = max(len(self.events), int(recorded) if isinstance(recorded, int) else 0)
 
     def _payload(self) -> str:
         return json.dumps(
-            {"thread": self.thread_id, "events": self.events[-self.max_events :]},
+            {
+                "thread": self.thread_id,
+                "total": max(self.total, len(self.events)),
+                "events": self.events[-self.max_events :],
+            },
             ensure_ascii=False,
         )
 
@@ -127,6 +137,7 @@ class Timeline:
         event["thread"] = self.thread_id
         self.events.append(event)
         self._index[event["id"]] = event
+        self.total += 1
         if len(self.events) > self.max_events:
             for old in self.events[: len(self.events) - self.max_events]:
                 self._index.pop(old["id"], None)
@@ -145,6 +156,7 @@ class Timeline:
             event["thread"] = self.thread_id
             self.events.append(event)
             self._index[event["id"]] = event
+            self.total += 1
         self.events.sort(key=lambda e: str(e.get("ts") or ""))
         if len(self.events) > self.max_events:
             for old in self.events[: len(self.events) - self.max_events]:
@@ -169,6 +181,7 @@ class Timeline:
         ev = self._index.pop(event_id, None)
         if ev is not None:
             self.events = [e for e in self.events if e["id"] != event_id]
+            self.total = max(0, self.total - 1)
             self.save()
 
     def tail(self, limit: int = 200, before: str | None = None) -> list[dict[str, Any]]:

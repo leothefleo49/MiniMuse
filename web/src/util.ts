@@ -1,7 +1,14 @@
 import { intlLocale, t } from "./i18n";
 
-export function timeShort(ts: string | undefined): string {
-  if (!ts) return "";
+/** A message count someone reads at a glance: up to five digits with separators, then
+ *  "99,999+" — a chat with 300,000 messages does not need every digit in a list row. */
+export function eventCount(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n > 99999) return "99,999+";
+  return Math.floor(n).toLocaleString("en-US");
+}
+
+export function timeShort(ts: string | undefined): string {  if (!ts) return "";
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "";
   const now = new Date();
