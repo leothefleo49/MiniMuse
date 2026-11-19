@@ -782,8 +782,12 @@ def test_sync_state_survives_a_restart(settings: Settings, tmp_path: Path) -> No
 def main_only(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[tuple[TestClient, MuseService, MockLLM, FakeSyncRelay]]:
-    """The default: side chats off — the main conversation alone moves."""
+    """Side chats turned off by hand: only the main conversation moves.
+
+    Syncing them is the default now (a paired phone used to receive the main chat and
+    nothing else), so the tests that need the old, narrower behaviour say so explicitly."""
     service = _signed_in(settings, monkeypatch, side_chats=False)
+    service.sync.set_side_chats(False)
     relay = FakeSyncRelay()
     service.sync.client = relay  # type: ignore[assignment]
     llm = service.threads[MAIN_THREAD].agent.llm
@@ -793,7 +797,7 @@ def main_only(
         yield client, service, llm, relay
 
 
-def test_side_chats_stay_local_by_default(main_only) -> None:
+def test_side_chats_stay_local_when_turned_off(main_only) -> None:
     client, service, llm, relay = main_only
     st = client.get("/api/sync/state").json()
     assert st["enabled"] is True and st["side_chats"] is False and st["working"] == []

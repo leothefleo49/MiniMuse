@@ -74,9 +74,12 @@ export function Sidebar() {
   ];
 
   const q = query.trim().toLowerCase();
-  const threads = q
-    ? state.threads.filter((th) => th.id === "main" || (th.id === "main" ? t(th.title) : th.title).toLowerCase().includes(q) || (th.device_name ?? "").toLowerCase().includes(q))
-    : state.threads;
+  const threads = [...state.threads].sort((a, b) =>
+    (b.updated_at || "").localeCompare(a.updated_at || ""),
+  );
+  const shown = q
+    ? threads.filter((th) => th.id === "main" || (th.title || "").toLowerCase().includes(q) || (th.device_name ?? "").toLowerCase().includes(q))
+    : threads;
 
   const railButton = (active: boolean) =>
     cx(
@@ -204,7 +207,7 @@ export function Sidebar() {
             </label>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-            <ThreadList threads={threads} active={state.activeThread} onPick={(id) => openThread(id)} compact grouped />
+            <ThreadList threads={shown} active={state.activeThread} onPick={(id) => openThread(id)} compact grouped />
           </div>
         </section>
       )}

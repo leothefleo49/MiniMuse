@@ -2197,11 +2197,9 @@ def _apply_conversation(
         events.append({"type": turn.role, "text": turn.text, "ts": turn.ts, "imported": True})
     if events:
         stats["events_added"] += thread.timeline.merge_sorted(events)
-    if tid not in threads_before and tid != "main":
-        # a chat made by this import is as old as its messages, not as new as the import
-        stamps = sorted(t.ts for t in turns if t.ts and t.ts != FLOOR_TS)
-        if stamps:
-            thread.created_at, thread.updated_at = stamps[0], stamps[-1]
+    # where the chat sits in the list comes from its messages, like every chat written
+    # here: a merged import keeps the newest message's time, a new one gets its own span
+    thread.refresh_times_from_events()
     if turns:
         _insert_agent_messages(thread, turns)
     svc._save_index()

@@ -200,8 +200,24 @@ class FakeThread:
         self.id = tid
         self.title = title
         self.created_at = "2026-11-01T00:00:00+00:00"
+        self.updated_at = self.created_at
         self.timeline = Timeline(tid, threads_dir / f"{tid}.json", max_events=_TINY_LIMIT or 2000)
         self.agent = FakeAgent()
+
+    def refresh_times_from_events(self) -> bool:
+        """The real Thread's rule: dates come from the messages."""
+        stamps = [str(ev.get("ts") or "") for ev in self.timeline.events if ev.get("ts")]
+        if not stamps:
+            return False
+        first, last = min(stamps), max(stamps)
+        changed = False
+        if first < self.created_at:
+            self.created_at = first
+            changed = True
+        if last != self.updated_at:
+            self.updated_at = last
+            changed = True
+        return changed
 
     def meta(self) -> dict[str, Any]:
         return {"id": self.id, "title": self.title}

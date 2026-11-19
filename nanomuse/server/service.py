@@ -540,6 +540,28 @@ class Thread:
     # else is signed in, hidden from them, back as `main` when that account returns
     main_of: str = ""
 
+    def refresh_times_from_events(self) -> bool:
+        """The dates a conversation is shown and sorted by are its messages' dates, not
+        when a file happened to be imported or when the chat was last renamed. An archive
+        imported today still starts where its first message was, and sits in the list by
+        its newest message like every chat written here. Returns True when something moved."""
+        stamps = [
+            str(ev.get("ts") or "")
+            for ev in self.timeline.events
+            if str(ev.get("ts") or "") > "1971-01-01"
+        ]
+        if not stamps:
+            return False
+        first, last = min(stamps), max(stamps)
+        changed = False
+        if not self.created_at or first < self.created_at:
+            self.created_at = first
+            changed = True
+        if last != self.updated_at:
+            self.updated_at = last
+            changed = True
+        return changed
+
     def meta(self) -> dict[str, Any]:
         meta: dict[str, Any] = {
             "id": self.id,
@@ -1563,6 +1585,9 @@ class MuseService:
             thread = self._make_thread(
                 tid, m.get("title", tid), m.get("created_at"), m.get("updated_at")
             )
+            # repair what earlier imports left: a chat's dates come from its messages, so
+            # the list is ordered by when people last spoke, not by when a file arrived
+            thread.refresh_times_from_events()
             if m.get("device"):
                 thread.device = str(m["device"])
                 thread.device_name = str(m.get("device_name") or m["device"])
@@ -1940,8 +1965,16 @@ class MuseService:
 
     def visible_threads(self) -> list[Thread]:
         """The conversation list (contract C10): signed in, the account's conversations and
-        the ones no account has; signed out, every local one. Hidden ones stay on disk."""
-        return [t for t in self.threads.values() if self.sync.visible(t)]
+        the ones no account has; signed out, every local one. Hidden ones stay on disk.
+
+        Newest activity first, the way a chat list is read: an imported archive starts where
+        its first message was, so it lands between the chats it belongs with instead of at
+        the end in file order."""
+        return sorted(
+            (t for t in self.threads.values() if self.sync.visible(t)),
+            key=lambda t: (t.updated_at or "", t.created_at or ""),
+            reverse=True,
+        )
 
     def rehome_main(self, owner: str, restore: str | None, keep: bool = True) -> Thread | None:
         """A different account signed in (C10): the main chat so far is put aside under a new

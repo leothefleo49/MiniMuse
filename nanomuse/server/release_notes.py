@@ -17,6 +17,18 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.9": {
+        "title": "Imported chats in order, and side chats that reach your phone",
+        "added": [],
+        "improved": [
+            "The chat list is ordered by the newest message from either person, imported chats included",
+            "Chats imported before this build are put in order on the next start, without importing again",
+        ],
+        "fixed": [
+            "Side chats now sync to your own paired devices: a paired phone no longer receives the main chat alone",
+            "Syncing side chats is the default; the switch in Data controls still turns it off and the choice is remembered",
+        ],
+    },
     "1.2.8": {
         "title": "The app uses the whole screen, and the Devices page agrees with itself",
         "added": [],

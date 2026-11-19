@@ -196,6 +196,9 @@ class ConversationSync:
         self._lock = asyncio.Lock()
         self._peer_lock = asyncio.Lock()
         self._save_lock = threading.Lock()
+        # after the lock: a state file from before side chats synced by default needs one
+        # rewind, which writes
+        self._migrate_side_chats()
         self._tasks: set[asyncio.Task[Any]] = set()
         # set by stop(): nothing of this engine talks to the relay after that
         self._stopped = False
@@ -221,13 +224,37 @@ class ConversationSync:
         self.last_error = ""
 
     # ------------------------------------------------------------------ what this device keeps
+    def _migrate_side_chats(self) -> None:
+        """Side chats used to be opt-in for syncing, and the change cursor moved past the
+        rows a pull did not ask for: a phone that paired received the main chat and nothing
+        else, for good. One rewind, once per device, reads the skipped chats again. A device
+        that explicitly turned the switch off keeps its choice."""
+        if self.state.get("side_chats_backfilled") or self.state.get("side_chats_set"):
+            return
+        for pcur in (self.state.get("peer_cursors") or {}).values():
+            if isinstance(pcur, dict):
+                pcur["in"] = 0
+                pcur["out"] = 0
+        self.state["side_chats_backfilled"] = True
+        self._save()
+
     def _load(self) -> None:
         try:
             data = json.loads(self.path.read_text("utf-8"))
         except (OSError, ValueError):
             return
         if isinstance(data, dict):
-            for key in ("account_id", "cursor", "local_cursor", "enabled", "side_chats"):
+            for key in (
+                "account_id",
+                "cursor",
+                "local_cursor",
+                "enabled",
+                "side_chats",
+                # without these two, "side chats off" was forgotten on every restart and
+                # the one-time rewind below ran again
+                "side_chats_set",
+                "side_chats_backfilled",
+            ):
                 if key in data:
                     self.state[key] = data[key]
             for key in ("cids", "titles", "local_titles", "owners", "mains"):
@@ -273,6 +300,13 @@ class ConversationSync:
 
     @property
     def side_chats(self) -> bool:
+        """Your own paired devices get your side chats too, unless you turned that off.
+
+        It used to be opt-in, so a phone that paired received the main chat and nothing
+        else, and every side chat stayed on the computer that wrote it. A device that never
+        touched the switch now syncs them (and the cursors are rewound once, below)."""
+        if not self.state.get("side_chats_set"):
+            return True
         return bool(self.state.get("side_chats", False))
 
     @property
