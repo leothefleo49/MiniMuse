@@ -481,5 +481,84 @@ def test_sync_token_retention_multi_url_healing_avatar_animated_and_vr(tmp_path:
     assert "headsets" in r_vr.json()
 
 
+def test_remote_peer_url_update_fresh_resync_auto_tunnel_and_avatar_labels(tmp_path: Path) -> None:
+    """v1.2.18: remote URL update without unpairing, LAN-only fast-fail detection, fresh resync,
+    auto_tunnel persistence, and clean avatar animation labels + custom animation API."""
+    from fastapi.testclient import TestClient
+
+    from nanomuse.server.api import create_app
+    from nanomuse.server.personal_cloud import PersonalCloudManager
+    from nanomuse.sync.engine import _is_lan_only_url
+    from nanomuse.sync.peer import add_pair, load_pairs
+
+    assert _is_lan_only_url("http://192.168.1.223:8787") is True
+    assert _is_lan_only_url("http://10.0.0.5:8787") is True
+    assert _is_lan_only_url("https://abc-xyz.trycloudflare.com") is False
+    assert _is_lan_only_url("http://desktop-f71c82t.tailc1c35a.ts.net:8787") is False
+    assert _is_lan_only_url("http://100.78.163.48:8787") is False
+
+    svc = _make_service(tmp_path, "v1218")
+    add_pair(
+        svc.data_dir,
+        "http://192.168.250.99:8787",
+        "nmpeer_keep_token",
+        name="DESKTOP-TEST1218",
+        device_id="pc-test123",
+        kind="computer",
+    )
+    svc.sync.reload_peers()
+    view_before = svc.sync.peers_view()
+    assert view_before[0]["remote_ready"] is False
+
+    # Updating remote URL keeps the existing pairing token and marks peer remote_ready
+    app = create_app(svc.settings, service=svc)
+    tc = TestClient(app)
+    r_upd = tc.post(
+        "/api/sync/pair/update-url",
+        json={"identifier": "pc-test123", "url": "https://my-pc.trycloudflare.com"},
+    )
+    assert r_upd.status_code == 200
+    pairs_after = load_pairs(svc.data_dir)
+    assert pairs_after[0]["url"] == "https://my-pc.trycloudflare.com"
+    assert "http://192.168.250.99:8787" in (pairs_after[0].get("urls") or [])
+    svc.sync.reload_peers()
+    assert svc.sync.peers[0]["token"] == "nmpeer_keep_token"
+    assert svc.sync.peers_view()[0]["remote_ready"] is True
+
+    # Fresh resync resets cursors cleanly without unpairing
+    svc.sync.state.setdefault("peer_cursors", {})["pc-test123"] = {"in": 99, "out": 88, "tail_done": True}
+    svc.sync._save()
+    r_fresh = tc.post("/api/sync/pair/resync", json={"identifier": "pc-test123"})
+    assert r_fresh.status_code == 200
+    assert r_fresh.json().get("fresh") is True
+    assert svc.sync.state["peer_cursors"]["pc-test123"]["in"] == 0
+    assert svc.sync.state["peer_cursors"]["pc-test123"]["out"] == 0
+
+    # PersonalCloudManager auto_tunnel preference persists
+    pcm = PersonalCloudManager(port=8787, data_dir=svc.data_dir)
+    assert pcm.get_auto_tunnel() is False
+    r_at = tc.post("/api/personal-cloud/auto-tunnel", json={"enabled": True})
+    assert r_at.status_code == 200
+    assert r_at.json()["auto_tunnel"] is True
+    assert pcm.get_auto_tunnel() is True
+
+    # Avatar library returns crisp labels (no raw hashes) and custom asset deletion works
+    face_dir = svc.workspace() / "avatar" / "1791236806916264653"
+    face_dir.mkdir(parents=True, exist_ok=True)
+    (face_dir / "idle.webp").write_bytes(b"RIFFxxxxWEBPVP8 ")
+    (face_dir / "avatar-1791236806916264653-1-darkmode-idle-attempt-a14d04147075.mp4").write_bytes(b"mp4data")
+    (face_dir / "custom-victory-dance-1700000000.mp4").write_bytes(b"mp4data")
+    r_lib = tc.get("/api/avatar/library")
+    assert r_lib.status_code == 200
+    face = next(f for f in r_lib.json()["faces"] if f["id"] == "1791236806916264653")
+    labels = {a["file"]: a["label"] for a in face["assets"]}
+    assert labels["avatar-1791236806916264653-1-darkmode-idle-attempt-a14d04147075.mp4"] == "Idle · Dark"
+    assert labels["custom-victory-dance-1700000000.mp4"] == "Victory Dance"
+    r_del = tc.delete("/api/avatar/1791236806916264653/asset?file=custom-victory-dance-1700000000.mp4")
+    assert r_del.status_code == 200
+    assert not (face_dir / "custom-victory-dance-1700000000.mp4").exists()
+
+
+
 
 

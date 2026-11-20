@@ -65,7 +65,7 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-labelledby="confirm-dialog-title"
         aria-describedby="confirm-dialog-body"
-        className="rise w-full max-w-sm rounded-3xl border border-border bg-surface p-5 shadow-xl"
+        className="rise w-full max-w-sm overflow-hidden rounded-3xl border border-border bg-surface p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start gap-3">
@@ -78,10 +78,13 @@ export function ConfirmDialog({
             <AlertTriangle size={18} />
           </div>
           <div className="min-w-0 flex-1">
-            <h3 id="confirm-dialog-title" className="text-[15.5px] font-semibold leading-snug text-fg">
+            <h3 id="confirm-dialog-title" className="break-words text-[15.5px] font-semibold leading-snug text-fg">
               {title}
             </h3>
-            <p id="confirm-dialog-body" className="mt-1.5 text-[13.5px] leading-relaxed text-muted whitespace-pre-line">
+            <p
+              id="confirm-dialog-body"
+              className="mt-1.5 break-words [overflow-wrap:anywhere] text-[13.5px] leading-relaxed text-muted whitespace-pre-line"
+            >
               {body}
             </p>
           </div>
@@ -95,7 +98,7 @@ export function ConfirmDialog({
           </button>
         </div>
 
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
           <button
             type="button"
             onClick={onCancel}

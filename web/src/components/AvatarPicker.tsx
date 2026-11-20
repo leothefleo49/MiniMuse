@@ -1,10 +1,19 @@
-import { Check, Film, ImagePlus, Sparkles, Upload } from "lucide-react";
+import { Check, Film, ImagePlus, Loader2, Play, Plus, RefreshCw, Sparkles, Trash2, Upload } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, fileUrl } from "../api";
-import { DRAGON, dragonUrl, isDragon, studioUrl } from "../avatars";
+import { DRAGON, DRAGON_CLIPS, dragonUrl, isDragon, studioUrl } from "../avatars";
 import { useT } from "../i18n";
 import type { AvatarLibraryView } from "../types";
 import { cx } from "../util";
+
+const ANIMATION_PRESETS: ReadonlyArray<{ label: string; prompt: string }> = [
+  { label: "Wave hello", prompt: "The character smiles warmly and waves hello enthusiastically with one hand while gently bobbing" },
+  { label: "Victory dance", prompt: "The character does a fun energetic victory dance, pumping both fists and bouncing happily" },
+  { label: "Power up aura", prompt: "The character powers up with dramatic glowing energy swirling around it, hair and clothes rippling" },
+  { label: "Meditating", prompt: "The character floats slightly and meditates peacefully with eyes closed and calm breathing" },
+  { label: "Coffee break", prompt: "The character holds a warm mug with both hands, takes a cozy sip, and nods contentedly" },
+  { label: "Thumbs up", prompt: "The character gives an encouraging thumbs up with a confident grin and slight bounce" },
+];
 
 const EMOJI = ["✨", "🌙", "🪐", "🌿", "🔥", "🌊", "🦉", "🦊", "🐙", "🎯", "🧭", "💎", "🍀", "🎈", "🤖", "🧠"];
 export const AVATAR_COLORS = ["#0064d4", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626", "#db2777", "#4b5563"];
@@ -52,12 +61,20 @@ export function AvatarPicker({
   value,
   onChange,
   onGlowPreview,
+  onPreviewClip,
+  previewClipUrl = null,
+  onRedrawMoods,
   onStudio,
 }: {
   value: AvatarChoice;
   onChange: (v: AvatarChoice) => void;
   /** Optional 60fps local preview callback while dragging the glow slider so no network call fires mid-drag */
   onGlowPreview?: (glow: number | null) => void;
+  /** Optional callback to live-preview any animation clip in the Avatar Studio large preview */
+  onPreviewClip?: (clip: { url: string; label: string } | null) => void;
+  previewClipUrl?: string | null;
+  /** Optional callback to redraw/generate standard mood poses & clips */
+  onRedrawMoods?: () => void;
   /** the "draw a new one" tile: opens the avatar studio screen */
   onStudio?: () => void;
 }) {
@@ -66,6 +83,13 @@ export function AvatarPicker({
   const [uploadingAsset, setUploadingAsset] = useState(false);
   const [savingSit, setSavingSit] = useState(false);
   const [library, setLibrary] = useState<AvatarLibraryView | null>(null);
+  const [showMakeAnim, setShowMakeAnim] = useState(false);
+  const [animPrompt, setAnimPrompt] = useState("");
+  const [animLabel, setAnimLabel] = useState("");
+  const [animSituation, setAnimSituation] = useState("idle");
+  const [makingAnim, setMakingAnim] = useState(false);
+  const [animError, setAnimError] = useState("");
+  const [animSuccess, setAnimSuccess] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const assetFileRef = useRef<HTMLInputElement>(null);
 
@@ -137,19 +161,35 @@ export function AvatarPicker({
 
   const libraryFaces = library?.faces ?? [];
   const knownFaceIds = new Set(libraryFaces.map((f) => f.id));
-  const activeStudioFace = libraryFaces.find((f) => f.id === otherStudio) || (libraryFaces.length > 0 ? libraryFaces[0] : null);
-  // Defensively handle both new `assets` array and legacy `clips`/`stills` shapes so `.length` never crashes
+  const activeStudioFace = otherStudio ? (libraryFaces.find((f) => f.id === otherStudio) ?? null) : null;
+  // Build unified assets for BOTH custom 3D faces AND the built-in Dragon so users can preview & switch animations for every avatar
   const activeFaceAssets = (() => {
+    if (isDragonSelected) {
+      return DRAGON_CLIPS.map((c) => ({
+        file: c.file,
+        path: c.path,
+        url: c.path,
+        kind: c.kind,
+        label: t(c.label),
+        size: 0,
+        canonical: true,
+      }));
+    }
     if (!activeStudioFace) return [];
     if (Array.isArray(activeStudioFace.assets) && activeStudioFace.assets.length > 0) {
-      return activeStudioFace.assets;
+      return activeStudioFace.assets.map((a) => ({
+        ...a,
+        url: fileUrl(a.path),
+      }));
     }
-    const fallback: Array<{ file: string; path: string; kind: "video" | "image"; label: string; size: number; canonical: boolean }> = [];
+    const fallback: Array<{ file: string; path: string; url: string; kind: "video" | "image"; label: string; size: number; canonical: boolean }> = [];
     for (const c of activeStudioFace.clips ?? []) {
       if (c?.file) {
+        const p = `avatar/${activeStudioFace.id}/${c.file}`;
         fallback.push({
           file: c.file,
-          path: `avatar/${activeStudioFace.id}/${c.file}`,
+          path: p,
+          url: fileUrl(p),
           kind: "video",
           label: c.label || c.file,
           size: 0,
@@ -159,9 +199,11 @@ export function AvatarPicker({
     }
     for (const s of activeStudioFace.stills ?? []) {
       if (s) {
+        const p = `avatar/${activeStudioFace.id}/${s}`;
         fallback.push({
           file: s,
-          path: `avatar/${activeStudioFace.id}/${s}`,
+          path: p,
+          url: fileUrl(p),
           kind: "image",
           label: s,
           size: 0,
@@ -171,6 +213,11 @@ export function AvatarPicker({
     }
     return fallback;
   })();
+
+  const videoAssets = activeFaceAssets.filter((a) => a.kind === "video");
+  const activeFaceName = isDragonSelected
+    ? t("The dragon")
+    : activeStudioFace?.name || otherStudio || t("Avatar");
 
   const handleUploadBg = async (file: File) => {
     setUploadingBg(true);
@@ -190,25 +237,36 @@ export function AvatarPicker({
 
   const handleUploadAvatarAsset = async (file: File) => {
     setUploadingAsset(true);
+    setAnimError("");
     try {
-      const targetFace = otherStudio || activeStudioFace?.id || "custom";
+      const targetFace = otherStudio || "custom";
       const res = await api.avatarUploadAsset(targetFace, file);
       await loadLibrary();
-      if (res.face_id) {
+      const nextFaceId = res.face_id || res.face?.id;
+      if (nextFaceId) {
         onChange({
           ...value,
-          avatar: res.face_id,
+          avatar: nextFaceId,
           avatar_situation_clips: res.profile?.avatar_situation_clips ?? value.avatar_situation_clips,
         });
       }
-    } catch {
-      /* ignore upload error */
+    } catch (e) {
+      setAnimError((e as Error).message);
     } finally {
       setUploadingAsset(false);
     }
   };
 
   const handleSituationChange = async (sitId: string, chosenFile: string) => {
+    if (isDragonSelected) {
+      const nextMap = { ...(value.avatar_situation_clips ?? {}), [sitId]: chosenFile };
+      onChange({
+        ...value,
+        avatar: DRAGON,
+        avatar_situation_clips: nextMap,
+      });
+      return;
+    }
     const faceId = otherStudio || activeStudioFace?.id;
     if (!faceId) return;
     const nextMap = { ...(value.avatar_situation_clips ?? activeStudioFace?.situations ?? {}), [sitId]: chosenFile };
@@ -230,6 +288,52 @@ export function AvatarPicker({
       /* ignore error */
     } finally {
       setSavingSit(false);
+    }
+  };
+
+  const handleGenerateAnimation = async () => {
+    const prompt = animPrompt.trim();
+    if (!prompt) return;
+    setMakingAnim(true);
+    setAnimError("");
+    setAnimSuccess("");
+    try {
+      const targetFace = isDragonSelected ? DRAGON : otherStudio || activeStudioFace?.id || DRAGON;
+      const res = await api.avatarAnimate(targetFace, {
+        prompt,
+        label: animLabel.trim() || undefined,
+        situation: animSituation === "library" ? "" : animSituation,
+      });
+      await loadLibrary();
+      if (res.face_id) {
+        onChange({
+          ...value,
+          avatar: res.face_id,
+          avatar_animated: true,
+          avatar_situation_clips: res.profile?.avatar_situation_clips ?? value.avatar_situation_clips,
+        });
+      }
+      if (res.path) {
+        onPreviewClip?.({ url: fileUrl(res.path), label: res.label || prompt });
+      }
+      setAnimPrompt("");
+      setAnimLabel("");
+      setAnimSuccess(t("New live 3D animation created: {label}", { label: res.label || res.file }));
+    } catch (e) {
+      setAnimError((e as Error).message);
+    } finally {
+      setMakingAnim(false);
+    }
+  };
+
+  const handleDeleteCustomAsset = async (file: string) => {
+    const faceId = otherStudio || activeStudioFace?.id;
+    if (!faceId) return;
+    try {
+      await api.avatarDeleteAsset(faceId, file);
+      await loadLibrary();
+    } catch (e) {
+      setAnimError((e as Error).message);
     }
   };
 
@@ -556,75 +660,271 @@ export function AvatarPicker({
         </div>
       )}
 
-      {/* Animations by Situation & Custom 3D Models / Clips */}
-      <details open={!emojiMode && activeFaceAssets.length > 0} className="rounded-2xl border border-border/70 bg-surface-2/40 px-3.5 py-2.5 text-[12.5px]">
-        <summary className="cursor-pointer font-medium text-fg flex items-center gap-2">
-          <Film size={14} className="text-accent shrink-0" />
-          <span>{t("Customize animations by situation & import 3D models")}</span>
-        </summary>
-        <div className="mt-3 space-y-3 border-t border-border/50 pt-3">
-          <p className="text-[11.5px] leading-snug text-muted">
-            {t("Choose which animation or image plays in each situation across your PC, phone, and watch, upload custom .mp4/.webp animations or Muse 3D avatar .zip bundles, or have AI create new ones.")}
-          </p>
-
-          <div className="flex flex-wrap gap-2">
-            <input
-              ref={assetFileRef}
-              type="file"
-              accept=".mp4,.webm,.webp,.png,.jpg,.jpeg,.gif,.zip,video/*,image/*"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void handleUploadAvatarAsset(f);
-                e.target.value = "";
-              }}
-            />
-            <button
-              type="button"
-              disabled={uploadingAsset}
-              onClick={() => assetFileRef.current?.click()}
-              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1.5 text-[12px] font-medium hover:bg-surface-2 disabled:opacity-50"
-            >
-              <Upload size={13} />
-              {uploadingAsset ? t("Uploading…") : t("Upload animation or 3D model (.mp4 / .webp / .zip)")}
-            </button>
-            {onStudio && (
+      {/* Live 3D Animations Gallery, Situation Switcher & Make More Animations */}
+      {!emojiMode && (
+        <div className="rounded-2xl border border-border/70 bg-surface-2/40 p-3.5 text-[12.5px] space-y-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 font-semibold text-fg">
+              <Film size={15} className="text-accent shrink-0" />
+              <span>{t("3D animations & situations")}</span>
+              <span className="rounded-full bg-surface px-2 py-0.5 text-[11px] font-medium text-muted border border-border/60">
+                {videoAssets.length === 1 ? t("1 clip") : t("{n} clips", { n: videoAssets.length })}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
-                onClick={onStudio}
-                className="inline-flex items-center gap-1.5 rounded-full bg-accent/12 px-3 py-1.5 text-[12px] font-medium text-accent hover:bg-accent/20"
+                onClick={() => setShowMakeAnim((v) => !v)}
+                className={cx(
+                  "inline-flex items-center gap-1 rounded-full px-3 py-1 text-[12px] font-medium transition",
+                  showMakeAnim
+                    ? "bg-accent text-accent-fg"
+                    : "bg-accent/12 text-accent hover:bg-accent/20",
+                )}
               >
-                <Sparkles size={13} />
-                {t("Generate / adjust with AI")}
+                <Plus size={13} />
+                {t("Make new animation")}
               </button>
-            )}
+              <input
+                ref={assetFileRef}
+                type="file"
+                accept=".mp4,.webm,.webp,.png,.jpg,.jpeg,.gif,.zip,video/*,image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void handleUploadAvatarAsset(f);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                disabled={uploadingAsset}
+                onClick={() => assetFileRef.current?.click()}
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-3 py-1 text-[12px] font-medium hover:bg-surface-2 disabled:opacity-50"
+              >
+                <Upload size={12} />
+                {uploadingAsset ? t("Uploading…") : t("Upload clip / .zip")}
+              </button>
+            </div>
           </div>
 
-          {activeStudioFace && activeFaceAssets.length > 0 && (
-            <div className="space-y-2 pt-1">
+          {/* Make More Animations with AI Composer */}
+          {showMakeAnim && (
+            <div className="rounded-2xl border border-accent/35 bg-surface p-3 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[12.5px] font-semibold text-fg flex items-center gap-1.5">
+                  <Sparkles size={14} className="text-accent shrink-0" />
+                  {t("Create a new live 3D animation for {name}", { name: activeFaceName })}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {ANIMATION_PRESETS.map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => {
+                      setAnimPrompt(preset.prompt);
+                      setAnimLabel(t(preset.label));
+                    }}
+                    className={cx(
+                      "rounded-full border px-2.5 py-1 text-[11.5px] transition",
+                      animPrompt === preset.prompt
+                        ? "border-accent bg-accent/12 text-accent font-medium"
+                        : "border-border bg-surface-2/60 text-muted hover:text-fg",
+                    )}
+                  >
+                    {t(preset.label)}
+                  </button>
+                ))}
+              </div>
+              <textarea
+                value={animPrompt}
+                onChange={(e) => setAnimPrompt(e.target.value)}
+                rows={2}
+                placeholder={t("Describe the motion (e.g. waving hello, victory dance, powering up with red aura…)")}
+                className="w-full resize-none rounded-xl border border-border bg-surface-2/60 px-3 py-2 text-[12.5px] outline-none focus:ring-2 focus:ring-accent/35"
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="text"
+                  value={animLabel}
+                  onChange={(e) => setAnimLabel(e.target.value)}
+                  placeholder={t("Short name (optional)")}
+                  className="min-w-0 flex-1 rounded-xl border border-border bg-surface-2/60 px-3 py-1.5 text-[12px] outline-none focus:ring-2 focus:ring-accent/35"
+                />
+                <select
+                  value={animSituation}
+                  onChange={(e) => setAnimSituation(e.target.value)}
+                  aria-label={t("Assign to situation")}
+                  className="rounded-xl border border-border bg-surface-2 px-2.5 py-1.5 text-[12px] text-fg outline-none"
+                >
+                  <option value="idle">{t("Assign to: Idle")}</option>
+                  <option value="working">{t("Assign to: Working")}</option>
+                  <option value="waiting">{t("Assign to: Waiting")}</option>
+                  <option value="happy">{t("Assign to: Happy")}</option>
+                  <option value="call">{t("Assign to: Live Voice Call")}</option>
+                  <option value="library">{t("Save to library only")}</option>
+                </select>
+                <button
+                  type="button"
+                  disabled={makingAnim || !animPrompt.trim()}
+                  onClick={() => void handleGenerateAnimation()}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-accent px-3.5 py-1.5 text-[12px] font-medium text-accent-fg disabled:opacity-50"
+                >
+                  {makingAnim ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                  {makingAnim ? t("Generating clip…") : t("Generate 3D clip")}
+                </button>
+              </div>
+              {animError && <p className="text-[12px] break-words text-rose-600 dark:text-rose-300">{animError}</p>}
+              {animSuccess && <p className="text-[12px] break-words text-emerald-600 dark:text-emerald-400">{animSuccess}</p>}
+            </div>
+          )}
+
+          {/* Missing clips notice on a custom face */}
+          {!isDragonSelected && videoAssets.length === 0 && (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 space-y-2 text-[12px]">
+              <p className="text-fg leading-snug">
+                {t("No live 3D video clips are on this device for this avatar yet. Sync with your computer or generate live animations below.")}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {onRedrawMoods && (
+                  <button
+                    type="button"
+                    onClick={onRedrawMoods}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-accent-fg"
+                  >
+                    <RefreshCw size={12} />
+                    {t("Generate standard poses & animations")}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowMakeAnim(true)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1 text-[12px] font-medium text-fg"
+                >
+                  <Plus size={12} />
+                  {t("Make custom animation")}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Visual Gallery of Live Animations — tap any clip to preview live or assign to a situation */}
+          {videoAssets.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-[11.5px] font-medium text-muted">
+                <span>{t("Tap any animation to preview it live")}</span>
+                {savingSit && <span>{t("Saving…")}</span>}
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {videoAssets.map((asset) => {
+                  const usedFor = SITUATION_ROWS.filter((sit) => {
+                    const mapped =
+                      value.avatar_situation_clips?.[sit.id] ||
+                      (isDragonSelected ? `dragon-${sit.id}.mp4` : activeStudioFace?.situations?.[sit.id]);
+                    return mapped === asset.file || mapped === asset.path;
+                  }).map((s) => s.id);
+                  const isPreviewing = previewClipUrl === asset.url;
+                  const isCustomDeletable = !isDragonSelected && asset.file.startsWith("custom-");
+                  return (
+                    <div
+                      key={asset.file}
+                      className={cx(
+                        "group relative flex flex-col overflow-hidden rounded-2xl border bg-surface transition",
+                        isPreviewing ? "border-accent ring-2 ring-accent/35" : "border-border/70 hover:border-accent/50",
+                      )}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => onPreviewClip?.(isPreviewing ? null : { url: asset.url, label: asset.label })}
+                        className="relative aspect-square w-full overflow-hidden bg-surface-2 text-left"
+                      >
+                        <video
+                          src={asset.url}
+                          autoPlay
+                          loop
+                          muted
+                          playsInline
+                          preload="metadata"
+                          className="h-full w-full object-cover"
+                        />
+                        <span className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white">
+                          <Play size={11} className="fill-current" />
+                        </span>
+                        {usedFor.length > 0 && (
+                          <span className="absolute left-1.5 bottom-1.5 max-w-[calc(100%-12px)] truncate rounded-full bg-accent px-2 py-0.5 text-[10px] font-semibold text-accent-fg shadow-sm">
+                            {usedFor.join(" · ")}
+                          </span>
+                        )}
+                      </button>
+                      <div className="flex items-center justify-between gap-1 px-2 py-1.5">
+                        <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-fg" title={asset.label}>
+                          {asset.label}
+                        </span>
+                        {isCustomDeletable && (
+                          <button
+                            type="button"
+                            aria-label={t("Delete")}
+                            onClick={() => void handleDeleteCustomAsset(asset.file)}
+                            className="shrink-0 rounded-md p-1 text-muted hover:bg-surface-2 hover:text-rose-500"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Switch Animation Per Situation */}
+          {activeFaceAssets.length > 0 && (
+            <div className="space-y-2 border-t border-border/50 pt-2.5">
               <div className="flex items-center justify-between text-[11.5px] font-medium text-muted">
                 <span>
-                  {t("Situation animations for")} {activeStudioFace.name || activeStudioFace.id}
+                  {t("Which animation plays in each situation")} ({activeFaceName})
                 </span>
-                {savingSit && <span>{t("Saving…")}</span>}
+                {onRedrawMoods && !isDragonSelected && (
+                  <button
+                    type="button"
+                    onClick={onRedrawMoods}
+                    className="inline-flex items-center gap-1 text-[11.5px] font-medium text-accent hover:underline"
+                  >
+                    <RefreshCw size={11} /> {t("Redraw poses")}
+                  </button>
+                )}
               </div>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {SITUATION_ROWS.map((sit) => {
-                  const currentFile =
-                    value.avatar_situation_clips?.[sit.id] ||
-                    activeStudioFace.situations?.[sit.id] ||
-                    `${sit.id}.mp4`;
+                  const defaultFile = isDragonSelected
+                    ? sit.id === "error"
+                      ? "dragon-error.webp"
+                      : sit.id === "call"
+                        ? "dragon-idle.mp4"
+                        : `dragon-${sit.id}.mp4`
+                    : activeStudioFace?.situations?.[sit.id] || `${sit.id}.mp4`;
+                  const currentFile = value.avatar_situation_clips?.[sit.id] || defaultFile;
                   return (
-                    <label key={sit.id} className="flex flex-col gap-1 rounded-xl border border-border/60 bg-surface px-2.5 py-2">
+                    <label key={sit.id} className="flex min-w-0 flex-col gap-1 rounded-xl border border-border/60 bg-surface px-2.5 py-2">
                       <span className="text-[11.5px] font-medium text-fg">{t(sit.label)}</span>
                       <select
                         value={currentFile}
-                        onChange={(e) => void handleSituationChange(sit.id, e.target.value)}
-                        className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-[12px] text-fg outline-none"
+                        onChange={(e) => {
+                          const chosen = e.target.value;
+                          void handleSituationChange(sit.id, chosen);
+                          const hit = activeFaceAssets.find((a) => a.file === chosen);
+                          if (hit) onPreviewClip?.({ url: hit.url, label: hit.label });
+                        }}
+                        className="w-full min-w-0 truncate rounded-lg border border-border bg-surface-2 px-2 py-1 text-[12px] text-fg outline-none"
                       >
+                        {!activeFaceAssets.some((a) => a.file === currentFile) && (
+                          <option value={currentFile}>{currentFile}</option>
+                        )}
                         {activeFaceAssets.map((asset) => (
                           <option key={asset.file} value={asset.file}>
-                            {asset.label} ({asset.kind === "video" ? "3D video" : "still"} — {asset.file.slice(0, 34)})
+                            {asset.label} ({asset.kind === "video" ? "3D" : t("still")})
                           </option>
                         ))}
                       </select>
@@ -635,7 +935,7 @@ export function AvatarPicker({
             </div>
           )}
         </div>
-      </details>
+      )}
     </div>
   );
 }

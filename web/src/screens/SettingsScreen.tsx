@@ -466,7 +466,7 @@ export function SettingsScreen() {
             ))}
           </nav>
         )}
-      <div ref={bodyRef} className="flex-1 overflow-y-auto px-4 pb-8 wide:px-6 wide:pb-10">
+      <div ref={bodyRef} className="flex-1 overflow-y-auto overflow-x-hidden px-4 pb-8 wide:px-6 wide:pb-10">
         {/* A desktop window used to centre a 740px column, which left a 16:9 monitor mostly
             empty. The sections now use the width: one column on a phone or a narrow window,
             two on a wide one, three on an ultrawide. */}
@@ -680,10 +680,10 @@ export function SettingsScreen() {
               }}
             />
             {s && (s.cloud_mode ?? "hybrid") !== "local" && (
-              <button type="button" onClick={() => setTab("account")} className="w-full text-[13.5px] flex items-center justify-between pt-2">
-                <span className="text-muted">{t("nanoMuse Cloud account")}</span>
-                <span className="text-[12.5px] text-accent flex items-center gap-1">
-                  {state.hub?.account.signed_in ? (state.hub.account.hint || t("Signed in")) : t("Sign in")} <ChevronRight size={14} />
+              <button type="button" onClick={() => setTab("account")} className="w-full text-[13.5px] flex items-center justify-between gap-2 pt-2 text-left">
+                <span className="shrink-0 text-muted">{t("nanoMuse Cloud account")}</span>
+                <span className="min-w-0 truncate text-[12.5px] text-accent flex items-center gap-1">
+                  <span className="truncate">{state.hub?.account.signed_in ? (state.hub.account.hint || t("Signed in")) : t("Sign in")}</span> <ChevronRight size={14} className="shrink-0" />
                 </span>
               </button>
             )}
@@ -700,39 +700,41 @@ export function SettingsScreen() {
               <button
                 type="button"
                 onClick={() => openSection("cloud")}
-                className="w-full text-[13.5px] flex items-center justify-between"
+                className="w-full text-[13.5px] flex items-center justify-between gap-2 text-left"
               >
-                <span className="text-muted">{t("nanoMuse Cloud")}</span>
-                <span className="text-[12.5px] flex items-center gap-1">
-                  {s.cloud_mode === "local"
-                    ? t("Off (Nothing)")
-                    : s.cloud_mode === "cloud"
-                      ? t("Everything")
-                      : t("Custom")}
-                  <ChevronRight size={14} className="text-muted" />
+                <span className="shrink-0 text-muted">{t("nanoMuse Cloud")}</span>
+                <span className="min-w-0 truncate text-[12.5px] flex items-center gap-1">
+                  <span className="truncate">
+                    {s.cloud_mode === "local"
+                      ? t("Off (Nothing)")
+                      : s.cloud_mode === "cloud"
+                        ? t("Everything")
+                        : t("Custom")}
+                  </span>
+                  <ChevronRight size={14} className="shrink-0 text-muted" />
                 </span>
               </button>
             )}
             {s && (
-              <button type="button" onClick={() => setTab("connections")} className="w-full text-[13.5px] flex items-center justify-between">
-                <span className="text-muted">{t("Provider / model")}</span>
-                <span className="font-mono text-[12.5px] flex items-center gap-1">
-                  {s.llm.model} <ChevronRight size={14} className="text-muted" />
+              <button type="button" onClick={() => setTab("connections")} className="w-full text-[13.5px] flex items-center justify-between gap-2 text-left">
+                <span className="shrink-0 text-muted">{t("Provider / model")}</span>
+                <span className="min-w-0 font-mono text-[12.5px] flex items-center gap-1">
+                  <span className="truncate">{s.llm.model}</span> <ChevronRight size={14} className="shrink-0 text-muted" />
                 </span>
               </button>
             )}
             {s?.llm.cloud && (s.cloud_mode ?? "hybrid") !== "local" && (
-              <button type="button" onClick={() => openOwnKeySetup(setTab, ownKeyWay(state.hub?.account).preset)} className="w-full text-[13.5px] flex items-center justify-between">
+              <button type="button" onClick={() => openOwnKeySetup(setTab, ownKeyWay(state.hub?.account).preset)} className="w-full text-[13.5px] flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-left">
                 <span className="text-muted">{t("Use my own API key or a plan I pay for")}</span>
-                <span className="text-[12.5px] text-muted flex items-center gap-1">
-                  {t("{first} first, then {others}", { first: ownKeyWay(state.hub?.account).label, others: isMainland(state.hub?.account) ? t("DeepSeek, Kimi, OpenAI, ChatGPT…") : t("OpenAI, ChatGPT, Gemini, DeepSeek…") })} <ChevronRight size={14} />
+                <span className="min-w-0 text-[12.5px] text-muted flex items-center gap-1">
+                  <span className="truncate">{t("{first} first, then {others}", { first: ownKeyWay(state.hub?.account).label, others: isMainland(state.hub?.account) ? t("DeepSeek, Kimi, OpenAI, ChatGPT…") : t("OpenAI, ChatGPT, Gemini, DeepSeek…") })}</span> <ChevronRight size={14} className="shrink-0" />
                 </span>
               </button>
             )}
-            <button type="button" onClick={() => setTab("connections")} className="w-full text-[13.5px] flex items-center justify-between">
-              <span className="text-muted">{t("Connections")}</span>
-              <span className="text-[12.5px] text-muted flex items-center gap-1">
-                {t("E-mail, calendar, browser, MCP servers")} <ChevronRight size={14} />
+            <button type="button" onClick={() => setTab("connections")} className="w-full text-[13.5px] flex items-center justify-between gap-2 text-left">
+              <span className="shrink-0 text-muted">{t("Connections")}</span>
+              <span className="min-w-0 text-[12.5px] text-muted flex items-center gap-1">
+                <span className="truncate">{t("E-mail, calendar, browser, MCP servers")}</span> <ChevronRight size={14} className="shrink-0" />
               </span>
             </button>
           </SettingBlock>
@@ -892,7 +894,7 @@ export function SettingsScreen() {
                   text={t("The canvas colour. White follows your light or dark; the rest pin one. The boxes always stay a step lighter or darker than it.")}
                 />
               </div>
-              <div className="flex flex-1 flex-wrap items-center justify-end gap-1.5 min-w-[180px]">
+              <div className="flex flex-1 flex-wrap items-center justify-end gap-1.5 min-w-0">
                 {BG_PRESETS.map((o) => (
                   <Swatch
                     key={o.label}
@@ -946,7 +948,7 @@ export function SettingsScreen() {
                   text={t("The colour of buttons, links and the working dot. The app's blue is the start; pick one or mix your own.")}
                 />
               </div>
-              <div className="flex flex-1 flex-wrap items-center justify-end gap-1.5 min-w-[180px]">
+              <div className="flex flex-1 flex-wrap items-center justify-end gap-1.5 min-w-0">
                 {ACCENTS.map((o) => (
                   <Swatch key={o.label} label={t(o.label)} color={o.color} selected={accent === o.value} onClick={() => setAccent(o.value)} />
                 ))}
@@ -977,7 +979,7 @@ export function SettingsScreen() {
                   text={t("The colour of your own message bubbles. They follow the accent until you pick a colour here.")}
                 />
               </div>
-              <div className="flex flex-1 flex-wrap items-center justify-end gap-1.5 min-w-[180px]">
+              <div className="flex flex-1 flex-wrap items-center justify-end gap-1.5 min-w-0">
                 <button
                   type="button"
                   onClick={() => setBubble("")}
@@ -2121,7 +2123,7 @@ function SettingsHome({
     <div className="flex h-full flex-col">
       <PageBar title={t("Settings")} />
       {searchBox}
-      <div className="flex-1 overflow-y-auto pb-8 pt-2">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden pb-8 pt-2">
         {!appLock?.enabled && !lockPromptDismissed && (
           <div className="mx-4 mb-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-left text-fg">
             <div className="flex items-start justify-between gap-2">
@@ -2884,7 +2886,7 @@ function ScaleSlider() {
     setUiScale(next / 100);
   };
   return (
-    <div className="flex flex-1 min-w-[220px] flex-wrap items-center justify-end gap-1">
+    <div className="flex flex-1 min-w-0 flex-wrap items-center justify-end gap-1">
       <button
         type="button"
         aria-label="Decrease UI scale"

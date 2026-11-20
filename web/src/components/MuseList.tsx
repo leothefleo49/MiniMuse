@@ -99,10 +99,10 @@ export function MuseSwitch({ checked }: { checked: boolean }) {
 
 /** The small grey caption under (or inside) a card. */
 export function MuseCaption({ children, className }: { children: ReactNode; className?: string }) {
-  return <p className={cx("px-8 py-2 text-[13px] leading-[18px] text-muted", className)}>{children}</p>;
+  return <p className={cx("px-6 py-2 break-words [overflow-wrap:anywhere] text-[13px] leading-[18px] text-muted", className)}>{children}</p>;
 }
 
 /** The small grey label over a card. */
 export function MuseSectionLabel({ children }: { children: ReactNode }) {
-  return <p className="px-8 pb-2 pt-[18px] text-[13px] leading-[18px] text-muted">{children}</p>;
+  return <p className="px-6 pb-2 pt-[18px] break-words text-[13px] leading-[18px] text-muted">{children}</p>;
 }

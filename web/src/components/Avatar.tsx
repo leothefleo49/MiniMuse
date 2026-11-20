@@ -252,6 +252,7 @@ export function Avatar({
   size = 40,
   onClick,
   still = false,
+  previewClipUrl = null,
   className,
 }: {
   profile: Profile | null;
@@ -260,6 +261,8 @@ export function Avatar({
   onClick?: () => void;
   /** no idle animation (lists, pickers) */
   still?: boolean;
+  /** Optional explicit animation/still URL to live-preview inside Avatar Studio */
+  previewClipUrl?: string | null;
   className?: string;
 }) {
   const t = useT();
@@ -294,11 +297,15 @@ export function Avatar({
   const situationClips = profile?.avatar_situation_clips;
   const animationsEnabled = profile?.avatar_animated !== false;
 
-  const clipCandidate =
-    still || !animationsEnabled || size < CLIP_MIN_PX
+  const previewIsVideo = !!previewClipUrl && /\.(mp4|webm)(\?|$)/i.test(previewClipUrl);
+  const previewIsImage = !!previewClipUrl && !previewIsVideo;
+
+  const clipCandidate = previewIsVideo
+    ? previewClipUrl
+    : previewIsImage || still || !animationsEnabled || size < CLIP_MIN_PX
       ? null
       : dragon
-        ? dragonClipUrl(pose)
+        ? dragonClipUrl(pose, situationClips)
         : studio
           ? studioClipUrl(studio, pose, false, updatedAt, situationClips)
           : null;
@@ -319,11 +326,13 @@ export function Avatar({
     studio && situationClips?.[pose] && /\.(webp|png|jpg|jpeg|gif)$/i.test(situationClips[pose])
       ? fileUrl(`avatar/${studio}/${situationClips[pose]}`)
       : null;
-  const stillUrl = dragon
-    ? dragonUrl(pose)
-    : studio
-      ? customStillOverride || studioUrl(studio, pose, false, updatedAt)
-      : "";
+  const stillUrl = previewIsImage && previewClipUrl
+    ? previewClipUrl
+    : dragon
+      ? dragonUrl(pose)
+      : studio
+        ? customStillOverride || studioUrl(studio, pose, false, updatedAt)
+        : "";
 
   const shouldKeyBackdrop = (dragon || studio) && bgMode !== "default";
   const canvasDim = Math.min(180, Math.max(76, Math.round(size * 1.8)));
@@ -385,7 +394,7 @@ export function Avatar({
     if (!shouldKeyBackdrop) setCanvasReady(false);
   }, [shouldKeyBackdrop, studio, dragon]);
 
-  // Paint the keyed still immediately while the video buffers so background colors show on mobile at frame 0
+  // Paint the keyed still immediately while the video buffers so background colors show at frame 0
   useEffect(() => {
     if (!shouldKeyBackdrop || !clip || !stillUrl || typeof Image === "undefined") return;
     let alive = true;
@@ -393,7 +402,7 @@ export function Avatar({
     pre.onload = () => {
       if (!alive) return;
       const v = videoRef.current;
-      if (!v || v.readyState < 2) paintKeyedSource(pre);
+      if (!v || v.readyState < 2 || v.paused) paintKeyedSource(pre);
     };
     pre.src = stillUrl;
     return () => {
@@ -401,7 +410,7 @@ export function Avatar({
     };
   }, [shouldKeyBackdrop, clip, stillUrl, paintKeyedSource]);
 
-  // Ensure Android WebView & mobile browsers ALWAYS autoplay muted inline avatar clips reliably
+  // Ensure Android WebView & mobile browsers ALWAYS autoplay & resume muted inline avatar clips reliably
   useEffect(() => {
     const v = videoRef.current;
     if (!v || !clip) return;
@@ -419,14 +428,23 @@ export function Avatar({
     const onGesture = () => {
       if (v.paused) tryPlay();
     };
+    const onVis = () => {
+      if (typeof document !== "undefined" && !document.hidden && v.paused) tryPlay();
+    };
+    const kick = typeof window !== "undefined" ? window.setInterval(() => {
+      if (v.readyState >= 2 && v.paused) tryPlay();
+    }, 1500) : 0;
     if (typeof document !== "undefined") {
-      document.addEventListener("pointerdown", onGesture, { passive: true, once: true });
-      document.addEventListener("touchstart", onGesture, { passive: true, once: true });
+      document.addEventListener("pointerdown", onGesture, { passive: true });
+      document.addEventListener("touchstart", onGesture, { passive: true });
+      document.addEventListener("visibilitychange", onVis);
     }
     return () => {
+      if (kick) window.clearInterval(kick);
       if (typeof document !== "undefined") {
         document.removeEventListener("pointerdown", onGesture);
         document.removeEventListener("touchstart", onGesture);
+        document.removeEventListener("visibilitychange", onVis);
       }
     };
   }, [clip]);
@@ -440,18 +458,48 @@ export function Avatar({
     ) {
       return;
     }
+    let alive = true;
     let rafId = 0;
+    let vfcId: number | null = null;
     let lastDraw = 0;
+    type VideoWithVfc = HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: () => void) => number;
+      cancelVideoFrameCallback?: (id: number) => void;
+    };
+    const v = videoRef.current as VideoWithVfc | null;
+
+    if (v && typeof v.requestVideoFrameCallback === "function") {
+      const onFrame = () => {
+        if (!alive) return;
+        const cur = videoRef.current as VideoWithVfc | null;
+        if (cur && cur.readyState >= 2 && cur.videoWidth > 0) {
+          paintKeyedSource(cur);
+        }
+        if (cur && typeof cur.requestVideoFrameCallback === "function") {
+          vfcId = cur.requestVideoFrameCallback(onFrame);
+        }
+      };
+      vfcId = v.requestVideoFrameCallback(onFrame);
+    }
+
+    // Also keep a lightweight rAF safety pump so frame-0 & browsers without rVFC always animate
     const tick = (now: number) => {
-      const v = videoRef.current;
-      if (v && v.readyState >= 2 && v.videoWidth > 0 && now - lastDraw >= 33) {
+      if (!alive) return;
+      const cur = videoRef.current;
+      if (cur && cur.readyState >= 2 && cur.videoWidth > 0 && now - lastDraw >= 40) {
         lastDraw = now;
-        paintKeyedSource(v);
+        paintKeyedSource(cur);
       }
       rafId = window.requestAnimationFrame(tick);
     };
     rafId = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(rafId);
+    return () => {
+      alive = false;
+      window.cancelAnimationFrame(rafId);
+      if (vfcId !== null && v && typeof v.cancelVideoFrameCallback === "function") {
+        v.cancelVideoFrameCallback(vfcId);
+      }
+    };
   }, [shouldKeyBackdrop, clip, paintKeyedSource]);
 
   // Also repaint immediately when still image is shown and theme/bg changes
@@ -580,10 +628,10 @@ export function Avatar({
             ref={canvasRef}
             width={canvasDim}
             height={canvasDim}
-            className={cx(
-              "pointer-events-none absolute inset-0 h-full w-full rounded-full",
-              canvasReady ? "opacity-100" : "opacity-0",
-            )}
+            // Keep opacity at 0.999 (not 1.0) so Android Chromium WebView never treats the underlying
+            // <video> as opaque-occluded and throttles its frame decoding.
+            style={{ opacity: canvasReady ? 0.999 : 0 }}
+            className="pointer-events-none absolute inset-0 h-full w-full rounded-full"
           />
         )}
         {innerFeatherGlowStyle && (

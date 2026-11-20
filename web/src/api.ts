@@ -4,6 +4,7 @@ import type {
   ApiEndpoint,
   ApiPreset,
   AttachmentInfo,
+  AvatarLibraryFace,
   AvatarLibraryView,
   Profile,
   CalendarData,
@@ -381,6 +382,16 @@ export const api = {
     ),
   syncUnpair: (identifier: string) =>
     request<{ ok: boolean } & SyncState>("/api/sync/pair/unpair", json({ identifier })),
+  syncUpdatePeerUrl: (identifier: string, url: string) =>
+    request<{ ok: boolean; applied?: number; pushed?: number } & SyncState>(
+      "/api/sync/pair/update-url",
+      json({ identifier, url }),
+    ),
+  syncFreshResync: (identifier = "") =>
+    request<{ ok: boolean; fresh?: boolean; applied?: number; pushed?: number } & SyncState>(
+      "/api/sync/pair/resync",
+      json({ identifier }),
+    ),
   syncNow: () =>
     request<{ ok: boolean; applied: number; pushed: number } & SyncState>("/api/sync/now", json({})),
   /** the avatar studio: whether a face can be drawn, and the session under way */
@@ -392,13 +403,23 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ situations }) },
     ),
   avatarUploadAsset: (faceId: string, file: File, situation = "") =>
-    request<{ ok: boolean; kind: string; face_id?: string; file?: string; faces?: string[]; profile?: Profile }>(
+    request<{ ok: boolean; kind?: string; face_id?: string; file?: string; faces?: string[]; face?: AvatarLibraryFace; profile?: Profile }>(
       `/api/avatar/${encodeURIComponent(faceId || "custom")}/upload?name=${encodeURIComponent(file.name)}${situation ? `&situation=${encodeURIComponent(situation)}` : ""}`,
       {
         method: "POST",
         headers: { "Content-Type": file.type || "application/octet-stream" },
         body: file,
       },
+    ),
+  avatarAnimate: (faceId: string, body: { prompt: string; situation?: string; label?: string; base_still?: string }) =>
+    request<{ ok: boolean; face_id: string; file: string; path: string; label: string; situation: string; face?: AvatarLibraryFace; profile?: Profile }>(
+      `/api/avatar/${encodeURIComponent(faceId || "dragon")}/animate`,
+      json(body),
+    ),
+  avatarDeleteAsset: (faceId: string, file: string) =>
+    request<{ ok: boolean; face?: AvatarLibraryFace }>(
+      `/api/avatar/${encodeURIComponent(faceId)}/asset?file=${encodeURIComponent(file)}`,
+      { method: "DELETE" },
     ),
   /** a session; `thread` "" runs it from the studio screen, without a card in the chat */
   avatarBegin: (description: string, thread = "main", style = "muse") =>
@@ -696,6 +717,8 @@ export const api = {
   personalCloudStart: (autoInstall = false) =>
     request<PersonalCloudStatus>("/api/personal-cloud/start", json({ auto_install: autoInstall })),
   personalCloudStop: () => request<PersonalCloudStatus>("/api/personal-cloud/stop", { method: "POST" }),
+  personalCloudAutoTunnel: (enabled: boolean) =>
+    request<PersonalCloudStatus>("/api/personal-cloud/auto-tunnel", json({ enabled })),
   logsSummary: async (): Promise<string> => {
     const headers: Record<string, string> = {};
     const token = getToken();

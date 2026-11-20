@@ -171,6 +171,20 @@ function PersonalCloudSection() {
     await startTunnelWithInstall(false);
   };
 
+  const toggleAutoTunnel = async (enabled: boolean) => {
+    try {
+      const next = await api.personalCloudAutoTunnel(enabled);
+      setStatus(next);
+      toast(
+        enabled
+          ? t("Free Cloudflare Tunnel will start automatically whenever MiniMuse launches.")
+          : t("Auto-start tunnel turned off."),
+      );
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  };
+
   const copyUrl = (u: string) => {
     void navigator.clipboard?.writeText(u);
     setCopied(true);
@@ -185,13 +199,13 @@ function PersonalCloudSection() {
       </p>
       {status && (
         <div className="space-y-2.5 text-[13px]">
-          <div className="flex items-center justify-between gap-2 rounded-2xl border border-border/70 bg-bg px-3.5 py-2.5">
-            <div className="min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-border/70 bg-bg px-3.5 py-2.5">
+            <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5 font-medium">
                 <Globe size={14} className="text-accent shrink-0" />
                 <span>{t("Best Personal Cloud Address")}</span>
               </div>
-              <div className="truncate font-mono text-[12px] text-muted mt-0.5">{status.best_url}</div>
+              <div className="break-all font-mono text-[12px] text-muted mt-0.5">{status.best_url}</div>
               <div className="text-[11.5px] text-muted mt-1 leading-snug">
                 {status.tunnel.url
                   ? t("Active via Free Cloudflare HTTPS Tunnel — automatically shared with your paired devices so they sync anywhere.")
@@ -212,7 +226,7 @@ function PersonalCloudSection() {
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <div className="rounded-2xl border border-border/60 bg-bg px-3 py-2">
               <div className="text-[11.5px] font-semibold uppercase tracking-wide text-muted">{t("Tailscale Mesh")}</div>
-              <div className="mt-1 truncate text-[12.5px]">
+              <div className="mt-1 break-all text-[12.5px]">
                 {status.tailscale.running && status.tailscale.url
                   ? status.tailscale.url
                   : status.tailscale.installed
@@ -222,43 +236,58 @@ function PersonalCloudSection() {
             </div>
             <div className="rounded-2xl border border-border/60 bg-bg px-3 py-2">
               <div className="text-[11.5px] font-semibold uppercase tracking-wide text-muted">{t("Home Wi-Fi / LAN")}</div>
-              <div className="mt-1 truncate font-mono text-[12px]">
+              <div className="mt-1 break-all font-mono text-[12px]">
                 {status.lan_urls[0] || `http://127.0.0.1:${status.port}`}
               </div>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-border/60 bg-bg px-3.5 py-2.5">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5 font-medium">
-                <Cloud size={14} className="text-sky-500 shrink-0" />
-                <span>{t("Free Remote HTTPS Tunnel (Cloudflare Quick Tunnel)")}</span>
+          <div className="rounded-2xl border border-border/60 bg-bg px-3.5 py-2.5 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 font-medium">
+                  <Cloud size={14} className="text-sky-500 shrink-0" />
+                  <span>{t("Free Remote HTTPS Tunnel (Cloudflare Quick Tunnel)")}</span>
+                </div>
+                <div className="text-[12px] text-muted break-words [overflow-wrap:anywhere] mt-0.5">
+                  {installingCf
+                    ? t("Downloading & setting up Cloudflare Quick Tunnel automatically…")
+                    : status.tunnel.url
+                      ? status.tunnel.url
+                      : status.tunnel.error
+                        ? status.tunnel.error
+                        : status.cloudflared_installed
+                          ? t("Ready — 1 click creates a temporary free HTTPS URL with zero account")
+                          : t("Click Start Free Tunnel — MiniMuse will ask permission to download & set up cloudflared automatically.")}
+                </div>
               </div>
-              <div className="text-[12px] text-muted truncate mt-0.5">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void toggleTunnel()}
+                className={status.tunnel.running ? secondaryBtn : primaryBtn}
+              >
+                {busy ? <Loader2 size={14} className="animate-spin" /> : <Power size={14} />}
                 {installingCf
-                  ? t("Downloading & setting up Cloudflare Quick Tunnel automatically…")
-                  : status.tunnel.url
-                    ? status.tunnel.url
-                    : status.tunnel.error
-                      ? status.tunnel.error
-                      : status.cloudflared_installed
-                        ? t("Ready — 1 click creates a temporary free HTTPS URL with zero account")
-                        : t("Click Start Free Tunnel — MiniMuse will ask permission to download & set up cloudflared automatically.")}
-              </div>
+                  ? t("Installing…")
+                  : status.tunnel.running
+                    ? t("Stop Tunnel")
+                    : t("Start Free Tunnel")}
+              </button>
             </div>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void toggleTunnel()}
-              className={status.tunnel.running ? secondaryBtn : primaryBtn}
-            >
-              {busy ? <Loader2 size={14} className="animate-spin" /> : <Power size={14} />}
-              {installingCf
-                ? t("Installing…")
-                : status.tunnel.running
-                  ? t("Stop Tunnel")
-                  : t("Start Free Tunnel")}
-            </button>
+            {status.cloudflared_installed && (
+              <label className="flex items-center justify-between gap-3 border-t border-border/50 pt-2 text-[12px] cursor-pointer">
+                <span className="min-w-0 flex-1 text-muted">
+                  {t("Keep Free Cloudflare Tunnel running automatically when MiniMuse launches")}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={!!status.auto_tunnel}
+                  onChange={(e) => void toggleAutoTunnel(e.target.checked)}
+                  className="h-4 w-4 shrink-0 accent-accent"
+                />
+              </label>
+            )}
           </div>
           <ConfirmDialog
             open={confirmInstallCf}

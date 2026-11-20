@@ -65,7 +65,7 @@ export function NoticeDialog({ open, tone = "info", title, body, steps, primaryL
         aria-modal="true"
         aria-labelledby="notice-dialog-title"
         aria-describedby="notice-dialog-body"
-        className="rise w-full max-w-md rounded-3xl border border-border bg-surface p-5 shadow-xl"
+        className="rise w-full max-w-md overflow-hidden rounded-3xl border border-border bg-surface p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start gap-3">
@@ -73,11 +73,11 @@ export function NoticeDialog({ open, tone = "info", title, body, steps, primaryL
             <Icon size={20} />
           </div>
           <div className="min-w-0 flex-1">
-            <h3 id="notice-dialog-title" className="text-[16px] font-semibold leading-snug text-fg">
+            <h3 id="notice-dialog-title" className="break-words text-[16px] font-semibold leading-snug text-fg">
               {title}
             </h3>
             {body && (
-              <p id="notice-dialog-body" className="mt-1.5 text-[13.5px] leading-relaxed text-muted whitespace-pre-line">
+              <p id="notice-dialog-body" className="mt-1.5 break-words [overflow-wrap:anywhere] text-[13.5px] leading-relaxed text-muted whitespace-pre-line">
                 {body}
               </p>
             )}
@@ -99,13 +99,13 @@ export function NoticeDialog({ open, tone = "info", title, body, steps, primaryL
                 <span className="mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-surface-2 text-[11.5px] font-semibold text-muted">
                   {i + 1}
                 </span>
-                <span>{s}</span>
+                <span className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">{s}</span>
               </li>
             ))}
           </ol>
         )}
 
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
           <button
             type="button"
             onClick={onClose}

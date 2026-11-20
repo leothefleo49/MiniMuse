@@ -201,6 +201,29 @@ def tailscale_info(port: int) -> dict[str, Any]:
     return info
 
 
+def tailnet_search_domain(port: int = 8787) -> str:
+    """Return the active Tailscale MagicDNS suffix (e.g. ``tailc1c35a.ts.net``) when detectable,
+    even inside Android/Linux proot where the ``tailscale`` CLI is absent but ``/etc/resolv.conf``
+    carries the tailnet search domain."""
+    ts = tailscale_info(port)
+    dns = str(ts.get("dns_name") or "").strip().rstrip(".")
+    if dns and "." in dns and dns.endswith(".ts.net"):
+        return dns.split(".", 1)[1]
+    for resolv in (Path("/etc/resolv.conf"), Path("/run/systemd/resolve/resolv.conf")):
+        try:
+            if resolv.is_file():
+                for line in resolv.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    s = line.strip()
+                    if s.startswith(("search ", "domain ")):
+                        for tok in s.split()[1:]:
+                            clean = tok.strip().rstrip(".")
+                            if clean.endswith(".ts.net") and clean.count(".") >= 2:
+                                return clean
+        except OSError:
+            continue
+    return ""
+
+
 @dataclass
 class PersonalCloudManager:
     """Manages free Personal MiniMuse Cloud connectivity (LAN + Tailscale + Cloudflare Quick Tunnel)."""
@@ -214,6 +237,50 @@ class PersonalCloudManager:
     _tunnel_starting: bool = False
     _installing: bool = False
     _ready_event: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def _prefs_path(self) -> Path | None:
+        return (Path(self.data_dir) / "personal-cloud.json") if self.data_dir is not None else None
+
+    def get_auto_tunnel(self) -> bool:
+        p = self._prefs_path()
+        if p is None or not p.is_file():
+            return False
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                return bool(raw.get("auto_tunnel", False))
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    def set_auto_tunnel(self, enabled: bool) -> bool:
+        p = self._prefs_path()
+        if p is None:
+            return bool(enabled)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            data: dict[str, Any] = {}
+            if p.is_file():
+                with contextlib.suppress(Exception):
+                    loaded = json.loads(p.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        data = loaded
+            data["auto_tunnel"] = bool(enabled)
+            p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+        return bool(enabled)
+
+    async def maybe_auto_start(self) -> None:
+        """Start Cloudflare Quick Tunnel automatically at boot if the user opted in and binary exists."""
+        if not self.get_auto_tunnel():
+            return
+        if cloudflared_bin(self.data_dir) is None:
+            return
+        try:
+            await self.start_tunnel(timeout_s=20.0, auto_install=False)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("personal cloud auto_tunnel start skipped: {}", exc)
 
     def lan_urls(self) -> list[str]:
         return [f"http://{ip}:{self.port}" for ip in local_ipv4_addrs()]
@@ -259,6 +326,7 @@ class PersonalCloudManager:
             "all_urls": self.all_urls(ts),
             "tailscale": ts,
             "cloudflared_installed": installed,
+            "auto_tunnel": self.get_auto_tunnel(),
             "tunnel": {
                 "running": running,
                 "starting": bool(self._tunnel_starting and running),
@@ -370,4 +438,10 @@ class PersonalCloudManager:
         return self.status(probe_tailscale=True)
 
 
-__all__ = ["PersonalCloudManager", "cloudflared_bin", "install_cloudflared", "tailscale_info"]
+__all__ = [
+    "PersonalCloudManager",
+    "cloudflared_bin",
+    "install_cloudflared",
+    "tailnet_search_domain",
+    "tailscale_info",
+]

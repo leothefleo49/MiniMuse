@@ -911,6 +911,121 @@ class AvatarStudio:
 
         await asyncio.gather(*(one(m) for m in CLIP_MOODS))
 
+    async def generate_custom_clip(
+        self,
+        face_id: str,
+        prompt: str,
+        *,
+        situation: str = "",
+        label: str = "",
+        base_still: str = "",
+    ) -> dict[str, Any]:
+        """Generate a brand-new looping 3D animation clip for an existing avatar face (or a
+        customized clone of the built-in dragon) using the configured video model."""
+        motion = prompt.strip()
+        if not motion:
+            raise StudioError("Describe the animation you want to generate.")
+        ep = self.endpoint()
+        if ep is None or not ep.clips:
+            raise StudioError(
+                "No video model is configured yet. Sign in to nanoMuse Cloud or add a video model (e.g. DashScope Wan) in Connections, or upload your own .mp4/.webp animation."
+            )
+
+        clean_face = re.sub(r"[^a-zA-Z0-9_-]", "", face_id.strip()) or "dragon"
+        static_avatars = Path(__file__).resolve().parents[1] / "server" / "static" / "avatars"
+        if clean_face == "dragon":
+            clean_face = "dragon-custom"
+            face_dir = self.svc.workspace() / "avatar" / clean_face
+            face_dir.mkdir(parents=True, exist_ok=True)
+            for mood in MOODS:
+                src_w = static_avatars / f"dragon-{mood}.webp"
+                dst_w = face_dir / f"{mood}.webp"
+                if src_w.is_file() and not dst_w.is_file():
+                    dst_w.write_bytes(src_w.read_bytes())
+            for mood in CLIP_MOODS:
+                src_m = static_avatars / f"dragon-{mood}.mp4"
+                dst_m = face_dir / f"{mood}.mp4"
+                if src_m.is_file() and not dst_m.is_file():
+                    dst_m.write_bytes(src_m.read_bytes())
+        else:
+            face_dir = self.svc.workspace() / "avatar" / clean_face
+            if not face_dir.is_dir():
+                raise StudioError(f"Avatar face '{clean_face}' not found.")
+
+        # Pick reference still frame
+        still_path: Path | None = None
+        if base_still.strip():
+            cand = (face_dir / base_still.strip()).resolve()
+            try:
+                cand.relative_to(face_dir.resolve())
+                if cand.is_file():
+                    still_path = cand
+            except ValueError:
+                pass
+        if still_path is None:
+            for name_cand in ("idle.webp", "working.webp", "happy.webp", "waiting.webp"):
+                c = face_dir / name_cand
+                if c.is_file():
+                    still_path = c
+                    break
+        if still_path is None:
+            for ext in ("*.webp", "*.png", "*.jpg", "*.jpeg"):
+                hits = sorted(face_dir.glob(ext))
+                if hits:
+                    still_path = hits[0]
+                    break
+        if still_path is None:
+            raise StudioError("This avatar has no reference image to animate from.")
+
+        png = await asyncio.to_thread(self._png_of, still_path)
+        look = "3D character look"
+        full_prompt = f"{motion.rstrip('.')}.{CLIP_TAIL.format(look=look)}"
+        mp4 = await self._clip(ep, png, full_prompt)
+
+        slug = re.sub(r"[^a-z0-9]+", "-", (label or motion).lower()).strip("-")[:28] or "custom"
+        filename = f"custom-{slug}-{int(time.time())}.mp4"
+        await asyncio.to_thread((face_dir / filename).write_bytes, mp4)
+
+        model_file = face_dir / "avatar-model.json"
+        model_data: dict[str, Any] = {}
+        if model_file.is_file():
+            try:
+                raw = json.loads(model_file.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    model_data = raw
+            except Exception:  # noqa: BLE001
+                pass
+        model_data["face_id"] = clean_face
+        labels = dict(model_data.get("clip_labels") or {})
+        nice_label = (label.strip() or motion[:36].strip()).strip()
+        labels[filename] = nice_label
+        model_data["clip_labels"] = labels
+
+        sit_key = re.sub(r"[^a-z0-9_-]", "", situation.strip().lower())[:32]
+        sits = dict(model_data.get("situation_clips") or {})
+        if sit_key:
+            sits[sit_key] = filename
+            model_data["situation_clips"] = sits
+            await asyncio.to_thread((face_dir / f"{sit_key}.mp4").write_bytes, mp4)
+        model_file.write_text(json.dumps(model_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        prof_patch: dict[str, Any] = {"avatar": clean_face}
+        if sit_key:
+            cur_sits = dict(self.svc.profile.avatar_situation_clips or {})
+            cur_sits[sit_key] = filename
+            prof_patch["avatar_situation_clips"] = cur_sits
+        self.svc.update_profile(prof_patch)
+
+        return {
+            "ok": True,
+            "face_id": clean_face,
+            "file": filename,
+            "path": f"avatar/{clean_face}/{filename}",
+            "label": nice_label,
+            "situation": sit_key,
+            "profile": self.svc.profile.to_dict(),
+        }
+
     def cancel(self, session_id: str, quiet: bool = False) -> dict[str, Any]:
         session = self._session(session_id)
         session.cancel_tasks()

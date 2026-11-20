@@ -438,6 +438,8 @@ export interface SyncPeerInfo {
   name: string;
   kind?: string;
   url: string;
+  urls?: string[];
+  remote_ready?: boolean;
   online: boolean;
   last_sync_at: string | null;
   last_error: string;
@@ -1119,6 +1121,7 @@ export interface PersonalCloudStatus {
     url: string;
   };
   cloudflared_installed: boolean;
+  auto_tunnel?: boolean;
   tunnel: {
     running: boolean;
     starting: boolean;

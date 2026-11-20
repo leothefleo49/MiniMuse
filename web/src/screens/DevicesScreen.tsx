@@ -102,21 +102,77 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
   const signedIn = !!hub?.account.signed_in;
   const { total, online } = countDevices(hub, local, state.sync);
   const [syncingPeer, setSyncingPeer] = useState<string | null>(null);
+  const [freshSyncingPeer, setFreshSyncingPeer] = useState<string | null>(null);
+  const [editingRemotePeer, setEditingRemotePeer] = useState<string | null>(null);
+  const [remoteUrlDraft, setRemoteUrlDraft] = useState("");
+  const [savingRemotePeer, setSavingRemotePeer] = useState<string | null>(null);
 
   const syncNowWithPeer = async (peerKey: string) => {
     setSyncingPeer(peerKey);
     try {
       const res = await api.syncNow();
       dispatch({ type: "ws", msg: { kind: "sync", sync: res } });
-      toast(
-        res.applied || res.pushed
-          ? t("Synced ({a} received, {p} sent).", { a: String(res.applied ?? 0), p: String(res.pushed ?? 0) })
-          : t("All devices are up to date."),
-      );
+      const matching = (res.peers ?? []).find((p) => (p.url || p.id) === peerKey || p.id === peerKey);
+      if (matching?.last_error) {
+        toast(matching.last_error);
+      } else {
+        toast(
+          res.applied || res.pushed
+            ? t("Synced ({a} received, {p} sent).", { a: String(res.applied ?? 0), p: String(res.pushed ?? 0) })
+            : t("All devices are up to date."),
+        );
+      }
     } catch (e) {
       toast((e as Error).message);
     } finally {
       setSyncingPeer(null);
+    }
+  };
+
+  const freshSyncWithPeer = async (identifier: string, peerKey: string) => {
+    setFreshSyncingPeer(peerKey);
+    try {
+      const res = await api.syncFreshResync(identifier);
+      dispatch({ type: "ws", msg: { kind: "sync", sync: res } });
+      const matching = (res.peers ?? []).find((p) => p.id === identifier || p.url === identifier || (p.url || p.id) === peerKey);
+      if (matching?.last_error) {
+        toast(matching.last_error);
+      } else {
+        toast(
+          t("Fresh sync complete ({a} received, {p} sent).", {
+            a: String(res.applied ?? 0),
+            p: String(res.pushed ?? 0),
+          }),
+        );
+      }
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setFreshSyncingPeer(null);
+    }
+  };
+
+  const saveRemotePeerUrl = async (identifier: string, peerKey: string) => {
+    const clean = remoteUrlDraft.trim();
+    if (!clean) return;
+    setSavingRemotePeer(peerKey);
+    try {
+      const res = await api.syncUpdatePeerUrl(identifier, clean);
+      dispatch({ type: "ws", msg: { kind: "sync", sync: res } });
+      setEditingRemotePeer(null);
+      setRemoteUrlDraft("");
+      const matching = (res.peers ?? []).find((p) => p.id === identifier || p.name === identifier || (p.url || p.id) === peerKey);
+      if (matching?.online) {
+        toast(t("Connected remotely and synced."));
+      } else if (matching?.last_error) {
+        toast(matching.last_error);
+      } else {
+        toast(t("Remote address saved."));
+      }
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setSavingRemotePeer(null);
     }
   };
 
@@ -252,23 +308,40 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
                 const host = peerHost(peer);
                 const kind = peerKind(peer);
                 const pKey = peer.url || peer.id;
+                const pIdent = peer.id || peer.url || peer.name;
                 const isSyncing = syncingPeer === pKey;
+                const isFreshSyncing = freshSyncingPeer === pKey;
+                const isEditingRemote = editingRemotePeer === pKey;
+                const isSavingRemote = savingRemotePeer === pKey;
+                const remoteReady = peer.remote_ready === true;
                 return (
                   <DeviceShell key={pKey}>
                     <div className="flex items-start gap-3.5">
                       <Glyph kind={kind} online={peer.online} />
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="flex items-center gap-1.5 truncate text-[15px] font-semibold leading-tight">
+                        <div className="flex flex-wrap items-center justify-between gap-1.5">
+                          <p className="flex min-w-0 items-center gap-1.5 truncate text-[15px] font-semibold leading-tight">
                             <OnlineDot online={peer.online} />
                             <span className="truncate">{displayName}</span>
                           </p>
-                          <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-muted">
-                            {kind === "phone" ? t("Phone") : t("Computer")}
-                          </span>
+                          <div className="flex flex-wrap items-center gap-1 shrink-0">
+                            <span
+                              className={cx(
+                                "rounded-full px-2 py-0.5 text-[10.5px] font-medium",
+                                remoteReady
+                                  ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300"
+                                  : "bg-amber-500/12 text-amber-700 dark:text-amber-300",
+                              )}
+                            >
+                              {remoteReady ? t("Works anywhere") : t("Home Wi-Fi only")}
+                            </span>
+                            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-muted">
+                              {kind === "phone" ? t("Phone") : t("Computer")}
+                            </span>
+                          </div>
                         </div>
-                        <p className="mt-0.5 truncate font-mono text-[11.5px] text-muted">{host}</p>
-                        <p className="mt-1 text-[12.5px] leading-snug text-muted">
+                        <p className="mt-0.5 break-all font-mono text-[11.5px] text-muted">{host}</p>
+                        <p className="mt-1 break-words [overflow-wrap:anywhere] text-[12.5px] leading-snug text-muted">
                           {peer.last_error
                             ? t("Not syncing: {error}", { error: peer.last_error })
                             : peer.last_sync_at
@@ -280,7 +353,7 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
                         <div className="mt-2.5 flex flex-wrap gap-2">
                           <button
                             type="button"
-                            disabled={isSyncing}
+                            disabled={isSyncing || isFreshSyncing}
                             onClick={() => void syncNowWithPeer(pKey)}
                             className="inline-flex h-8 items-center gap-1.5 rounded-full bg-accent/12 px-3 text-[12px] font-medium text-accent hover:bg-accent/20 disabled:opacity-50"
                           >
@@ -289,12 +362,66 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
                           </button>
                           <button
                             type="button"
-                            onClick={() => void unpairPeer(peer.id || peer.url || peer.name)}
+                            onClick={() => {
+                              if (isEditingRemote) {
+                                setEditingRemotePeer(null);
+                              } else {
+                                setEditingRemotePeer(pKey);
+                                setRemoteUrlDraft("");
+                              }
+                            }}
+                            className={cx(
+                              "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium transition",
+                              !remoteReady && peer.last_error
+                                ? "bg-accent text-accent-fg"
+                                : "border border-border text-fg hover:bg-surface-2",
+                            )}
+                          >
+                            <Globe size={12} />
+                            {t("Connect remotely")}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isSyncing || isFreshSyncing}
+                            onClick={() => void freshSyncWithPeer(pIdent, pKey)}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border px-3 text-[12px] font-medium text-muted hover:text-fg disabled:opacity-50"
+                          >
+                            {isFreshSyncing ? <Loader2 size={12} className="animate-spin" /> : null}
+                            {isFreshSyncing ? t("Resetting…") : t("Fresh sync")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void unpairPeer(pIdent)}
                             className="inline-flex h-8 items-center rounded-full border border-border px-3 text-[12px] font-medium text-muted hover:text-fg"
                           >
                             {t("Unpair")}
                           </button>
                         </div>
+                        {isEditingRemote && (
+                          <div className="mt-3 rounded-xl border border-accent/35 bg-surface-2/50 p-2.5 space-y-2">
+                            <p className="text-[11.5px] leading-snug text-muted">
+                              {t("Paste your PC's Personal Cloud URL (Free Cloudflare Tunnel https://….trycloudflare.com or Tailscale http://….ts.net:8787) to sync away from home without unpairing.")}
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                              <input
+                                type="url"
+                                value={remoteUrlDraft}
+                                onChange={(e) => setRemoteUrlDraft(e.target.value)}
+                                placeholder="https://example.trycloudflare.com"
+                                className="min-w-0 flex-1 rounded-xl border border-border bg-surface px-2.5 py-1.5 text-[12px] outline-none focus:ring-2 focus:ring-accent/35"
+                              />
+                              <button
+                                type="button"
+                                disabled={isSavingRemote || !remoteUrlDraft.trim()}
+                                onClick={() => void saveRemotePeerUrl(pIdent, pKey)}
+                                className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-3 py-1.5 text-[12px] font-medium text-accent-fg disabled:opacity-50"
+                              >
+                                {isSavingRemote ? <Loader2 size={12} className="animate-spin" /> : null}
+                                {t("Save & sync")}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </DeviceShell>

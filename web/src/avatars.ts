@@ -53,8 +53,25 @@ function clipMood(mood: string): ClipMood {
   return mood === "working" || mood === "waiting" || mood === "happy" ? mood : "idle";
 }
 
+/** Built-in Dragon 3D animation clips so users can preview & switch Dragon animations per situation too. */
+export const DRAGON_CLIPS: ReadonlyArray<{ file: string; path: string; kind: "video" | "image"; label: string }> = [
+  { file: "dragon-idle.mp4", path: "/avatars/dragon-idle.mp4", kind: "video", label: "Idle · Sway" },
+  { file: "dragon-working.mp4", path: "/avatars/dragon-working.mp4", kind: "video", label: "Working · Laptop" },
+  { file: "dragon-waiting.mp4", path: "/avatars/dragon-waiting.mp4", kind: "video", label: "Waiting · Crystal Ball" },
+  { file: "dragon-happy.mp4", path: "/avatars/dragon-happy.mp4", kind: "video", label: "Happy · Golden Star" },
+  { file: "dragon-error.webp", path: "/avatars/dragon-error.webp", kind: "image", label: "Sorry / Alert (still)" },
+];
+
 /** The dragon's clip for a mood — a few seconds, looping, back in the starting pose at the end. */
-export function dragonClipUrl(mood: string): string | null {
+export function dragonClipUrl(mood: string, situationClips?: Record<string, string>): string | null {
+  const custom = situationClips?.[mood] || (mood !== "error" ? situationClips?.[clipMood(mood)] : undefined);
+  if (custom) {
+    const clean = custom.trim();
+    const hit = DRAGON_CLIPS.find((c) => c.file === clean || c.path === clean);
+    if (hit) return hit.kind === "video" ? hit.path : null;
+    if (clean.startsWith("/avatars/") && clean.endsWith(".mp4")) return clean;
+    if (clean.endsWith(".webp") || clean.endsWith(".png")) return null;
+  }
   if (mood === "error") return null;
   return `/avatars/dragon-${clipMood(mood)}.mp4`;
 }

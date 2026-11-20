@@ -1,14 +1,12 @@
-import { Check, Loader2, MoreHorizontal, RefreshCw, Sparkles, X } from "lucide-react";
+import { Check, Loader2, RefreshCw, Sparkles, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, fileUrl } from "../api";
-import { DRAGON, isDragon } from "../avatars";
+import { DRAGON } from "../avatars";
 import { Avatar } from "../components/Avatar";
 import { AVATAR_STYLES, AvatarPicker, type AvatarChoice } from "../components/AvatarPicker";
 import { PageBar } from "../components/BackBar";
-import { MuseRoundButton } from "../components/MuseHeader";
 import { primaryBtn, secondaryBtn } from "../components/Form";
 import { StarNudgeOnce } from "../components/StarNudge";
-import { useMenuKeys } from "../components/useMenuKeys";
 import { getLocale, useT } from "../i18n";
 import { regionOf, unavailableLine } from "../providers";
 import { useStore } from "../store";
@@ -46,9 +44,7 @@ export function AvatarStudioScreen() {
   const [style, setStyle] = useState("muse");
   const [selected, setSelected] = useState<number | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [menu, setMenu] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  useMenuKeys(menuRef, menu, () => setMenu(false));
+  const [previewClip, setPreviewClip] = useState<{ url: string; label: string } | null>(null);
   const [error, setError] = useState("");
 
   // the session: the socket's word, else what the first fetch found under way
@@ -112,15 +108,7 @@ export function AvatarStudioScreen() {
       if (begun.cost?.cloud === false && begun.session) await api.avatarStart(begun.session);
     });
 
-  const reset = () =>
-    act("reset", async () => {
-      await api.updateSettings({ profile: { avatar: DRAGON } });
-      await refreshSettings();
-      toast(t("Back to the built-in look."));
-    });
-
   const drawn = view?.face ?? null;
-  const wearsDrawn = !!profile?.avatar && !isDragon(profile.avatar);
   const posing = session && (stage === "posing" || stage === "animating" || stage === "done") && session.face === profile?.avatar;
   const moodsDone = posing ? Object.keys(session.moods ?? {}).length : 0;
   const clipsDone = posing ? Object.keys(session.clips ?? {}).length : 0;
@@ -172,56 +160,17 @@ export function AvatarStudioScreen() {
       <PageBar
         title={t("Avatar studio")}
         description={t("Draw a look with your image model; it moves with what it is doing.")}
-        actions={
-          <div ref={menuRef} className="relative">
-            <MuseRoundButton small onClick={() => setMenu((v) => !v)} label={t("More")} expanded={menu}>
-              <MoreHorizontal size={20} />
-            </MuseRoundButton>
-            {menu && (
-              <div role="menu" className="absolute right-0 z-20 mt-1 w-56 overflow-hidden rounded-2xl border border-border/70 bg-surface py-1 text-[14px] shadow-lg">
-                <MenuItem
-                  label={t("Name & style")}
-                  onClick={() => {
-                    setMenu(false);
-                    setTab("you");
-                  }}
-                />
-                <MenuItem
-                  label={t("Image model")}
-                  onClick={() => {
-                    setMenu(false);
-                    setTab("connections");
-                  }}
-                />
-                {wearsDrawn && (
-                  <>
-                    <MenuItem
-                      label={t("Redraw the poses")}
-                      onClick={() => {
-                        setMenu(false);
-                        void act("moods", () => api.avatarMoods());
-                      }}
-                    />
-                    <MenuItem
-                      label={t("Back to the built-in look")}
-                      danger
-                      onClick={() => {
-                        setMenu(false);
-                        void reset();
-                      }}
-                    />
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        }
       />
 
-      <div className="flex-1 overflow-y-auto px-4 pb-8 space-y-5">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden px-4 pb-8 space-y-5">
         {/* the face as it is */}
         <div className="flex flex-col items-center pt-7 text-center overflow-visible">
-          <FacePreview profile={displayProfile} name={name} />
+          <FacePreview
+            profile={displayProfile}
+            name={name}
+            previewClip={previewClip}
+            onClearPreview={() => setPreviewClip(null)}
+          />
           {drawn && (
             <div className="mt-0.5 max-w-sm text-[12.5px] text-muted">
               {[drawn.description, styleLabel(drawn.style) && t(styleLabel(drawn.style) as string)].filter(Boolean).join(" · ")}
@@ -281,7 +230,13 @@ export function AvatarStudioScreen() {
                 avatar_situation_clips: profile.avatar_situation_clips ?? {},
               }}
               onGlowPreview={setPreviewGlow}
-              onChange={(next) => void saveAvatarChoice(next)}
+              onPreviewClip={setPreviewClip}
+              previewClipUrl={previewClip?.url ?? null}
+              onRedrawMoods={() => void act("moods", () => api.avatarMoods())}
+              onChange={(next) => {
+                if (next.avatar !== profile.avatar) setPreviewClip(null);
+                void saveAvatarChoice(next);
+              }}
             />
           </section>
         )}
@@ -484,44 +439,84 @@ function providerName(host: string, t: (s: string) => string): string {
   return host;
 }
 
-function MenuItem({ label, onClick, danger = false }: { label: string; onClick: () => void; danger?: boolean }) {
-  return (
-    <button type="button" role="menuitem" onClick={onClick} className={cx("block w-full px-4 py-2.5 text-left hover:bg-surface-2", danger ? "text-rose-600 dark:text-rose-300" : "")}>
-      {label}
-    </button>
-  );
-}
-
 /**
  * The face, large, using the real <Avatar> component (with the user's background & soft radial
- * border glow) and clickable situation pills so the preview stays steady instead of flashing
- * between poses on a timer.
+ * border glow) and clickable situation pills + live gallery preview so the user can test every
+ * animation smoothly right at the top of Avatar Studio.
  */
-function FacePreview({ profile, name }: { profile: Profile | null; name: string }) {
+function FacePreview({
+  profile,
+  name,
+  previewClip,
+  onClearPreview,
+}: {
+  profile: Profile | null;
+  name: string;
+  previewClip: { url: string; label: string } | null;
+  onClearPreview: () => void;
+}) {
   const t = useT();
-  const [previewState, setPreviewState] = useState<Status["state"]>("idle");
-  const status: Status = { state: previewState, detail: "", thread: "main" };
+  const [previewMood, setPreviewMood] = useState<"idle" | "working" | "waiting" | "happy" | "call" | "error">("idle");
+  const statusState: Status["state"] =
+    previewMood === "working" ? "working" : previewMood === "waiting" ? "waiting" : "idle";
+  const status: Status = { state: statusState, detail: "", thread: "main" };
+
+  const moodClipUrl = (() => {
+    if (previewClip) return previewClip.url;
+    if (previewMood === "idle" || previewMood === "working" || previewMood === "waiting") return null;
+    if (!profile) return null;
+    const face = profile.avatar || DRAGON;
+    const custom = profile.avatar_situation_clips?.[previewMood];
+    if (face === DRAGON) {
+      if (previewMood === "happy") return "/avatars/dragon-happy.mp4";
+      if (previewMood === "call") return "/avatars/dragon-idle.mp4";
+      if (previewMood === "error") return "/avatars/dragon-error.webp";
+      return null;
+    }
+    if (custom) return fileUrl(`avatar/${face}/${custom}`);
+    if (previewMood === "happy") return fileUrl(`avatar/${face}/happy.mp4`);
+    if (previewMood === "call") return fileUrl(`avatar/${face}/call.mp4`);
+    if (previewMood === "error") return fileUrl(`avatar/${face}/error.webp`);
+    return null;
+  })();
+
   return (
     <>
       <div className="p-2 overflow-visible">
-        <Avatar profile={profile} status={status} size={148} />
+        <Avatar profile={profile} status={status} size={148} previewClipUrl={moodClipUrl} />
       </div>
       <div className="mt-2 text-[20px] font-semibold tracking-tight">{name}</div>
+      {previewClip && (
+        <div className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-accent/12 px-3 py-1 text-[12px] font-medium text-accent">
+          <span className="max-w-[200px] truncate">{t("Previewing: {label}", { label: previewClip.label })}</span>
+          <button type="button" onClick={onClearPreview} aria-label={t("Close")} className="rounded-full p-0.5 hover:bg-accent/20">
+            <X size={12} />
+          </button>
+        </div>
+      )}
       <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5">
         {(
           [
             { id: "idle", label: MOOD_LABEL.idle },
             { id: "working", label: MOOD_LABEL.working },
             { id: "waiting", label: MOOD_LABEL.waiting },
+            { id: "happy", label: MOOD_LABEL.happy },
+            { id: "call", label: "Live Voice Call" },
+            { id: "error", label: MOOD_LABEL.error },
           ] as const
         ).map((m) => (
           <button
             key={m.id}
             type="button"
-            onClick={() => setPreviewState(m.id)}
+            onClick={() => {
+              onClearPreview();
+              setPreviewMood(m.id);
+            }}
             className={cx(
               "rounded-full border px-3 py-1 text-[12px] transition-colors",
-              previewState === m.id ? "border-accent bg-accent/10 text-accent font-medium" : "border-border text-muted hover:text-fg",
+              !previewClip && previewMood === m.id
+                ? "border-accent bg-accent/10 text-accent font-medium"
+                : "border-border text-muted hover:text-fg",
             )}
           >
             {t(m.label)}

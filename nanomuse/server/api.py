@@ -956,6 +956,11 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         await asyncio.wait({starting}, timeout=settings.server.start_grace)
         updater_task = asyncio.create_task(_auto_update_loop(), name="auto-update-loop")
         watch_task = asyncio.create_task(_watch_autodetect_loop(), name="watch-autodetect")
+        tunnel_boot_task = (
+            None
+            if os.environ.get("PYTEST_CURRENT_TEST")
+            else asyncio.create_task(personal_cloud.maybe_auto_start(), name="personal-cloud-boot")
+        )
         on_ready = getattr(app.state, "on_ready", None)
         if callable(on_ready):
             on_ready()
@@ -964,6 +969,10 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         finally:
             updater_task.cancel()
             watch_task.cancel()
+            if tunnel_boot_task is not None:
+                tunnel_boot_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await tunnel_boot_task
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await updater_task
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -2446,31 +2455,55 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         except StudioError as exc:
             raise _studio_http(exc) from exc
 
-    def _friendly_clip_label(rel_name: str) -> str:
-        low = rel_name.lower()
+    def _friendly_clip_label(rel_name: str, clip_labels: dict[str, Any] | None = None) -> str:
+        if clip_labels and isinstance(clip_labels.get(rel_name), str) and clip_labels[rel_name].strip():
+            return str(clip_labels[rel_name]).strip()
+        low = Path(rel_name).name.lower()
         if "call-dark" in low:
-            return f"Voice Call · Dark ({rel_name})"
+            return "Voice Call · Dark"
         if "call-light" in low:
-            return f"Voice Call · Light ({rel_name})"
+            return "Voice Call · Light"
         if "making_something" in low and "darkmode" in low:
-            return f"Making Something · Dark ({rel_name})"
-        if "making_something" in low:
-            return f"Making Something / Waiting ({rel_name})"
+            return "Making Something · Dark"
+        if "making_something" in low or low in ("waiting.mp4", "waiting.webp"):
+            return "Making Something / Waiting"
         if "milestone_level_up" in low and "darkmode" in low:
-            return f"Milestone / Level Up · Dark ({rel_name})"
-        if "milestone_level_up" in low:
-            return f"Milestone / Happy ({rel_name})"
+            return "Milestone / Level Up · Dark"
+        if "milestone_level_up" in low or low in ("happy.mp4", "happy.webp"):
+            return "Milestone / Happy"
+        if "waking" in low and "darkmode" in low:
+            return "Waking Up · Dark"
         if "waking" in low:
-            return f"Waking Up ({rel_name})"
+            return "Waking Up"
         if "working" in low and "darkmode" in low:
-            return f"Working · Dark ({rel_name})"
+            return "Working · Dark"
         if "working" in low:
-            return f"Working ({rel_name})"
+            return "Working"
         if "idle" in low and "darkmode" in low:
-            return f"Idle · Dark ({rel_name})"
+            return "Idle · Dark"
+        if low.startswith("custom-"):
+            stem = Path(rel_name).stem
+            parts = stem.split("-")
+            if len(parts) >= 3 and parts[-1].isdigit():
+                parts = parts[1:-1]
+            else:
+                parts = parts[1:]
+            nice = " ".join(p.capitalize() for p in parts if p)
+            return nice or "Custom Animation"
         if "-1.mp4" in low or low == "idle.mp4":
-            return f"Default Idle ({rel_name})"
-        return rel_name
+            return "Default Idle"
+        if low == "call.mp4":
+            return "Live Voice Call"
+        if low == "idle.webp":
+            return "Idle (still)"
+        if low == "error.webp":
+            return "Error / Alert (still)"
+        if "darkmode" in low and low.endswith(".webp"):
+            return "Dark Mode (still)"
+        stem = Path(rel_name).stem
+        if len(stem) > 30:
+            stem = stem[:28] + "…"
+        return stem
 
     def _inspect_avatar_face(face_dir: Path) -> dict[str, Any]:
         face_id = face_dir.name
@@ -2486,6 +2519,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                 raw_f = json.loads((face_dir / "face.json").read_text(encoding="utf-8"))
                 if isinstance(raw_f, dict):
                     face_meta = raw_f
+        clip_labels = model.get("clip_labels") if isinstance(model.get("clip_labels"), dict) else {}
 
         canonical_mp4s = {"idle.mp4", "working.mp4", "waiting.mp4", "happy.mp4", "call.mp4", "error.mp4"}
         all_mp4s = sorted(
@@ -2527,7 +2561,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                     "file": rel,
                     "path": f"avatar/{face_id}/{rel}",
                     "kind": "video",
-                    "label": _friendly_clip_label(rel),
+                    "label": _friendly_clip_label(rel, clip_labels),
                     "size": fp.stat().st_size if fp.is_file() else 0,
                     "canonical": Path(rel).name.lower() in canonical_mp4s,
                 }
@@ -2539,7 +2573,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                     "file": rel,
                     "path": f"avatar/{face_id}/{rel}",
                     "kind": "image",
-                    "label": _friendly_clip_label(rel),
+                    "label": _friendly_clip_label(rel, clip_labels),
                     "size": fp.stat().st_size if fp.is_file() else 0,
                     "canonical": Path(rel).name.lower() in {"idle.webp", "working.webp", "waiting.webp", "happy.webp", "error.webp"},
                 }
@@ -2552,7 +2586,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             "style": str(face_meta.get("style") or model.get("style") or "muse"),
             "preview": f"avatar/{face_id}/{preview_rel}" if preview_rel else "",
             "description": str(model.get("visual_description") or face_meta.get("description") or ""),
-            "clips": [{"file": rel, "label": _friendly_clip_label(rel)} for rel in display_mp4s],
+            "clips": [{"file": rel, "label": _friendly_clip_label(rel, clip_labels)} for rel in display_mp4s],
             "stills": all_stills[:40],
             "assets": assets,
             "situations": situations,
@@ -2753,6 +2787,52 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             (face_dir / "idle.mp4").write_bytes(raw_bytes)
 
         return {"ok": True, "uploaded": safe_name, "face": _inspect_avatar_face(face_dir), "profile": svc.profile.to_dict()}
+
+    @app.post("/api/avatar/{face_id}/animate", dependencies=dep)
+    async def animate_avatar_clip(face_id: str, request: Request) -> dict[str, Any]:
+        """Generate a new custom looping 3D animation clip for an existing avatar (or dragon) with AI."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(400, "JSON body required")
+        prompt = str(body.get("prompt") or "").strip()
+        situation = str(body.get("situation") or "").strip()
+        label = str(body.get("label") or "").strip()
+        base_still = str(body.get("base_still") or "").strip()
+        try:
+            res = await svc.avatar.generate_custom_clip(
+                face_id,
+                prompt,
+                situation=situation,
+                label=label,
+                base_still=base_still,
+            )
+            face_dir = svc.workspace() / "avatar" / str(res["face_id"])
+            if face_dir.is_dir():
+                res["face"] = _inspect_avatar_face(face_dir)
+            return res
+        except StudioError as exc:
+            raise _studio_http(exc) from exc
+
+    @app.delete("/api/avatar/{face_id}/asset", dependencies=dep)
+    async def delete_avatar_asset(face_id: str, file: str = Query(...)) -> dict[str, Any]:
+        """Remove a custom uploaded or generated animation clip from a face folder."""
+        clean_face = re.sub(r"[^a-zA-Z0-9_-]", "", face_id.strip())
+        face_dir = svc.workspace() / "avatar" / clean_face
+        if not face_dir.is_dir():
+            raise HTTPException(404, "Avatar face not found")
+        target = (face_dir / file.strip()).resolve()
+        try:
+            target.relative_to(face_dir.resolve())
+        except ValueError as exc:
+            raise HTTPException(400, "Invalid asset path") from exc
+        if target.name.lower() in ("idle.webp", "avatar-model.json", "face.json"):
+            raise HTTPException(400, "Core avatar file cannot be deleted")
+        if target.is_file():
+            target.unlink()
+        return {"ok": True, "face": _inspect_avatar_face(face_dir)}
 
     @app.get("/api/phone", dependencies=dep)
     async def phone_status() -> dict[str, Any]:
@@ -2996,6 +3076,37 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     async def sync_unpair(body: UnpairBody) -> dict[str, Any]:
         removed = svc.sync.unpair_peer(body.identifier)
         return {"ok": removed, **svc.sync.view()}
+
+    @app.post("/api/sync/pair/update-url", dependencies=dep)
+    async def sync_update_peer_url(request: Request) -> dict[str, Any]:
+        """Update/add a remote Personal Cloud, Cloudflare Tunnel, or Tailscale URL on an existing peer."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(400, "JSON body required")
+        try:
+            return await svc.sync.update_peer_urls(
+                identifier=str(body.get("identifier") or ""),
+                url=str(body.get("url") or ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.post("/api/sync/pair/resync", dependencies=dep)
+    async def sync_fresh_resync(request: Request) -> dict[str, Any]:
+        """Reset peer sync cursors & digests for a clean fresh sync without unpairing."""
+        identifier = ""
+        try:
+            raw = await request.body()
+            if raw:
+                body = json.loads(raw)
+                if isinstance(body, dict):
+                    identifier = str(body.get("identifier") or "")
+        except Exception:
+            identifier = ""
+        return await svc.sync.reset_peer_sync(identifier=identifier)
 
     @app.put("/api/sync/device-overrides", dependencies=dep)
     async def put_sync_device_overrides(request: Request) -> dict[str, Any]:
@@ -3722,6 +3833,20 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         if svc.sync.peer_active:
             svc.sync.peer_sync_soon(delay=0.2)
         return st
+
+    @app.post("/api/personal-cloud/auto-tunnel", dependencies=dep)
+    async def personal_cloud_auto_tunnel(request: Request) -> dict[str, Any]:
+        enabled = False
+        try:
+            raw = await request.body()
+            if raw:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    enabled = bool(parsed.get("enabled", False))
+        except Exception:
+            enabled = False
+        personal_cloud.set_auto_tunnel(enabled)
+        return await asyncio.to_thread(personal_cloud.status, probe_tailscale=True)
 
     # ------------------------------------------------------------------ Live Call & Watch pairing
     @app.get("/api/call/capabilities", dependencies=dep)

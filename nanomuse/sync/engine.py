@@ -173,6 +173,51 @@ _CANONICAL_AVATAR_FILES = (
 )
 
 
+def _is_lan_only_url(url: str) -> bool:
+    """True when URL points to a private home-Wi-Fi LAN IP (not Tailscale 100.x, *.ts.net, or public HTTPS)."""
+    u = str(url or "").strip().lower()
+    if not u:
+        return True
+    if u.startswith("https://") or ".ts.net" in u or "trycloudflare.com" in u:
+        return False
+    host = u.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].strip("[]")
+    if not host or host in ("localhost", "127.0.0.1", "::1"):
+        return True
+    if host.startswith(("192.168.", "10.", "169.254.")):
+        return True
+    if host.startswith("172."):
+        parts = host.split(".")
+        if len(parts) >= 2 and parts[1].isdigit() and 16 <= int(parts[1]) <= 31:
+            return True
+    return False
+
+
+def _derive_tailscale_peer_url(peer_name: str, existing_url: str, port_default: int = 8787) -> str:
+    """If this device is inside a Tailscale tailnet (*.ts.net), derive http://<peer-host>.<tailnet>:<port>
+    so old LAN-only pairings auto-heal away from home without needing a re-pair."""
+    import re as _re
+
+    try:
+        from nanomuse.server.personal_cloud import tailnet_search_domain
+
+        domain = tailnet_search_domain(port_default)
+    except Exception:  # noqa: BLE001
+        domain = ""
+    if not domain:
+        return ""
+    raw_name = str(peer_name or "").strip().lower()
+    slug = _re.sub(r"[^a-z0-9-]+", "-", raw_name).strip("-")
+    if not slug or slug in ("localhost", "computer", "phone", "peer", "device"):
+        return ""
+    port = port_default
+    hp = str(existing_url or "").split("://", 1)[-1].split("/", 1)[0]
+    if ":" in hp and not hp.endswith("]"):
+        maybe_port = hp.rsplit(":", 1)[1]
+        if maybe_port.isdigit():
+            port = int(maybe_port)
+    return f"http://{slug}.{domain}:{port}"
+
+
 def _infer_peer_kind(peer: dict[str, Any]) -> str:
     explicit = str(peer.get("kind") or "").strip().lower()
     if explicit in ("phone", "computer", "tablet", "watch"):
@@ -554,12 +599,24 @@ class ConversationSync:
             cur = self.state.get("peer_cursors", {}).get(pkey, {})
             out_seq = int(cur.get("out") or 0)
             kind = _infer_peer_kind(p)
+            peer_urls = [
+                str(u).strip().rstrip("/")
+                for u in [p.get("url"), *(p.get("urls") or [])]
+                if str(u or "").strip().startswith(("http://", "https://"))
+            ]
+            dedup_urls: list[str] = []
+            for u in peer_urls:
+                if u not in dedup_urls:
+                    dedup_urls.append(u)
+            remote_ready = any(not _is_lan_only_url(u) for u in dedup_urls)
             out.append(
                 {
                     "id": p.get("id") or "",
                     "name": _clean_peer_name(p.get("name") or "", p.get("url") or "", kind),
                     "kind": kind,
                     "url": p.get("url") or "",
+                    "urls": dedup_urls,
+                    "remote_ready": remote_ready,
                     "online": bool(st.get("online", False)),
                     "last_sync_at": st.get("last_sync_at") or cur.get("last_sync_at") or None,
                     "last_error": st.get("last_error") or "",
@@ -1936,10 +1993,12 @@ class ConversationSync:
             self.svc.bus.publish({"kind": "sync", "sync": self.view()})
         return {"applied": total_applied, "pushed": total_pushed, "peers": self.peers_view()}
 
-    async def _refresh_peer_identity(self, peer: dict[str, Any]) -> None:
+    async def _refresh_peer_identity(self, peer: dict[str, Any]) -> bool:
         """Ask the peer's /v1/sync/hello for its real name, kind, device_id, and latest
         Personal Cloud / Tailscale / Tunnel / LAN URLs so stale names, IPs, or away-from-home
-        addresses heal automatically across any Wi-Fi or cellular network."""
+        addresses heal automatically across any Wi-Fi or cellular network.
+
+        Returns True when at least one candidate URL responded, False otherwise."""
         import httpx
 
         base = str(peer.get("url") or "").strip().rstrip("/")
@@ -1948,9 +2007,14 @@ class ConversationSync:
             cu = str(u or "").strip().rstrip("/")
             if cu.startswith(("http://", "https://")) and cu not in candidates:
                 candidates.append(cu)
-        if not candidates:
-            return
         my_port = int(getattr(self.svc.settings.server, "port", 8787) or 8787)
+        # Auto-derive Tailscale MagicDNS URL from peer hostname if this device is on a tailnet
+        ts_guess = _derive_tailscale_peer_url(str(peer.get("name") or ""), base, my_port)
+        if ts_guess and ts_guess not in candidates:
+            candidates.append(ts_guess)
+        # Prefer remote HTTPS/Tailscale URLs first only if the primary failed; keep base first when local
+        if not candidates:
+            return False
         my_kind = self._local_kind()
         my_urls = self._my_reachable_urls()
         headers = {
@@ -1995,7 +2059,7 @@ class ConversationSync:
                 except Exception:
                     info = None
         if not isinstance(info, dict):
-            return
+            return False
         remote_name = str(info.get("name") or "").strip()
         remote_kind = str(info.get("kind") or "").strip().lower()
         remote_id = str(info.get("id") or "").strip()
@@ -2045,9 +2109,22 @@ class ConversationSync:
                     if peer.get("id"):
                         item["id"] = peer["id"]
             save_pairs(self.svc.data_dir, stored)
+        return True
 
-    async def _sync_one_peer(self, peer: dict[str, str]) -> tuple[int, int]:
-        await self._refresh_peer_identity(peer)
+    async def _sync_one_peer(self, peer: dict[str, Any]) -> tuple[int, int]:
+        reachable = await self._refresh_peer_identity(peer)
+        if reachable is False:
+            all_urls = [
+                str(u).strip()
+                for u in [peer.get("url"), *(peer.get("urls") or [])]
+                if str(u or "").strip()
+            ]
+            shown_host = (all_urls[0] if all_urls else "").replace("http://", "").replace("https://", "")
+            if all_urls and all(_is_lan_only_url(u) for u in all_urls):
+                raise RuntimeError(
+                    f"Home Wi-Fi IP only ({shown_host}). Tap Connect remotely to add your PC's Personal Cloud / Tailscale URL."
+                )
+            raise RuntimeError(f"{all_urls[0] if all_urls else 'Peer'} did not answer in time")
         pkey = self._peer_key_of(peer)
         peer_cursors = self.state.setdefault("peer_cursors", {})
         cur = peer_cursors.setdefault(pkey, {"in": 0, "out": 0})
@@ -2221,34 +2298,50 @@ class ConversationSync:
 
     # ------------------------------------------------------------------ Muse data & avatar/frames sync
     def list_avatar_files(self, face: str | None = None) -> list[dict[str, Any]]:
-        """List files (stills, animated clips, and frames) for the active avatar face."""
-        target_face = str(face if face is not None else getattr(self.svc.profile, "avatar", "") or "").strip()
-        if not target_face or target_face in ("none", "dragon", "emoji"):
-            return []
-        face_dir = self.svc.workspace() / "avatar" / target_face
-        if not face_dir.is_dir():
-            return []
+        """List files (stills, animated clips, and frames) for the active avatar face first,
+        followed by any other saved 3D/studio faces so every animation syncs across devices."""
         allowed_ext = (".webp", ".png", ".jpg", ".jpeg", ".mp4", ".webm", ".json")
         rank = {name: i for i, name in enumerate(_CANONICAL_AVATAR_FILES)}
-        items: list[tuple[int, str, int, float]] = []
-        try:
-            for f in face_dir.iterdir():
-                if f.is_file() and f.suffix.lower() in allowed_ext:
-                    st = f.stat()
-                    items.append((rank.get(f.name, 999), f.name, int(st.st_size), float(st.st_mtime)))
-            frames_dir = face_dir / "frames"
-            if frames_dir.is_dir():
-                for f in sorted(frames_dir.iterdir()):
+        avatar_root = self.svc.workspace() / "avatar"
+        if not avatar_root.is_dir():
+            return []
+
+        active_face = str(face if face is not None else getattr(self.svc.profile, "avatar", "") or "").strip()
+        ordered_faces: list[str] = []
+        if active_face and active_face not in ("none", "dragon", "emoji"):
+            ordered_faces.append(active_face)
+        if face is None:
+            try:
+                for sub in sorted(avatar_root.iterdir()):
+                    if sub.is_dir() and not sub.name.startswith(".") and sub.name != "sessions":
+                        if sub.name not in ordered_faces:
+                            ordered_faces.append(sub.name)
+            except OSError:
+                pass
+
+        out: list[dict[str, Any]] = []
+        for f_idx, target_face in enumerate(ordered_faces[:8]):
+            face_dir = avatar_root / target_face
+            if not face_dir.is_dir():
+                continue
+            items: list[tuple[int, str, int, float]] = []
+            try:
+                for f in face_dir.iterdir():
                     if f.is_file() and f.suffix.lower() in allowed_ext:
                         st = f.stat()
-                        items.append((500, f"frames/{f.name}", int(st.st_size), float(st.st_mtime)))
-        except OSError:
-            pass
-        items.sort(key=lambda t: (t[0], t[1]))
-        return [
-            {"face": target_face, "rel": rel, "size": size, "mtime": round(mtime, 2)}
-            for _, rel, size, mtime in items
-        ]
+                        items.append((rank.get(f.name, 999), f.name, int(st.st_size), float(st.st_mtime)))
+                frames_dir = face_dir / "frames"
+                if f_idx == 0 and frames_dir.is_dir():
+                    for f in sorted(frames_dir.iterdir()):
+                        if f.is_file() and f.suffix.lower() in allowed_ext:
+                            st = f.stat()
+                            items.append((500, f"frames/{f.name}", int(st.st_size), float(st.st_mtime)))
+            except OSError:
+                pass
+            items.sort(key=lambda t: (t[0], t[1]))
+            for _, rel, size, mtime in items:
+                out.append({"face": target_face, "rel": rel, "size": size, "mtime": round(mtime, 2)})
+        return out
 
     def export_muse_data(self) -> dict[str, Any]:
         """Export portable Muse state (profile, avatar manifest, memories, goals, reminders,
@@ -3338,6 +3431,73 @@ class ConversationSync:
                 "result": {"applied": 0, "pushed": 0, "peers": self.peers_view()},
             }
         raise ValueError("Provide the 6-character pairing code or the device's token")
+
+    async def update_peer_urls(self, identifier: str, url: str) -> dict[str, Any]:
+        """Add/prioritize a remote Personal Cloud, Cloudflare Tunnel, or Tailscale URL on an
+        existing paired device without losing its pairing token or sync history, then sync now."""
+        from nanomuse.sync.peer import save_pairs
+
+        clean_url = str(url or "").strip()
+        if not clean_url:
+            raise ValueError("Enter your computer's Personal Cloud, Cloudflare Tunnel, or Tailscale URL")
+        parsed = parse_pair_payload(clean_url)
+        new_urls = [
+            str(u).strip().rstrip("/")
+            for u in (parsed.get("urls") or [])
+            if str(u or "").strip().startswith(("http://", "https://"))
+        ]
+        if not new_urls:
+            if not clean_url.startswith(("http://", "https://")):
+                clean_url = ("https://" if ("trycloudflare.com" in clean_url or clean_url.count(".") >= 2 and ":" not in clean_url) else "http://") + clean_url
+            clean_url = clean_url.rstrip("/")
+            if not clean_url.startswith(("http://", "https://")):
+                raise ValueError("Enter a valid http:// or https:// address")
+            new_urls = [clean_url]
+
+        stored = load_pairs(self.svc.data_dir)
+        ident = str(identifier or "").strip()
+        match = None
+        for item in stored:
+            if ident and (
+                item.get("id") == ident
+                or item.get("name") == ident
+                or str(item.get("url") or "").rstrip("/") == ident.rstrip("/")
+            ):
+                match = item
+                break
+        if match is None and len(stored) == 1:
+            match = stored[0]
+        if match is None:
+            raise ValueError("Paired device not found")
+
+        merged: list[str] = []
+        for u in [*new_urls, match.get("url"), *(match.get("urls") or [])]:
+            cu = str(u or "").strip().rstrip("/")
+            if cu.startswith(("http://", "https://")) and cu not in merged:
+                merged.append(cu)
+        match["url"] = merged[0]
+        match["urls"] = merged[:8]
+        save_pairs(self.svc.data_dir, stored)
+        self.reload_peers()
+        res = await self.sync_peers()
+        return {"ok": True, **res, **self.view()}
+
+    async def reset_peer_sync(self, identifier: str = "") -> dict[str, Any]:
+        """Perform a clean fresh sync by resetting peer cursors & Muse-data digests without
+        unpairing, healing stale state left behind by older app updates."""
+        self.reload_peers()
+        ident = str(identifier or "").strip()
+        cursors = self.state.setdefault("peer_cursors", {})
+        digests = self.state.setdefault("peer_muse_digests", {})
+        for p in self.peers:
+            if not ident or p.get("id") == ident or p.get("name") == ident or p.get("url") == ident:
+                pkey = self._peer_key_of(p)
+                cursors[pkey] = {"in": 0, "out": 0, "tail_done": False}
+                digests.pop(pkey, None)
+                self._peer_status.pop(pkey, None)
+        self._save()
+        res = await self.sync_peers()
+        return {"ok": True, "fresh": True, **res, **self.view()}
 
     def unpair_peer(self, identifier: str) -> bool:
         self.reload_peers()
