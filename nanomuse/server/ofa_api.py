@@ -711,19 +711,65 @@ def install_ofa(app: FastAPI, svc: MuseService, dependencies: list[Any] | None =
             raise HTTPException(404, "mha-quirk-rankings.html not found in workspace")
         return FileResponse(p, media_type="text/html", headers={"Cache-Control": "no-cache"})
 
+    def _resolve_custom_app_root(slug: str) -> tuple[Path | None, Path | None]:
+        clean = "".join(c for c in slug.strip().lower().removesuffix(".html") if c.isalnum() or c in "-_")
+        if not clean:
+            return None, None
+        folder_candidates = [
+            workspace / "apps" / clean / "space-build",
+            workspace / "apps" / clean / "space-build-cvm",
+            workspace / "spaces" / clean,
+            workspace / "apps" / clean,
+        ]
+        for folder in folder_candidates:
+            if folder.is_dir():
+                for entry_name in ("index.html", f"{clean}.html"):
+                    entry = folder / entry_name
+                    if entry.is_file():
+                        return folder.resolve(), entry.resolve()
+                htmls = sorted(folder.glob("*.html"))
+                if htmls:
+                    return folder.resolve(), htmls[0].resolve()
+        for single in (workspace / f"{clean}.html", workspace / "apps" / f"{clean}.html"):
+            if single.is_file():
+                return single.parent.resolve(), single.resolve()
+        return None, None
+
     @app.get("/apps/{slug}", include_in_schema=False)
     async def serve_custom_app(slug: str) -> FileResponse:
-        clean = slug.strip().lower().removesuffix(".html")
-        candidates = [
-            workspace / f"{clean}.html",
-            workspace / "apps" / f"{clean}.html",
-            workspace / "apps" / clean / "index.html",
-            workspace / "apps" / clean / f"{clean}.html",
-        ]
-        for c in candidates:
-            if c.is_file():
-                return FileResponse(c, media_type="text/html", headers={"Cache-Control": "no-cache"})
+        _root, entry = _resolve_custom_app_root(slug)
+        if entry is not None and entry.is_file():
+            return FileResponse(entry, media_type="text/html", headers={"Cache-Control": "no-cache"})
         raise HTTPException(404, f"Custom app '{slug}' not found")
+
+    @app.get("/apps/{slug}/{asset_path:path}", include_in_schema=False)
+    async def serve_custom_app_asset(slug: str, asset_path: str) -> FileResponse:
+        root, entry = _resolve_custom_app_root(slug)
+        if root is None:
+            raise HTTPException(404, f"Custom app '{slug}' not found")
+        clean_asset = asset_path.lstrip("/")
+        if clean_asset:
+            cand = (root / clean_asset).resolve()
+            try:
+                cand.relative_to(root)
+            except ValueError as exc:
+                raise HTTPException(403, "path outside app") from exc
+            if cand.is_file():
+                return FileResponse(cand, headers={"Cache-Control": "no-cache"})
+            # Also try parent app folder (e.g. icon.webp alongside space-build/)
+            app_dir = (workspace / "apps" / "".join(c for c in slug.strip().lower() if c.isalnum() or c in "-_")).resolve()
+            if app_dir.is_dir():
+                cand2 = (app_dir / clean_asset).resolve()
+                try:
+                    cand2.relative_to(app_dir)
+                except ValueError:
+                    pass
+                else:
+                    if cand2.is_file():
+                        return FileResponse(cand2, headers={"Cache-Control": "no-cache"})
+        if entry is not None and entry.is_file():
+            return FileResponse(entry, media_type="text/html", headers={"Cache-Control": "no-cache"})
+        raise HTTPException(404, f"Asset '{asset_path}' not found in app '{slug}'")
 
     # Move our routes ahead of the SPA catch-all (`/{full_path:path}`)
     routes = app.router.routes

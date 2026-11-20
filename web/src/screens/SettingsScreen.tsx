@@ -40,13 +40,14 @@ import {
   TerminalSquare,
   Trash2,
   Upload,
-  Watch,
+  UserRound,
   X,
   Zap,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { androidApp, authenticateNativeBiometric, keepRunningStatus, nativeBiometricInfo, type AppUpdateView, type KeepRunningStatus } from "../android";
-import { DevicesScreen, VRHeadsetCard, WatchPairingCard } from "./DevicesScreen";
+import { AccountScreen } from "./AccountScreen";
+import { DevicesScreen, VRHeadsetCard } from "./DevicesScreen";
 import { UsageScreen } from "./UsageScreen";
 import {
   clearDebugLog,
@@ -125,10 +126,14 @@ const MODES: Array<{ id: "ask" | "task" | "strict" | "auto"; title: string; text
 ];
 
 export function SettingsScreen() {
-  const { state, refreshSettings, setTab, toast, reopenSetup } = useStore();
+  const { state, dispatch, refreshSettings, setTab, toast, reopenSetup } = useStore();
   const s = state.settings;
   const [identity, setIdentity] = useState<Identity>(() => identityOf(state.profile, DRAGON, AVATAR_COLORS[0]));
   const [saving, setSaving] = useState(false);
+  const [identitySaved, setIdentitySaved] = useState<"idle" | "saving" | "saved">("idle");
+  const identityTimerRef = useRef<number | null>(null);
+  const identityPendingRef = useRef<Identity | null>(null);
+  const lastLocalIdentityAtRef = useRef<number>(0);
   const [confirmAutoSentinel, setConfirmAutoSentinel] = useState(false);
   const [disconnectOpen, setDisconnectOpen] = useState(false);
   const t = useT();
@@ -169,8 +174,82 @@ export function SettingsScreen() {
   }, [checkRelease, state.version]);
 
   useEffect(() => {
-    if (state.profile) setIdentity(identityOf(state.profile, "", AVATAR_COLORS[0]));
+    if (!state.profile) return;
+    // Do not clobber active typing with a stale WS profile echo
+    if (identityPendingRef.current || Date.now() - lastLocalIdentityAtRef.current < 1200) return;
+    setIdentity(identityOf(state.profile, "", AVATAR_COLORS[0]));
   }, [state.profile]);
+
+  const persistIdentity = useCallback(
+    async (next: Identity, showToast = false) => {
+      if (identityTimerRef.current !== null) {
+        window.clearTimeout(identityTimerRef.current);
+        identityTimerRef.current = null;
+      }
+      identityPendingRef.current = null;
+      const body = identityBody(next);
+      lastLocalIdentityAtRef.current = Date.now();
+      // Optimistically update the live app store immediately so Sidebar/Header/Avatar reflect changes in 0ms
+      if (state.profile) {
+        dispatch({ type: "ws", msg: { kind: "profile", profile: { ...state.profile, ...body } } });
+      }
+      setSaving(true);
+      setIdentitySaved("saving");
+      try {
+        await api.updateSettings({ profile: body });
+        setIdentitySaved("saved");
+        if (showToast) toast(t("Saved"));
+      } catch (e) {
+        setIdentitySaved("idle");
+        toast((e as Error).message);
+      } finally {
+        setSaving(false);
+      }
+    },
+    [dispatch, state.profile, t, toast],
+  );
+
+  // Flush any pending debounced text edits if the user navigates away
+  useEffect(() => {
+    return () => {
+      if (identityTimerRef.current !== null) {
+        window.clearTimeout(identityTimerRef.current);
+        identityTimerRef.current = null;
+      }
+      if (identityPendingRef.current) {
+        const body = identityBody(identityPendingRef.current);
+        identityPendingRef.current = null;
+        void api.updateSettings({ profile: body }).catch(() => undefined);
+      }
+    };
+  }, []);
+
+  const handleIdentityChange = useCallback(
+    (next: Identity) => {
+      const prev = identity;
+      setIdentity(next);
+      lastLocalIdentityAtRef.current = Date.now();
+      const textOnlyKeys: Array<keyof Identity> = ["name", "tagline", "style", "user_name"];
+      const discreteChanged = (Object.keys(next) as Array<keyof Identity>).some(
+        (k) => !textOnlyKeys.includes(k) && next[k] !== prev[k],
+      );
+      if (discreteChanged) {
+        // Discrete toggles (Original/unedited, background, color, border, glow, animation, tone, communication) save immediately!
+        void persistIdentity(next, false);
+        return;
+      }
+      // Text inputs auto-save smoothly 550ms after typing pauses
+      identityPendingRef.current = next;
+      setIdentitySaved("saving");
+      if (identityTimerRef.current !== null) window.clearTimeout(identityTimerRef.current);
+      identityTimerRef.current = window.setTimeout(() => {
+        identityTimerRef.current = null;
+        const pending = identityPendingRef.current;
+        if (pending) void persistIdentity(pending, false);
+      }, 550);
+    },
+    [identity, persistIdentity],
+  );
 
   const update = async (body: Record<string, unknown>, msg?: string) => {
     setSaving(true);
@@ -200,6 +279,7 @@ export function SettingsScreen() {
   const sections: Array<{ id: SectionId; title: string; group: string; icon: ReactNode }> = useMemo(
     () => [
       { id: "who", title: name, group: t("General & Usage"), icon: <Sparkles size={15} /> },
+      { id: "account", title: t("Account"), group: t("General & Usage"), icon: <UserRound size={15} /> },
       { id: "usage", title: t("Usage"), group: t("General & Usage"), icon: <BarChart3 size={15} /> },
       { id: "appearance", title: t("Appearance"), group: t("General & Usage"), icon: <Palette size={15} /> },
       { id: "proactivity", title: t("Proactivity"), group: t("General & Usage"), icon: <Zap size={15} /> },
@@ -209,7 +289,6 @@ export function SettingsScreen() {
       { id: "cloud", title: t("nanoMuse Cloud"), group: t("Models & Devices"), icon: <Cloud size={15} /> },
       { id: "devices", title: t("Devices"), group: t("Models & Devices"), icon: <MonitorSmartphone size={15} /> },
       { id: "notifications", title: t("Notifications"), group: t("Models & Devices"), icon: <Bell size={15} /> },
-      { id: "watch", title: t("Smartwatch (Wear OS)"), group: t("Models & Devices"), icon: <Watch size={15} /> },
       { id: "vr", title: t("VR Headset (Meta Quest)"), group: t("Models & Devices"), icon: <Glasses size={15} /> },
       { id: "assistant", title: t("Default assistant"), group: t("Models & Devices"), icon: <Sparkles size={15} /> },
       ...(keepRunningStatus() ? [{ id: "keep-running" as const, title: t("Keep it running"), group: t("Models & Devices"), icon: <BatteryFull size={15} /> }] : []),
@@ -230,7 +309,8 @@ export function SettingsScreen() {
 
   const catalog: SettingsCatalogEntry<SectionId>[] = useMemo(
     () => [
-      { id: "who-identity", sectionId: "who", sectionTitle: name, label: t("Name & personality"), description: t("Customize assistant name, avatar, color swatch, and bio."), keywords: ["profile", "avatar", "identity"] },
+      { id: "who-identity", sectionId: "who", sectionTitle: name, label: t("Name & personality"), description: t("Customize assistant name, avatar, background, glow, and personality."), keywords: ["profile", "avatar", "identity", "unedited", "background", "glow"] },
+      { id: "account-main", sectionId: "account", sectionTitle: t("Account"), label: t("Account & Private Personal Cloud"), description: t("Manage your Free Cloudflare Quick Tunnel, Tailscale, self-hosted sync, and optional nanoMuse Cloud account."), keywords: ["account", "personal cloud", "tunnel", "cloudflare", "tailscale", "sign in", "password", "sessions"] },
       { id: "usage-overview", sectionId: "usage", sectionTitle: t("Usage"), label: t("Token & cost usage"), description: t("Turns, cloud cost estimate, cached tokens, Ollama VRAM, and spending caps."), keywords: ["tokens", "cost", "limits", "budget", "ollama", "vram", "spending", "activity"] },
       { id: "sentinel-mode", sectionId: "sentinel", sectionTitle: t("Safety · Sentinel"), label: t("Approval mode & sandbox"), description: t("Locked in, Balanced, Cautious, Hands-off, and sandbox isolation rules."), keywords: ["safety", "sentinel", "sandbox", "hands-off", "auto", "approvals"] },
       { id: "app-lock-main", sectionId: "app-lock", sectionTitle: t("App lock"), label: t("Biometrics, passkey & PIN lock"), description: t("Lock the app with Fingerprint, Face ID, Passkey, Password/PIN, and auto-lock timeout."), keywords: ["pin", "password", "fingerprint", "face id", "passkey", "timeout", "lock"] },
@@ -246,12 +326,11 @@ export function SettingsScreen() {
       { id: "sentinel-rules", sectionId: "sentinel", sectionTitle: t("Safety · Sentinel"), label: t("What it may do without asking"), description: t("Always, ask first or never, per kind of action: commands, email, browser, files, passwords, location and more."), keywords: ["always", "ask", "never", "approve", "permission", "email", "shell", "commands", "browser", "files", "passwords", "location", "install"] },
       { id: "sentinel-more", sectionId: "sentinel", sectionTitle: t("Safety · Sentinel"), label: t("Emergency stop, quiet hours and limits"), description: t("Stop everything now, jump to quiet hours, or set spending and usage limits."), keywords: ["emergency", "stop", "panic", "quiet", "limit", "spending", "budget"] },
       { id: "assistant-main", sectionId: "assistant", sectionTitle: t("Default assistant"), label: t("Make MiniMuse your default assistant"), description: t("Choose MiniMuse as the assistant a phone or watch opens from its home, power or side button or assist gesture."), keywords: ["assistant", "default", "digital assistant", "home button", "power button", "side button", "gesture", "voice", "gemini", "google assistant"] },
-      { id: "watch-main", sectionId: "watch", sectionTitle: t("Smartwatch (Wear OS)"), label: t("Watch APK install & wireless ADB pairing"), description: t("Discover Wear OS watches over Wi-Fi, install MiniMuse-wear.apk, and generate 6-digit pairing codes."), keywords: ["wear", "watch", "apk", "adb", "pair", "sideload"] },
+      { id: "devices-main", sectionId: "devices", sectionTitle: t("Devices"), label: t("Paired devices, PC/phone sync, Wear OS watch & remote hands"), description: t("Manage paired computers, phones, direct Wi-Fi/Personal Cloud sync, smartwatch (Wear OS) pairing, and remote hands."), keywords: ["devices", "phone", "pc", "pair", "sync", "hands", "qr", "wear", "watch", "apk", "adb", "sideload"] },
       { id: "vr-main", sectionId: "vr", sectionTitle: t("VR Headset (Meta Quest)"), label: t("Meta Quest / VR APK install & AI headset control"), description: t("Install MiniMuse onto Meta Quest 2/3/3S/Pro, Pico, or Android XR as a floating spatial window with AI control."), keywords: ["vr", "quest", "meta", "oculus", "pico", "horizon", "xr", "headset", "sidequest", "apk"] },
       { id: "notifications-main", sectionId: "notifications", sectionTitle: t("Notifications"), label: t("Push & background notifications"), description: t("Enable alerts for approvals, questions, and finished background tasks."), keywords: ["push", "alerts", "test notification"] },
       ...(keepRunningStatus() ? [{ id: "keep-running-main", sectionId: "keep-running" as const, sectionTitle: t("Keep it running"), label: t("Battery optimization, overlay & boot start"), description: t("Keep Android background services alive, configure exact alarms, and export crash logs."), keywords: ["battery", "alarms", "boot", "logs"] }] : []),
       { id: "cloud-main", sectionId: "cloud", sectionTitle: t("nanoMuse Cloud"), label: t("Local / Hybrid / Cloud routing"), description: t("Switch between strictly local mode, custom slot routing, or nanoMuse Cloud."), keywords: ["relay", "local", "hybrid", "sync"] },
-      { id: "devices-main", sectionId: "devices", sectionTitle: t("Devices"), label: t("Paired devices, PC/phone sync & remote hands"), description: t("Manage paired computers, phones, direct Wi-Fi/Personal Cloud sync, and watch setup."), keywords: ["devices", "phone", "pc", "pair", "sync", "hands", "qr"] },
       { id: "model-main", sectionId: "model", sectionTitle: t("Model"), label: t("Provider, active model & API keys"), description: t("Inspect your active LLM, configure OpenRouter/DeepSeek/Gemini/Ollama, and manage keys."), keywords: ["llm", "api key", "provider", "ollama", "openrouter"] },
       { id: "appearance-bg", sectionId: "appearance", sectionTitle: t("Appearance"), label: t("Background & theme"), description: t("Choose white, dark, or custom canvas colors."), keywords: ["theme", "dark mode", "white", "background"] },
       { id: "appearance-scale", sectionId: "appearance", sectionTitle: t("Appearance"), label: t("UI scale"), description: t("Resize interface text, icons, and spacing cleanly on this device."), keywords: ["zoom", "font size", "scale"] },
@@ -315,19 +394,23 @@ export function SettingsScreen() {
     if (first) openSection(first.entry.sectionId, first.entry.id);
   };
 
-  // `#developer`, `#usage`, `#who`, etc. open that exact tab on both desktop and mobile.
-  const [wanted, setWanted] = useState<SectionId | null>(() => {
-    const id = (window.location?.hash ?? "").slice(1);
-    return SECTION_IDS.includes(id as SectionId) ? (id as SectionId) : null;
-  });
+  // `#developer`, `#usage`, `#who`, `#account`, etc. open that exact tab on both desktop and mobile.
+  // Legacy `#watch` redirects directly to `devices` where Wear OS lives.
+  const normalizeSectionHash = (raw: string): SectionId | null => {
+    if (raw === "watch") return "devices";
+    return SECTION_IDS.includes(raw as SectionId) ? (raw as SectionId) : null;
+  };
+  const [wanted, setWanted] = useState<SectionId | null>(() =>
+    normalizeSectionHash((window.location?.hash ?? "").slice(1)),
+  );
   useEffect(() => {
     const onHash = () => {
-      const id = (window.location?.hash ?? "").slice(1);
-      if (SECTION_IDS.includes(id as SectionId)) setWanted(id as SectionId);
+      const target = normalizeSectionHash((window.location?.hash ?? "").slice(1));
+      if (target) setWanted(target);
     };
     const onSection = (e: Event) => {
-      const id = (e as CustomEvent<string>).detail;
-      if (SECTION_IDS.includes(id as SectionId)) setWanted(id as SectionId);
+      const target = normalizeSectionHash((e as CustomEvent<string>).detail);
+      if (target) setWanted(target);
     };
     window.addEventListener("hashchange", onHash);
     window.addEventListener("nanomuse:settings-section", onSection);
@@ -480,9 +563,21 @@ export function SettingsScreen() {
         {show("who") && (
         <Section title={name} id="who" plain={!wide}>
           <SettingBlock id="who-identity" highlightedId={highlightedId}>
+            <div className="mb-2 flex items-center justify-between text-[12px] text-muted">
+              <span>{t("Changes save automatically and sync across paired devices.")}</span>
+              {identitySaved === "saving" ? (
+                <span className="inline-flex items-center gap-1 text-accent">
+                  <Loader2 size={12} className="animate-spin" /> {t("Saving…")}
+                </span>
+              ) : identitySaved === "saved" ? (
+                <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                  <Check size={12} /> {t("Saved")}
+                </span>
+              ) : null}
+            </div>
             <IdentityForm
               value={identity}
-              onChange={setIdentity}
+              onChange={handleIdentityChange}
               suggestions={false}
               inputCls={settingsInput}
               onStudio={() => setTab("avatar")}
@@ -490,11 +585,20 @@ export function SettingsScreen() {
             <button
               type="button"
               disabled={!dirty || saving}
-              onClick={() => void update({ profile: identityBody(identity) }, t("Saved"))}
+              onClick={() => void persistIdentity(identity, true)}
               className="mt-3 w-full rounded-2xl bg-accent text-accent-fg py-2.5 font-medium disabled:opacity-40"
             >
-              {t("Save")}
+              {saving ? t("Saving…") : dirty ? t("Save") : t("Saved")}
             </button>
+          </SettingBlock>
+        </Section>
+        )}
+
+        {/* Account: Private Personal Cloud & optional nanoMuse Cloud (inside Settings on both Desktop & Mobile) */}
+        {show("account") && (
+        <Section title={t("Account")} id="account" plain={!wide}>
+          <SettingBlock id="account-main" highlightedId={highlightedId}>
+            <AccountScreen embedded />
           </SettingBlock>
         </Section>
         )}
@@ -680,7 +784,7 @@ export function SettingsScreen() {
               }}
             />
             {s && (s.cloud_mode ?? "hybrid") !== "local" && (
-              <button type="button" onClick={() => setTab("account")} className="w-full text-[13.5px] flex items-center justify-between gap-2 pt-2 text-left">
+              <button type="button" onClick={() => openSection("account")} className="w-full text-[13.5px] flex items-center justify-between gap-2 pt-2 text-left">
                 <span className="shrink-0 text-muted">{t("nanoMuse Cloud account")}</span>
                 <span className="min-w-0 truncate text-[12.5px] text-accent flex items-center gap-1">
                   <span className="truncate">{state.hub?.account.signed_in ? (state.hub.account.hint || t("Signed in")) : t("Sign in")}</span> <ChevronRight size={14} className="shrink-0" />
@@ -846,20 +950,11 @@ export function SettingsScreen() {
         </Section>
         )}
 
-        {/* Devices (available directly in Settings on both Desktop and Mobile) */}
+        {/* Devices (available directly in Settings on both Desktop and Mobile — includes Wear OS watch) */}
         {show("devices") && (
         <Section title={t("Devices")} id="devices" plain={!wide}>
           <SettingBlock id="devices-main" highlightedId={highlightedId}>
             <DevicesScreen embedded />
-          </SettingBlock>
-        </Section>
-        )}
-
-        {/* Smartwatch (Wear OS) */}
-        {show("watch") && (
-        <Section title={t("Smartwatch (Wear OS)")} id="watch" plain={!wide}>
-          <SettingBlock id="watch-main" highlightedId={highlightedId}>
-            <WatchPairingCard />
           </SettingBlock>
         </Section>
         )}
@@ -1229,8 +1324,8 @@ export function SettingsScreen() {
   );
 }
 
-type SectionId = "who" | "usage" | "sentinel" | "app-lock" | "passwords" | "proactivity" | "behavior" | "permissions" | "devices" | "watch" | "vr" | "assistant" | "notifications" | "keep-running" | "cloud" | "model" | "appearance" | "desktop" | "data" | "import" | "developer" | "about";
-const SECTION_IDS: SectionId[] = ["who", "usage", "sentinel", "app-lock", "passwords", "proactivity", "behavior", "permissions", "devices", "watch", "vr", "assistant", "notifications", "keep-running", "cloud", "model", "appearance", "desktop", "data", "import", "developer", "about"];
+type SectionId = "who" | "account" | "usage" | "sentinel" | "app-lock" | "passwords" | "proactivity" | "behavior" | "permissions" | "devices" | "vr" | "assistant" | "notifications" | "keep-running" | "cloud" | "model" | "appearance" | "desktop" | "data" | "import" | "developer" | "about";
+const SECTION_IDS: SectionId[] = ["who", "account", "usage", "sentinel", "app-lock", "passwords", "proactivity", "behavior", "permissions", "devices", "vr", "assistant", "notifications", "keep-running", "cloud", "model", "appearance", "desktop", "data", "import", "developer", "about"];
 
 function CloudModeSelector({
   cloudMode,
@@ -2167,6 +2262,13 @@ function SettingsHome({
             <span className="text-[14px] font-medium text-accent">{t("Change")}</span>
           </button>
           <MuseDivider />
+          <MuseRow
+            icon={<UserRound size={22} />}
+            label={t("Account")}
+            value={hub?.account.signed_in ? (hub.account.hint || t("Signed in")) : t("Personal Cloud")}
+            onClick={() => onOpen("account")}
+          />
+          <MuseDivider />
           <MuseRow icon={<Cloud size={22} />} label="nanoMuse Cloud" value={cloudValue} onClick={() => onOpen("cloud")} />
           <MuseDivider />
           <MuseRow
@@ -2203,9 +2305,11 @@ function SettingsHome({
           <MuseDivider />
           <MuseRow icon={<MessageSquare size={22} />} label={t("Chat apps")} onClick={() => setTab("channels")} />
           <MuseDivider />
-          <MuseRow icon={<Monitor size={22} />} label={t("Devices")} value={devicesSubtitle} onClick={() => setTab("devices")} />
+          <MuseRow icon={<Monitor size={22} />} label={t("Devices")} value={devicesSubtitle} onClick={() => onOpen("devices")} />
           <MuseDivider />
-          <MuseRow icon={<Watch size={22} />} label={t("Smartwatch (Wear OS)")} value={t("Auto-install")} onClick={() => onOpen("watch")} />
+          <MuseRow icon={<Glasses size={22} />} label={t("VR Headset (Meta Quest)")} onClick={() => onOpen("vr")} />
+          <MuseDivider />
+          <MuseRow icon={<Sparkles size={22} />} label={t("Default assistant")} onClick={() => onOpen("assistant")} />
           {phone && typeof phone.scanToPair === "function" && (
             <>
               <MuseDivider />

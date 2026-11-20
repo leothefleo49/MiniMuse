@@ -103,8 +103,9 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
   const { total, online } = countDevices(hub, local, state.sync);
   const [syncingPeer, setSyncingPeer] = useState<string | null>(null);
   const [freshSyncingPeer, setFreshSyncingPeer] = useState<string | null>(null);
-  const [remoteModalPeer, setRemoteModalPeer] = useState<{ key: string; ident: string; name: string; currentHost: string } | null>(null);
+  const [remoteModalPeer, setRemoteModalPeer] = useState<{ key: string; ident: string; name: string; currentHost: string; authError?: boolean } | null>(null);
   const [remoteUrlDraft, setRemoteUrlDraft] = useState("");
+  const [remoteCodeDraft, setRemoteCodeDraft] = useState("");
   const [savingRemotePeer, setSavingRemotePeer] = useState<string | null>(null);
 
   const syncNowWithPeer = async (peerKey: string, peerId = "") => {
@@ -160,18 +161,22 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
 
   const saveRemotePeerUrl = async (identifier: string, peerKey: string) => {
     const clean = remoteUrlDraft.trim();
-    if (!clean) return;
+    const cleanCode = remoteCodeDraft.trim();
+    if (!clean && !cleanCode) return;
     setSavingRemotePeer(peerKey);
     try {
-      const res = await api.syncUpdatePeerUrl(identifier, clean);
+      const res = await api.syncUpdatePeerUrl(identifier, clean || remoteModalPeer?.currentHost || "", cleanCode);
       dispatch({ type: "ws", msg: { kind: "sync", sync: res } });
       setRemoteModalPeer(null);
       setRemoteUrlDraft("");
+      setRemoteCodeDraft("");
       const list = res.peers ?? [];
       const matching =
         list.find((p) => p.id === identifier || p.name === identifier || (p.url || p.id) === peerKey) ??
         list[0];
-      if (matching?.online) {
+      if (res.repaired) {
+        toast(t("Re-paired and synced cleanly."));
+      } else if (matching?.online) {
         toast(t("Connected remotely and synced."));
       } else if (matching?.last_error) {
         toast(matching.last_error);
@@ -370,18 +375,25 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
                           <button
                             type="button"
                             onClick={() => {
-                              setRemoteModalPeer({ key: pKey, ident: pIdent, name: displayName, currentHost: host });
+                              setRemoteModalPeer({
+                                key: pKey,
+                                ident: pIdent,
+                                name: displayName,
+                                currentHost: host,
+                                authError: !!peer.auth_error,
+                              });
                               setRemoteUrlDraft("");
+                              setRemoteCodeDraft("");
                             }}
                             className={cx(
                               "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium transition",
-                              !remoteReady && peer.last_error
+                              peer.auth_error || (!remoteReady && peer.last_error)
                                 ? "bg-accent text-accent-fg"
                                 : "border border-border text-fg hover:bg-surface-2",
                             )}
                           >
                             <Globe size={12} />
-                            {t("Connect remotely")}
+                            {peer.auth_error ? t("Re-pair / Fix token") : t("Connect remotely")}
                           </button>
                           <button
                             type="button"
@@ -448,10 +460,16 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
               <div className="min-w-0">
                 <h3 className="flex items-center gap-2 text-[16px] font-semibold text-fg">
                   <Globe size={18} className="text-accent shrink-0" />
-                  <span className="truncate">{t("Connect remotely to {name}", { name: remoteModalPeer.name })}</span>
+                  <span className="truncate">
+                    {remoteModalPeer.authError
+                      ? t("Re-pair & connect to {name}", { name: remoteModalPeer.name })
+                      : t("Connect remotely to {name}", { name: remoteModalPeer.name })}
+                  </span>
                 </h3>
                 <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
-                  {t("Current address ({host}) only works on home Wi-Fi. Paste your computer's Personal Cloud URL (Cloudflare Tunnel https://….trycloudflare.com or Tailscale http://….ts.net:8787) to sync anywhere without unpairing.", { host: remoteModalPeer.currentHost })}
+                  {remoteModalPeer.authError
+                    ? t("This device's sync token expired or was reset. Paste a fresh pairing link (nanomuse://pair?...) or enter its address + 6-character pairing code below to re-link without losing any chats.")
+                    : t("Current address ({host}) only works on home Wi-Fi. Paste a pairing link (nanomuse://pair?...) or your computer's Personal Cloud URL (Cloudflare Tunnel https://….trycloudflare.com or Tailscale) to sync from anywhere without unpairing.", { host: remoteModalPeer.currentHost })}
                 </p>
               </div>
               <button
@@ -466,13 +484,23 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
 
             <div className="space-y-2">
               <input
-                type="url"
+                type="text"
                 autoFocus
                 value={remoteUrlDraft}
                 onChange={(e) => setRemoteUrlDraft(e.target.value)}
-                placeholder="https://example.trycloudflare.com"
+                placeholder={t("Pairing link (nanomuse://pair?…) or https://….trycloudflare.com")}
                 className="w-full rounded-2xl border border-border bg-surface-2 px-3.5 py-2.5 text-[13.5px] outline-none focus:ring-2 focus:ring-accent/40"
               />
+              {!remoteUrlDraft.toLowerCase().includes("code=") && (
+                <input
+                  type="text"
+                  value={remoteCodeDraft}
+                  onChange={(e) => setRemoteCodeDraft(e.target.value.toUpperCase())}
+                  placeholder={t("Optional 6-character pairing code (refreshes sync token)")}
+                  maxLength={12}
+                  className="w-full rounded-2xl border border-border bg-surface-2 px-3.5 py-2 font-mono text-[13px] tracking-widest outline-none focus:ring-2 focus:ring-accent/40"
+                />
+              )}
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
@@ -514,12 +542,14 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
               </button>
               <button
                 type="button"
-                disabled={savingRemotePeer === remoteModalPeer.key || !remoteUrlDraft.trim()}
+                disabled={savingRemotePeer === remoteModalPeer.key || (!remoteUrlDraft.trim() && !remoteCodeDraft.trim())}
                 onClick={() => void saveRemotePeerUrl(remoteModalPeer.ident, remoteModalPeer.key)}
                 className="inline-flex items-center gap-1.5 rounded-2xl bg-accent px-4 py-2 text-[13px] font-semibold text-accent-fg disabled:opacity-50"
               >
                 {savingRemotePeer === remoteModalPeer.key ? <Loader2 size={14} className="animate-spin" /> : null}
-                {t("Save & sync")}
+                {remoteCodeDraft.trim() || remoteUrlDraft.toLowerCase().includes("code=")
+                  ? t("Re-pair & sync")
+                  : t("Save & sync")}
               </button>
             </div>
           </div>

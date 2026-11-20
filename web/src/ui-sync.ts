@@ -1,27 +1,42 @@
 import { api } from "./api";
 
 /**
- * The look choices (accent, own-bubble colour, theme) ride the runtime's settings, so
- * what is picked on one device is what every device of the account shows. Each module
- * pushes its own field after a pick; a short debounce folds rapid picks into one PUT.
+ * The look choices (accent, own-bubble colour, theme, bg, scale) ride the runtime's settings,
+ * so what is picked on one device saves immediately and propagates to every paired device.
+ * Discrete picks flush rapidly, and any pending delta flushes on pagehide/beforeunload.
  */
 
-let last: { accent?: string; bubble?: string; bg?: string; scale?: string; theme?: string } = {};
-let timer: number | null = null;
-
-export function pushUi(patch: {
+type UiPatch = {
   accent?: string;
   bubble?: string;
   bg?: string;
   scale?: string;
   theme?: string;
-}): void {
-  last = { ...last, ...patch };
-  if (timer !== null) window.clearTimeout(timer);
-  timer = window.setTimeout(() => {
+};
+
+let pending: UiPatch = {};
+let timer: number | null = null;
+
+function flushUi(): void {
+  if (timer !== null) {
+    window.clearTimeout(timer);
     timer = null;
-    api
-      .updateSettings({ ui: last })
-      .catch(() => undefined); // the look stays on this device; it just does not reach the others
-  }, 250);
+  }
+  const batch = pending;
+  if (Object.keys(batch).length === 0) return;
+  pending = {};
+  api
+    .updateSettings({ ui: batch })
+    .catch(() => undefined);
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushUi);
+  window.addEventListener("beforeunload", flushUi);
+}
+
+export function pushUi(patch: UiPatch): void {
+  pending = { ...pending, ...patch };
+  if (timer !== null) window.clearTimeout(timer);
+  timer = window.setTimeout(flushUi, 120);
 }

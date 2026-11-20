@@ -250,8 +250,14 @@ export default function App() {
     const jump = () => {
       const hash = window.location.hash.slice(1);
       if (hash && TABS.some((x) => x.id === hash)) setTab(hash as Tab);
-      else if (hash === "devices" || hash === "you" || hash === "memory" || hash === "connections" || hash === "channels" || hash === "skills" || hash === "account" || hash === "coding" || hash === "avatar") setTab(hash as Tab);
-      else if (hash === "usage" || hash === "cloud" || hash === "app-lock" || hash === "passwords" || hash === "permissions" || hash === "proactivity" || hash === "behavior" || hash === "notifications" || hash === "keep-running" || hash === "model" || hash === "appearance" || hash === "desktop" || hash === "data" || hash === "import" || hash === "about" || hash === "watch" || hash === "vr" || hash === "who" || hash === "sentinel" || hash === "developer") {
+      else if (hash === "account") {
+        setTab("you");
+        window.dispatchEvent(new CustomEvent("nanomuse:settings-section", { detail: "account" }));
+      } else if (hash === "watch") {
+        setTab("you");
+        window.dispatchEvent(new CustomEvent("nanomuse:settings-section", { detail: "devices" }));
+      } else if (hash === "devices" || hash === "you" || hash === "memory" || hash === "connections" || hash === "channels" || hash === "skills" || hash === "coding" || hash === "avatar") setTab(hash as Tab);
+      else if (hash === "usage" || hash === "cloud" || hash === "app-lock" || hash === "passwords" || hash === "permissions" || hash === "proactivity" || hash === "behavior" || hash === "notifications" || hash === "keep-running" || hash === "model" || hash === "appearance" || hash === "desktop" || hash === "data" || hash === "import" || hash === "about" || hash === "vr" || hash === "assistant" || hash === "who" || hash === "sentinel" || hash === "developer") {
         setTab("you");
         window.dispatchEvent(new CustomEvent("nanomuse:settings-section", { detail: hash }));
       }

@@ -161,4 +161,9 @@ class CredentialVault:
         return text
 
 
-__all__ = ["CredentialVault", "VaultError", "PLACEHOLDER_RE"]
+def is_unresolved_placeholder(value: Any) -> bool:
+    """Return True if ``value`` is a string containing an unresolved ``{{vault:...}}`` ref."""
+    return isinstance(value, str) and bool(PLACEHOLDER_RE.search(value))
+
+
+__all__ = ["CredentialVault", "VaultError", "PLACEHOLDER_RE", "is_unresolved_placeholder"]

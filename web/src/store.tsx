@@ -982,6 +982,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- loadEvents identity changes with threads
   }, [state.connected, state.loaded, state.activeThread, loadEvents]);
 
+  // Automatically trigger catch-up peer sync when network connectivity returns after offline work.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onOnline = () => {
+      void api
+        .syncNow()
+        .then((sync) => dispatch({ type: "ws", msg: { kind: "sync", sync } }))
+        .catch(() => undefined);
+    };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, []);
+
   const refreshGoals = useCallback(async () => {
     try {
       dispatch({ type: "goals", goals: await api.goals() });

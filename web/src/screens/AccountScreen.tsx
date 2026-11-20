@@ -22,7 +22,7 @@ import { cx, relativeSeconds } from "../util";
  * about you is on this one screen; what the relay keeps of your chats is one switch away, under
  * Settings → Data controls.
  */
-export function AccountScreen() {
+export function AccountScreen({ embedded = false }: { embedded?: boolean } = {}) {
   const { state, toast, setTab } = useStore();
   const t = useT();
   const account: CloudAccount | null = state.hub?.account ?? null;
@@ -53,10 +53,12 @@ export function AccountScreen() {
   }, [signedIn, account?.has_password]);
 
   return (
-    <div className="flex h-full flex-col">
-      <PageBar title={t("Account")} description={t("Private Self-Hosted Cloud & Optional nanoMuse Cloud")} />
+    <div className={embedded ? "flex flex-col" : "flex h-full flex-col"}>
+      {!embedded && (
+        <PageBar title={t("Account")} description={t("Private Self-Hosted Cloud & Optional nanoMuse Cloud")} />
+      )}
 
-      <div className="flex-1 overflow-y-auto px-4 pb-8 space-y-4">
+      <div className={embedded ? "space-y-4 pb-2" : "flex-1 overflow-y-auto px-4 pb-8 space-y-4"}>
         <PersonalCloudSection />
 
         {!signedIn ? (

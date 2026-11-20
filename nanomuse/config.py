@@ -1123,8 +1123,10 @@ def apply_app_settings(settings: Settings, data: dict[str, Any]) -> None:
             settings.cloud.required = bool(cloud["required"])
         if "models" in cloud and cloud["models"] is not None:
             settings.cloud.models = bool(cloud["models"])
+        if "sync" in cloud and cloud["sync"] is not None:
+            settings.cloud.sync = bool(cloud["sync"])
     if agent := data.get("agent"):
-        # what the app may change while running: the working caps and the keep-going rule
+        # what the app may change while running: the working caps, behavior flags and keep-going rule
         if isinstance(agent.get("max_steps"), int) and agent["max_steps"] > 0:
             settings.agent.max_steps = agent["max_steps"]
         if "auto_continue" in agent and agent["auto_continue"] is not None:
@@ -1137,6 +1139,17 @@ def apply_app_settings(settings: Settings, data: dict[str, Any]) -> None:
             settings.agent.max_context_tokens = agent["max_context_tokens"]
         if isinstance(agent.get("max_context_images"), int) and agent["max_context_images"] >= 0:
             settings.agent.max_context_images = agent["max_context_images"]
+        if "show_thinking" in agent and agent["show_thinking"] is not None:
+            settings.agent.show_thinking = bool(agent["show_thinking"])
+        if "allow_self_improve" in agent and agent["allow_self_improve"] is not None:
+            settings.agent.allow_self_improve = bool(agent["allow_self_improve"])
+        if isinstance(agent.get("language"), str) and agent["language"].strip():
+            settings.agent.language = agent["language"].strip()[:20]
+    if server := data.get("server"):
+        if "auto_update" in server and server["auto_update"] is not None:
+            settings.server.auto_update = bool(server["auto_update"])
+        if isinstance(server.get("trash_retention_days"), int) and 1 <= server["trash_retention_days"] <= 3650:
+            settings.server.trash_retention_days = server["trash_retention_days"]
     if sentinel := data.get("sentinel"):
         if sentinel.get("mode") in ("ask", "task", "strict", "auto"):
             settings.sentinel.mode = str(sentinel["mode"])

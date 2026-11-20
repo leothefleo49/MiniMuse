@@ -1,11 +1,11 @@
-import { CalendarDays, Code2, FileImage, FileSpreadsheet, FileText, Globe, LibraryBig, Loader2, Play, Search } from "lucide-react";
+import { CalendarDays, Code2, FileImage, FileSpreadsheet, FileText, Globe, LibraryBig, Loader2, Play, Search, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, fileUrl } from "../api";
 import { TabHeader } from "../components/TabHeader";
 import { LoadError } from "../components/LoadError";
 import { useT } from "../i18n";
 import { useStore } from "../store";
-import type { FileInfo } from "../types";
+import type { AppEntry, FileInfo } from "../types";
 import { relativeDay } from "../components/ChatsDrawer";
 import { cx, fileKind } from "../util";
 
@@ -21,48 +21,72 @@ function isMedia(name: string): boolean {
 
 /**
  * Muse's Library: a two-way segmented control (artifacts / media) over what the agent made,
- * newest first, with Muse's empty states. Rows open the file viewer. This is the agent's
- * workspace, so files you drop there yourself show up too.
+ * newest first, with Muse's empty states. Rows open the file viewer or launch full synced Apps
+ * (Spaces, folder apps, and standalone HTML pages) seamlessly across PC and Phone.
  */
 export function LibraryScreen() {
   const { state, openFile } = useStore();
   const [files, setFiles] = useState<FileInfo[] | null>(null);
+  const [syncedApps, setSyncedApps] = useState<AppEntry[]>([]);
+  const [activeApp, setActiveApp] = useState<AppEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [segment, setSegment] = useState<0 | 1>(0);
   const [query, setQuery] = useState("");
   const t = useT();
 
-  // Reload whenever the agent finishes a step (the timeline moves) or the tab is opened.
+  // Reload whenever the agent finishes a step, a sync completes, or the tab is opened.
   const version = Object.values(state.events).reduce((n, list) => n + list.length, 0);
+  const syncStamp = state.sync?.last_pull_at ?? "";
   useEffect(() => {
     let alive = true;
-    api.files(500)
-      .then((d) => {
+    Promise.all([
+      api.files(500),
+      api.apps().catch(() => [] as AppEntry[]),
+    ])
+      .then(([d, appList]) => {
         if (!alive) return;
         setFiles(d);
+        setSyncedApps(Array.isArray(appList) ? appList : []);
         setError(null);
       })
       .catch((e: Error) => alive && setError(e.message));
     return () => {
       alive = false;
     };
-  }, [version, state.feedVersion, attempt]);
+  }, [version, state.feedVersion, syncStamp, attempt]);
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (files ?? []).filter((f) => isMedia(f.name) === (segment === 1) && (!q || f.path.toLowerCase().includes(q)));
   }, [files, segment, query]);
 
-  const apps = useMemo(() => (segment === 0 ? shown.filter(isApp) : []), [shown, segment]);
+  const filteredSyncedApps = useMemo(() => {
+    if (segment !== 0) return [];
+    const q = query.trim().toLowerCase();
+    return syncedApps.filter(
+      (a) =>
+        !q ||
+        a.title.toLowerCase().includes(q) ||
+        a.slug.toLowerCase().includes(q) ||
+        (a.description || "").toLowerCase().includes(q),
+    );
+  }, [syncedApps, segment, query]);
+
+  const syncedAppPaths = useMemo(() => new Set(syncedApps.map((a) => a.file_path).filter(Boolean)), [syncedApps]);
+  const apps = useMemo(
+    () => (segment === 0 ? shown.filter((f) => isApp(f) && !syncedAppPaths.has(f.path)) : []),
+    [shown, segment, syncedAppPaths],
+  );
   const others = useMemo(() => (segment === 0 ? shown.filter((f) => !isApp(f)) : shown), [shown, segment]);
+  const hasAnyApps = filteredSyncedApps.length > 0 || apps.length > 0;
 
   return (
     <div className="flex h-full flex-col">
       <TabHeader title={t("Library")} />
       <div className="shrink-0 px-4 pt-1 pb-2.5">
         <Segmented labels={[t("Artifacts"), t("Media")]} selected={segment} onSelect={(i) => setSegment(i as 0 | 1)} />
-        {(files?.length ?? 0) > 8 && (
+        {((files?.length ?? 0) > 8 || syncedApps.length > 4) && (
           <label className="mt-2.5 flex items-center gap-2 rounded-full bg-surface-2 px-3.5 py-2">
             <Search size={16} className="text-muted" />
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("Search files")} className="flex-1 bg-transparent text-[14.5px] outline-none" />
@@ -77,7 +101,7 @@ export function LibraryScreen() {
             <Loader2 className="animate-spin" size={20} />
           </div>
         )}
-        {files !== null && shown.length === 0 && (
+        {files !== null && shown.length === 0 && filteredSyncedApps.length === 0 && (
           <div className="flex flex-col items-center px-8 pt-9 text-center">
             <LibraryBig size={34} className="text-muted" />
             <div className="mt-3.5 text-[16px] font-medium text-muted">
@@ -90,10 +114,39 @@ export function LibraryScreen() {
             )}
           </div>
         )}
-        {apps.length > 0 && (
+        {hasAnyApps && (
           <section aria-label={t("Apps")} data-testid="library-apps">
             <h2 className="px-4 pb-1 pt-2 text-[12px] font-semibold uppercase tracking-wide text-muted">{t("Apps")}</h2>
             <ul>
+              {filteredSyncedApps.map((a) => (
+                <li key={a.slug}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (a.kind === "html" && a.file_path) openFile(a.file_path);
+                      else setActiveApp(a);
+                    }}
+                    className="flex w-full items-center gap-3.5 px-4 py-2 text-left active:bg-surface-2/70"
+                  >
+                    <span className="flex h-[46px] w-[46px] shrink-0 items-center justify-center overflow-hidden rounded-[10px] bg-surface-2 text-muted">
+                      {a.icon ? (
+                        <img src={fileUrl(a.icon)} alt="" loading="lazy" className="h-full w-full object-cover" />
+                      ) : (
+                        <Globe size={22} />
+                      )}
+                    </span>
+                    <span className="min-w-0 flex-1 space-y-0.5">
+                      <span className="block truncate text-[15px] font-medium">{a.title}</span>
+                      <span className="block truncate text-[12px] text-muted">
+                        {[a.description || a.slug, a.modified ? relativeDay(a.modified) : ""].filter(Boolean).join(" · ")}
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1 rounded-full bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-accent-fg">
+                      <Play size={12} fill="currentColor" /> {t("Run")}
+                    </span>
+                  </button>
+                </li>
+              ))}
               {apps.map((f) => (
                 <li key={f.path}>
                   <FileRow file={f} app onOpen={() => openFile(f.path)} />
@@ -102,7 +155,7 @@ export function LibraryScreen() {
             </ul>
           </section>
         )}
-        {apps.length > 0 && others.length > 0 && (
+        {hasAnyApps && others.length > 0 && (
           <h2 className="px-4 pb-1 pt-3 text-[12px] font-semibold uppercase tracking-wide text-muted">{t("Files")}</h2>
         )}
         <ul>
@@ -113,6 +166,31 @@ export function LibraryScreen() {
           ))}
         </ul>
       </div>
+
+      {/* Fullscreen interactive Space / App modal */}
+      {activeApp && (
+        <div role="dialog" aria-modal="true" aria-label={activeApp.title} className="fixed inset-0 z-[70] flex flex-col bg-bg">
+          <header className="safe-top shrink-0 flex items-center gap-2 border-b border-border bg-surface/95 px-3 py-2 backdrop-blur">
+            <button
+              type="button"
+              onClick={() => setActiveApp(null)}
+              aria-label={t("Close")}
+              className="rounded-full p-2 text-muted hover:bg-surface-2 hover:text-fg"
+            >
+              <X size={20} />
+            </button>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[15px] font-semibold">{activeApp.title}</div>
+              <div className="truncate text-[12px] text-muted">{activeApp.url}</div>
+            </div>
+          </header>
+          <iframe
+            title={activeApp.title}
+            src={activeApp.url}
+            className="min-h-0 flex-1 w-full border-0 bg-bg"
+          />
+        </div>
+      )}
     </div>
   );
 }

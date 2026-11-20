@@ -109,7 +109,7 @@ class CloudClient:
     ) -> dict[str, Any]:
         headers = dict(headers or {})
         tok = self.api_key if token is None else token
-        if tok:
+        if tok and not (isinstance(tok, str) and "{{vault:" in tok):
             headers["Authorization"] = f"Bearer {tok}"
         try:
             response = await self._client.request(
@@ -127,10 +127,19 @@ class CloudClient:
             err = body.get("error") if isinstance(body, dict) else None
             if not isinstance(err, dict):
                 err = {}
+            detail = body.get("detail") if isinstance(body, dict) else None
+            msg = str(
+                err.get("message")
+                or (detail if isinstance(detail, str) else "")
+                or response.text[:200]
+            )
+            code = str(err.get("code") or f"http_{response.status_code}")
+            if response.status_code == 401 and code == "http_401":
+                code = "unauthorized"
             raise CloudError(
                 response.status_code,
-                str(err.get("code") or f"http_{response.status_code}"),
-                str(err.get("message") or response.text[:200]),
+                code,
+                msg,
                 extra={k: v for k, v in err.items() if k not in ("code", "message", "type")},
             )
         if not response.content.strip():

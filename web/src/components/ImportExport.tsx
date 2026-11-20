@@ -159,8 +159,10 @@ export function summaryOf(result: ImportResult, t: (key: string, vars?: Record<s
   if (result.threads_created) bits.push(t("{n} new chats", { n: String(result.threads_created) }));
   if (result.threads_merged) bits.push(t("{n} chats merged", { n: String(result.threads_merged) }));
   if (result.events_added) bits.push(t("{n} messages added", { n: String(result.events_added) }));
+  if (result.events_updated) bits.push(t("{n} messages updated", { n: String(result.events_updated) }));
   if (result.messages_indexed) bits.push(t("{n} messages in background memory", { n: String(result.messages_indexed) }));
   if (result.memory_files) bits.push(t("{n} memory files", { n: String(result.memory_files) }));
+  if (result.files_updated) bits.push(t("{n} files updated in place", { n: String(result.files_updated) }));
   if (result.apps_saved) bits.push(t("{n} apps saved", { n: String(result.apps_saved) }));
   if (result.apps_registered) bits.push(t("{n} apps restored", { n: String(result.apps_registered) }));
   if (result.duplicates) bits.push(t("{n} duplicates skipped", { n: String(result.duplicates) }));
@@ -438,7 +440,7 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
               void startBackground(file);
             }}
           />
-          <p className="pt-2 text-center text-[12px] text-muted">{t("A Muse export zip, a MiniMuse export zip, or any transcript or text file, of any size.")}</p>
+          <p className="pt-2 text-center text-[12px] text-muted">{t("Supports Muse, MiniMuse, ChatGPT, Claude, Gemini (Google Takeout), Grok, and any JSON/Markdown/HTML transcript or zip. Re-importing updated exports merges new messages and updates edited messages or files cleanly in place.")}</p>
           {busy === "file" && uploadPct > 0 && (
             <div className="pt-2" role="status" aria-live="polite">
               <div className="h-1.5 overflow-hidden rounded-full bg-surface-2">

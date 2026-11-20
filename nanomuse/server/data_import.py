@@ -234,6 +234,7 @@ class Turn:
     role: str  # "user" | "assistant"
     text: str
     ts: str = FLOOR_TS  # ISO UTC
+    source_msg_id: str = ""
 
 
 @dataclass
@@ -243,6 +244,7 @@ class Conversation:
     turns: list[Turn]
     source: str = ""
     body: str = ""  # the raw text when there were no parseable messages
+    external_id: str = ""
 
 
 @dataclass
@@ -262,6 +264,7 @@ class ImportPlan:
     conversations: list[Conversation] = field(default_factory=list)
     apps: list[ImportedApp] = field(default_factory=list)
     memory_files: int = 0
+    files_updated: int = 0
     skipped_files: int = 0
     duplicates: int = 0
     option_key: str = ""
@@ -708,9 +711,436 @@ def _decode(data: bytes) -> str | None:
     return None
 
 
+# ------------------------------------------------------------------ multi-AI chat export parsers
+def _ts_from_any(raw: Any) -> str:
+    """Convert Unix seconds/ms, Mongo $date dict, or ISO/human timestamp string to ISO UTC."""
+    if raw is None or raw == "":
+        return FLOOR_TS
+    if isinstance(raw, dict):
+        if "$date" in raw:
+            return _ts_from_any(raw["$date"])
+        if "$numberLong" in raw:
+            return _ts_from_any(raw["$numberLong"])
+        return FLOOR_TS
+    if isinstance(raw, (int, float)):
+        v = float(raw)
+        if v <= 0:
+            return FLOOR_TS
+        if v > 1e12:
+            v /= 1000.0
+        try:
+            return datetime.fromtimestamp(v, UTC).isoformat(timespec="seconds")
+        except (OverflowError, OSError, ValueError):
+            return FLOOR_TS
+    s = str(raw).strip()
+    if not s:
+        return FLOOR_TS
+    if re.fullmatch(r"\d+(\.\d+)?", s):
+        return _ts_from_any(float(s))
+    return parse_timestamp(s)
+
+
+def _extract_content_text(content: Any) -> str:
+    """Normalize string, ChatGPT content.parts, Claude content blocks, or nested dicts into text."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        pieces: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                if item.strip():
+                    pieces.append(item)
+            elif isinstance(item, dict):
+                t = item.get("text") or item.get("content") or item.get("value")
+                if isinstance(t, str) and t.strip():
+                    pieces.append(t)
+                elif item.get("content_type") in ("image_asset_pointer", "image") or item.get("type") == "image":
+                    pieces.append("[Image attachment]")
+        return "\n".join(pieces).strip()
+    if isinstance(content, dict):
+        if "parts" in content:
+            return _extract_content_text(content["parts"])
+        if "text" in content and isinstance(content["text"], str):
+            return content["text"].strip()
+        if "content" in content:
+            return _extract_content_text(content["content"])
+    return ""
+
+
+def _strip_html_to_text(raw_html: str) -> str:
+    import html as _html
+
+    s = re.sub(r"<(br|p|div|li|tr|h[1-6])[^>]*>", "\n", raw_html, flags=re.IGNORECASE)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = _html.unescape(s)
+    lines = [ln.rstrip() for ln in s.splitlines()]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def _normalize_ai_role(raw: Any) -> str:
+    s = str(raw or "").strip().lower()
+    if s in ("user", "human", "me", "person", "prompt"):
+        return "user"
+    if s in ("assistant", "model", "ai", "bot", "gpt", "chatgpt", "claude", "gemini", "grok", "muse", "response"):
+        return "assistant"
+    return ""
+
+
+def _parse_chatgpt_conversation(obj: dict[str, Any], source: str) -> Conversation | None:
+    mapping = obj.get("mapping")
+    if not isinstance(mapping, dict) or not mapping:
+        return None
+    # Walk active branch from current_node back to root so edited/regenerated branches stay clean
+    ordered_nodes: list[tuple[str, dict[str, Any]]] = []
+    cur = obj.get("current_node")
+    if isinstance(cur, str) and cur in mapping:
+        seen_ids: set[str] = set()
+        while isinstance(cur, str) and cur in mapping and cur not in seen_ids:
+            seen_ids.add(cur)
+            node = mapping[cur]
+            if isinstance(node, dict):
+                ordered_nodes.append((cur, node))
+                cur = node.get("parent")
+            else:
+                break
+        ordered_nodes.reverse()
+    else:
+        for nid, node in mapping.items():
+            if isinstance(node, dict):
+                ordered_nodes.append((str(nid), node))
+        ordered_nodes.sort(
+            key=lambda pair: float(((pair[1].get("message") or {}).get("create_time") or 0) or 0)
+        )
+
+    turns: list[Turn] = []
+    for nid, node in ordered_nodes:
+        msg = node.get("message")
+        if not isinstance(msg, dict):
+            continue
+        meta = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else {}
+        if meta.get("is_visually_hidden_from_conversation"):
+            continue
+        author = msg.get("author") if isinstance(msg.get("author"), dict) else {}
+        role = _normalize_ai_role(author.get("role"))
+        if not role:
+            continue
+        text = _extract_content_text(msg.get("content"))
+        if not text:
+            continue
+        ts = _ts_from_any(msg.get("create_time") or msg.get("update_time"))
+        msg_id = str(msg.get("id") or nid or "").strip()
+        turns.append(Turn(role=role, text=text, ts=ts, source_msg_id=msg_id))
+    if not turns:
+        return None
+    title = str(obj.get("title") or "").strip() or title_from_name(source)
+    ext_id = str(obj.get("id") or obj.get("conversation_id") or "").strip()
+    return Conversation(
+        title=title,
+        kind="transcript",
+        turns=turns,
+        source=source,
+        external_id=f"chatgpt:{ext_id}" if ext_id else "",
+    )
+
+
+def _parse_claude_conversation(obj: dict[str, Any], source: str) -> Conversation | None:
+    msgs = obj.get("chat_messages")
+    if not isinstance(msgs, list) or not msgs:
+        return None
+    turns: list[Turn] = []
+    for idx, m in enumerate(msgs):
+        if not isinstance(m, dict):
+            continue
+        role = _normalize_ai_role(m.get("sender") or m.get("role"))
+        if not role:
+            continue
+        text = _extract_content_text(m.get("text") or m.get("content"))
+        if not text:
+            continue
+        ts = _ts_from_any(m.get("created_at") or m.get("updated_at"))
+        msg_id = str(m.get("uuid") or m.get("id") or f"c_{idx}").strip()
+        turns.append(Turn(role=role, text=text, ts=ts, source_msg_id=msg_id))
+    if not turns:
+        return None
+    title = str(obj.get("name") or obj.get("title") or "").strip() or title_from_name(source)
+    ext_id = str(obj.get("uuid") or obj.get("id") or "").strip()
+    return Conversation(
+        title=title,
+        kind="transcript",
+        turns=turns,
+        source=source,
+        external_id=f"claude:{ext_id}" if ext_id else "",
+    )
+
+
+def _parse_grok_conversation(entry: dict[str, Any], source: str) -> Conversation | None:
+    conv_meta = entry.get("conversation") if isinstance(entry.get("conversation"), dict) else entry
+    resps = entry.get("responses")
+    if not isinstance(resps, list) or not resps:
+        return None
+    turns: list[Turn] = []
+    for idx, item in enumerate(resps):
+        if not isinstance(item, dict):
+            continue
+        resp = item.get("response") if isinstance(item.get("response"), dict) else item
+        role = _normalize_ai_role(resp.get("sender") or resp.get("role"))
+        if not role:
+            continue
+        text = _extract_content_text(resp.get("message") or resp.get("text") or resp.get("content"))
+        if not text:
+            continue
+        ts = _ts_from_any(resp.get("create_time") or resp.get("created_at"))
+        msg_id = str(resp.get("_id") or resp.get("id") or f"g_{idx}").strip()
+        turns.append(Turn(role=role, text=text, ts=ts, source_msg_id=msg_id))
+    if not turns:
+        return None
+    title = str(conv_meta.get("title") or "").strip() or title_from_name(source)
+    ext_id = str(conv_meta.get("id") or conv_meta.get("_id") or "").strip()
+    return Conversation(
+        title=title,
+        kind="transcript",
+        turns=turns,
+        source=source,
+        external_id=f"grok:{ext_id}" if ext_id else "",
+    )
+
+
+def _parse_gemini_takeout_json(items: list[Any], source: str) -> list[Conversation]:
+    """Parse Google Takeout Gemini Apps ``MyActivity.json`` into daily conversations."""
+    by_day: dict[str, list[Turn]] = {}
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        header = str(item.get("header") or "").lower()
+        title_raw = str(item.get("title") or "").strip()
+        if "gemini" not in header and not title_raw.lower().startswith("prompted "):
+            continue
+        ts = _ts_from_any(item.get("time"))
+        day_key = ts[:10] if ts != FLOOR_TS else "undated"
+        prompt_text = re.sub(r"^Prompted\s+", "", title_raw, flags=re.IGNORECASE).strip()
+        if prompt_text:
+            by_day.setdefault(day_key, []).append(
+                Turn(role="user", text=prompt_text, ts=ts, source_msg_id=f"gem_u_{day_key}_{idx}")
+            )
+        safe_items = item.get("safeHtmlItem")
+        if isinstance(safe_items, list):
+            ans_parts = [
+                _strip_html_to_text(str(si.get("html") or ""))
+                for si in safe_items
+                if isinstance(si, dict) and si.get("html")
+            ]
+            ans = "\n\n".join(p for p in ans_parts if p).strip()
+            if ans:
+                by_day.setdefault(day_key, []).append(
+                    Turn(role="assistant", text=ans, ts=ts, source_msg_id=f"gem_a_{day_key}_{idx}")
+                )
+    convs: list[Conversation] = []
+    for day_key, turns in sorted(by_day.items()):
+        turns.sort(key=lambda t: t.ts)
+        convs.append(
+            Conversation(
+                title=f"Gemini ({day_key})" if day_key != "undated" else "Gemini history",
+                kind="transcript",
+                turns=turns,
+                source=source,
+                external_id=f"gemini:{day_key}",
+            )
+        )
+    return convs
+
+
+def _parse_generic_messages_list(
+    msgs: list[Any], title: str, source: str, ext_id: str = ""
+) -> Conversation | None:
+    turns: list[Turn] = []
+    for idx, m in enumerate(msgs):
+        if not isinstance(m, dict):
+            continue
+        role = _normalize_ai_role(
+            m.get("role")
+            or m.get("sender")
+            or (m.get("author") if isinstance(m.get("author"), str) else (m.get("author") or {}).get("role"))
+            or m.get("type")
+        )
+        if not role:
+            continue
+        text = _extract_content_text(
+            m.get("content") if m.get("content") is not None else (m.get("text") or m.get("message") or m.get("parts"))
+        )
+        if not text:
+            continue
+        ts = _ts_from_any(m.get("ts") or m.get("timestamp") or m.get("created_at") or m.get("create_time"))
+        msg_id = str(m.get("id") or m.get("uuid") or m.get("mid") or "").strip()
+        turns.append(Turn(role=role, text=text, ts=ts, source_msg_id=msg_id))
+    if not turns:
+        return None
+    if all(t.ts == FLOOR_TS for t in turns):
+        _spread(turns, source)
+    return Conversation(
+        title=title or title_from_name(source),
+        kind="transcript",
+        turns=turns,
+        source=source,
+        external_id=ext_id,
+    )
+
+
+def parse_ai_export_json(text: str, source: str = "") -> list[Conversation]:
+    """Detect and parse ChatGPT, Claude, Gemini Takeout, Grok, Perplexity, or generic AI JSON
+    chat exports into structured Conversations with persistent external_id & source_msg_id."""
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "{[":
+        return []
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        return []
+
+    out: list[Conversation] = []
+    # Grok wrapper: {"conversations": [{"conversation": {...}, "responses": [...]}]}
+    if isinstance(data, dict):
+        if isinstance(data.get("mapping"), dict):
+            c = _parse_chatgpt_conversation(data, source)
+            if c:
+                return [c]
+        if isinstance(data.get("chat_messages"), list):
+            c = _parse_claude_conversation(data, source)
+            if c:
+                return [c]
+        if isinstance(data.get("responses"), list):
+            c = _parse_grok_conversation(data, source)
+            if c:
+                return [c]
+        if isinstance(data.get("conversations"), list):
+            for idx, item in enumerate(data["conversations"]):
+                if not isinstance(item, dict):
+                    continue
+                c = (
+                    _parse_chatgpt_conversation(item, source)
+                    or _parse_claude_conversation(item, source)
+                    or _parse_grok_conversation(item, source)
+                )
+                if c is None:
+                    msgs = item.get("messages") or item.get("turns") or item.get("history")
+                    if isinstance(msgs, list):
+                        cid = str(item.get("id") or item.get("uuid") or f"conv_{idx}")
+                        c = _parse_generic_messages_list(
+                            msgs,
+                            str(item.get("title") or item.get("name") or f"Chat {idx + 1}"),
+                            source,
+                            ext_id=f"json:{cid}",
+                        )
+                if c:
+                    out.append(c)
+            return out
+        msgs = data.get("messages") or data.get("turns") or data.get("events") or data.get("history")
+        if isinstance(msgs, list):
+            ext = str(data.get("id") or data.get("uuid") or data.get("chat_id") or "").strip()
+            c = _parse_generic_messages_list(
+                msgs,
+                str(data.get("title") or data.get("name") or title_from_name(source)),
+                source,
+                ext_id=f"json:{ext}" if ext else "",
+            )
+            if c:
+                return [c]
+        return []
+
+    if isinstance(data, list) and data:
+        first = next((x for x in data if isinstance(x, dict)), None)
+        if first is None:
+            return []
+        # Google Takeout Gemini MyActivity.json
+        if "safeHtmlItem" in first or (
+            isinstance(first.get("header"), str) and "gemini" in first["header"].lower()
+        ):
+            gem = _parse_gemini_takeout_json(data, source)
+            if gem:
+                return gem
+        # ChatGPT / Claude / Grok list of conversations
+        if "mapping" in first or "chat_messages" in first or "responses" in first or "messages" in first:
+            for idx, item in enumerate(data):
+                if not isinstance(item, dict):
+                    continue
+                c = (
+                    _parse_chatgpt_conversation(item, source)
+                    or _parse_claude_conversation(item, source)
+                    or _parse_grok_conversation(item, source)
+                )
+                if c is None and isinstance(item.get("messages"), list):
+                    cid = str(item.get("id") or item.get("uuid") or f"conv_{idx}")
+                    c = _parse_generic_messages_list(
+                        item["messages"],
+                        str(item.get("title") or item.get("name") or f"Chat {idx + 1}"),
+                        source,
+                        ext_id=f"json:{cid}",
+                    )
+                if c:
+                    out.append(c)
+            if out:
+                return out
+        # Flat list of messages
+        c = _parse_generic_messages_list(data, title_from_name(source), source)
+        if c:
+            return [c]
+    return []
+
+
+def parse_takeout_html(text: str, source: str = "") -> list[Conversation]:
+    """Parse Google Takeout Gemini HTML (MyActivity.html) into structured conversations."""
+    if "outer-cell" not in text or "Prompted" not in text:
+        return []
+    blocks = re.split(r'<div class="outer-cell\b', text)
+    by_day: dict[str, list[Turn]] = {}
+    for idx, blk in enumerate(blocks[1:]):
+        plain = _strip_html_to_text(blk)
+        m = re.search(r"Prompted\s+(.+?)(?:\n|$)", plain)
+        if not m:
+            continue
+        prompt_text = m.group(1).strip()
+        rest = plain[m.end() :].strip()
+        ts = FLOOR_TS
+        lines = [ln.strip() for ln in rest.splitlines() if ln.strip()]
+        ans_lines: list[str] = []
+        for ln in lines:
+            if ts == FLOOR_TS:
+                cand = parse_timestamp(ln)
+                if cand != FLOOR_TS:
+                    ts = cand
+                    continue
+            if ln.lower().startswith(("products:", "gemini apps")):
+                continue
+            ans_lines.append(ln)
+        day_key = ts[:10] if ts != FLOOR_TS else "undated"
+        by_day.setdefault(day_key, []).append(
+            Turn(role="user", text=prompt_text, ts=ts, source_msg_id=f"gemh_u_{day_key}_{idx}")
+        )
+        ans = "\n".join(ans_lines).strip()
+        if ans:
+            by_day.setdefault(day_key, []).append(
+                Turn(role="assistant", text=ans, ts=ts, source_msg_id=f"gemh_a_{day_key}_{idx}")
+            )
+    convs: list[Conversation] = []
+    for day_key, turns in sorted(by_day.items()):
+        turns.sort(key=lambda t: t.ts)
+        convs.append(
+            Conversation(
+                title=f"Gemini ({day_key})" if day_key != "undated" else "Gemini history",
+                kind="transcript",
+                turns=turns,
+                source=source,
+                external_id=f"gemini:{day_key}",
+            )
+        )
+    return convs
+
+
 # ------------------------------------------------------------------ the ledger
 class ImportLedger:
-    """What has already been imported, so the same archive never lands twice."""
+    """What has already been imported, so the same archive never lands twice and updated
+    re-exports merge & update previously-imported threads and files cleanly in place."""
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -724,6 +1154,15 @@ class ImportLedger:
                 "CREATE TABLE IF NOT EXISTS entries ("
                 "digest TEXT NOT NULL, kind TEXT NOT NULL, options TEXT NOT NULL, "
                 "name TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (digest, kind, options))"
+            )
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS imported_threads ("
+                "external_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, "
+                "title TEXT NOT NULL, updated_at TEXT NOT NULL)"
+            )
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS imported_files ("
+                "rel_path TEXT PRIMARY KEY, sha256 TEXT NOT NULL, updated_at TEXT NOT NULL)"
             )
             self._conn.commit()
 
@@ -747,6 +1186,41 @@ class ImportLedger:
                 name[:200],
                 datetime.now(UTC).isoformat(timespec="seconds"),
             ),
+        )
+
+    def get_thread(self, external_id: str) -> str | None:
+        if not external_id or self._conn is None:
+            return None
+        row = self._conn.execute(
+            "SELECT thread_id FROM imported_threads WHERE external_id = ?",
+            (external_id,),
+        ).fetchone()
+        return str(row[0]) if row and row[0] else None
+
+    def remember_thread(self, external_id: str, thread_id: str, title: str) -> None:
+        if not external_id or not thread_id or self._conn is None:
+            return
+        self._conn.execute(
+            "INSERT OR REPLACE INTO imported_threads (external_id, thread_id, title, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            (external_id, thread_id, title[:200], datetime.now(UTC).isoformat(timespec="seconds")),
+        )
+
+    def get_file_hash(self, rel_path: str) -> str | None:
+        if not rel_path or self._conn is None:
+            return None
+        row = self._conn.execute(
+            "SELECT sha256 FROM imported_files WHERE rel_path = ?",
+            (rel_path,),
+        ).fetchone()
+        return str(row[0]) if row and row[0] else None
+
+    def remember_file_hash(self, rel_path: str, sha256: str) -> None:
+        if not rel_path or not sha256 or self._conn is None:
+            return
+        self._conn.execute(
+            "INSERT OR REPLACE INTO imported_files (rel_path, sha256, updated_at) VALUES (?, ?, ?)",
+            (rel_path, sha256, datetime.now(UTC).isoformat(timespec="seconds")),
         )
 
     def commit(self) -> None:
@@ -781,38 +1255,61 @@ def index_conversation_turns(
 ) -> int:
     """Every imported message into ``messages_fts``, so ``deep_memory`` finds it.
 
-    A message already indexed for this chat (an earlier run of the same archive) is left
-    alone, so importing twice does not double every search result."""
+    Unchanged messages already indexed are skipped; edited messages matching the same
+    ``source_msg_id`` or exact timestamp+role are replaced cleanly in place."""
     conn = _open_personal(db_path)
     if conn is None:
         return 0
     try:
         indexed = 0
-        existing = {
-            str(row[0]): str(row[1] or "")
-            for row in conn.execute(
-                "SELECT turn_id, content FROM messages_fts WHERE thread_id = ?", (thread_id,)
-            )
-        }
+        existing_by_id: dict[str, str] = {}
+        existing_by_ts_role: dict[tuple[str, str], tuple[str, str]] = {}
+        for row in conn.execute(
+            "SELECT turn_id, role, created_at, content FROM messages_fts WHERE thread_id = ?",
+            (thread_id,),
+        ):
+            tid_s = str(row[0])
+            r_s = str(row[1] or "")
+            ts_s = str(row[2] or "")
+            c_s = str(row[3] or "")
+            existing_by_id[tid_s] = c_s
+            if ts_s and ts_s != FLOOR_TS:
+                existing_by_ts_role[(ts_s, r_s)] = (tid_s, c_s)
         for i, turn in enumerate(conv.turns):
             if turn.role not in ("user", "assistant") or not turn.text.strip():
                 continue
             if indexed >= cap:
                 break
-            turn_id = f"imp_{slugify(conv.title)}_{i}"
-            if turn_id in existing:
-                if existing[turn_id] == turn.text:
-                    continue  # this exact message is in the archive already
-                # a different message sits at that slot: name this one after its text
-                turn_id = f"{turn_id}-{hashlib.sha256(turn.text.encode('utf-8')).hexdigest()[:8]}"
-                if turn_id in existing:
+            turn_id = (
+                f"imp_{slugify(conv.external_id or conv.title)}_{turn.source_msg_id}"
+                if turn.source_msg_id
+                else f"imp_{slugify(conv.title)}_{i}"
+            )
+            if turn_id in existing_by_id:
+                if existing_by_id[turn_id] == turn.text:
                     continue
+                # Edited message with same deterministic turn_id: replace in place!
+                conn.execute(
+                    "DELETE FROM messages_fts WHERE thread_id = ? AND turn_id = ?",
+                    (thread_id, turn_id),
+                )
+            elif turn.ts != FLOOR_TS and (turn.ts, turn.role) in existing_by_ts_role:
+                old_id, old_text = existing_by_ts_role[(turn.ts, turn.role)]
+                if old_text == turn.text:
+                    continue
+                conn.execute(
+                    "DELETE FROM messages_fts WHERE thread_id = ? AND turn_id = ?",
+                    (thread_id, old_id),
+                )
+                turn_id = old_id
             conn.execute(
                 "INSERT INTO messages_fts (turn_id, thread_id, role, created_at, content) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (turn_id, thread_id, turn.role, turn.ts, turn.text),
             )
-            existing[turn_id] = turn.text
+            existing_by_id[turn_id] = turn.text
+            if turn.ts != FLOOR_TS:
+                existing_by_ts_role[(turn.ts, turn.role)] = (turn_id, turn.text)
             indexed += 1
         conn.commit()
         return indexed
@@ -828,6 +1325,8 @@ def index_memory_text(db_path: Path, rel: str, text: str) -> bool:
     if conn is None:
         return False
     try:
+        # Replace any prior FTS row for this exact path so updated re-exports never duplicate hits
+        conn.execute("DELETE FROM memory_fts WHERE path = ?", (rel,))
         conn.execute(
             "INSERT INTO memory_fts (path, title, category, content) VALUES (?, ?, 'memory', ?)",
             (rel, rel.rsplit("/", 1)[-1], text),
@@ -856,17 +1355,51 @@ def _unique_target(root: Path, rel: Path) -> Path:
     return root / f"{stem}-import-{stamp}{suffix}"
 
 
-def _store_memory_file(data_dir: Path, rel: Path, text: str) -> str | None:
+def _store_memory_file(
+    data_dir: Path,
+    rel: Path,
+    text: str,
+    ledger: ImportLedger | None = None,
+    plan: ImportPlan | None = None,
+) -> str | None:
     """The text as a file under ``data/muse_memory/imports``; returns the stored
-    workspace-style relative name, or None when the disk refused."""
-    target = _unique_target(data_dir / "muse_memory" / "imports", rel)
+    workspace-style relative name, or None when the disk refused.
+    If the exact path was previously imported (recorded in the ledger) and updated in a
+    newer export, updates it cleanly in place instead of spawning ``-import-N`` duplicates."""
+    root = data_dir / "muse_memory" / "imports"
+    base_target = root / rel
+    new_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    ledger_key = f"memory/imports/{rel.as_posix()}"
+    updated_in_place = False
+    target = base_target
+    if base_target.exists():
+        try:
+            cur_sha = _sha256_file(base_target)
+        except OSError:
+            cur_sha = ""
+        if cur_sha == new_sha:
+            if plan is not None:
+                plan.duplicates += 1
+            return None
+        prev_imported = ledger.get_file_hash(ledger_key) if ledger is not None else None
+        if prev_imported and cur_sha == prev_imported:
+            # Previously imported file updated in a newer export -> overwrite cleanly in place
+            target = base_target
+            updated_in_place = True
+        else:
+            target = _unique_target(root, rel)
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
         target.write_text(text, encoding="utf-8")
     except OSError as exc:
         logger.warning("could not store imported memory file: %s", exc)
         return None
-    return f"memory/imports/{target.relative_to(data_dir / 'muse_memory' / 'imports').as_posix()}"
+    stored_rel = f"memory/imports/{target.relative_to(root).as_posix()}"
+    if ledger is not None:
+        ledger.remember_file_hash(stored_rel, new_sha)
+    if updated_in_place and plan is not None:
+        plan.files_updated += 1
+    return stored_rel
 
 
 def _sha256_file(path: Path) -> str:
@@ -884,14 +1417,11 @@ def _store_app_stream(
     archive: zipfile.ZipFile,
     member: str,
     plan: ImportPlan,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """One file from the archive, streamed to ``workspace/<root>/<rel>`` in chunks (so a
-    file of any size costs no memory); returns ``(workspace-relative path, sha256)``.
-    The relative path is ``""`` when nothing was written (an identical file already
-    exists, or the disk refused). An existing different file keeps its name and the new
-    copy gets a numbered one. ``root`` is ``apps/<slug>`` for an app file or ``imported``
-    for a loose file the archive carried as itself. The status is ``"stored"``,
-    ``"duplicate"`` (the same bytes were already there) or ``"failed"``."""
+    file of any size costs no memory); returns ``(workspace-relative path, sha256, status)``.
+    If a previously imported file is updated in a newer re-export, overwrites it cleanly in
+    place (no ``-import-2..-20`` clutter) while never overwriting locally user-modified files."""
     out_rel = root / rel
     target = workspace / out_rel
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -907,31 +1437,47 @@ def _store_app_stream(
         tmp.unlink(missing_ok=True)
         return "", digest.hexdigest(), "failed"
     sha = digest.hexdigest()
+    ledger_key = out_rel.as_posix()
+    updated_in_place = False
     if target.exists():
         try:
-            same = target.stat().st_size == tmp.stat().st_size and _sha256_file(target) == sha
+            cur_sha = _sha256_file(target)
+            same = target.stat().st_size == tmp.stat().st_size and cur_sha == sha
         except OSError:
+            cur_sha = ""
             same = False
         if same:
             tmp.unlink(missing_ok=True)
+            if plan.ledger is not None:
+                plan.ledger.remember_file_hash(ledger_key, sha)
             plan.duplicates += 1
             return "", sha, "duplicate"
-        for n in range(2, 1000):
-            alt = target.with_name(f"{target.stem}-import-{n}{target.suffix}")
-            if not alt.exists():
-                target = alt
-                out_rel = root / target.name
-                break
+        prev_imported = plan.ledger.get_file_hash(ledger_key) if plan.ledger is not None else None
+        if prev_imported and cur_sha == prev_imported:
+            # File was previously placed by an earlier import and has now been updated in a new export
+            updated_in_place = True
         else:
-            tmp.unlink(missing_ok=True)
-            return "", sha, "failed"
+            for n in range(2, 1000):
+                alt = target.with_name(f"{target.stem}-import-{n}{target.suffix}")
+                if not alt.exists():
+                    target = alt
+                    out_rel = root / target.relative_to(workspace / root)
+                    ledger_key = out_rel.as_posix()
+                    break
+            else:
+                tmp.unlink(missing_ok=True)
+                return "", sha, "failed"
     try:
         tmp.replace(target)
     except OSError as exc:
         logger.warning("could not store imported app file: %s", exc)
         tmp.unlink(missing_ok=True)
         return "", sha, "failed"
-    return out_rel.as_posix(), sha, "stored"
+    if plan.ledger is not None:
+        plan.ledger.remember_file_hash(ledger_key, sha)
+    if updated_in_place:
+        plan.files_updated += 1
+    return out_rel.as_posix(), sha, "updated" if updated_in_place else "stored"
 
 
 def free_bytes(path: Path) -> int:
@@ -1216,19 +1762,28 @@ def _accept_text(
     text_clean = _INLINE_PROFILE_BLOCK.sub("", text).strip()
     if not text_clean:
         return
+    # Multi-AI JSON chat exports (ChatGPT, Claude, Gemini Takeout, Grok, Perplexity, generic JSON)
+    ai_convs = parse_ai_export_json(text_clean, name)
+    if not ai_convs and name.lower().endswith((".html", ".htm")):
+        ai_convs = parse_takeout_html(text_clean, name)
+    if ai_convs:
+        plan.conversations.extend(ai_convs)
+        return
     turns = parse_transcript(text_clean[:MAX_TRANSCRIPT_CHARS], name)
     if turns:
+        chat_id = _chat_id_of(text_clean)
         plan.conversations.append(
             Conversation(
                 title=title_from_text(text_clean, name),
                 kind="transcript",
                 turns=turns,
                 source=name,
+                external_id=f"muse:{chat_id}" if chat_id else "",
             )
         )
         return
     if options.background_memory:
-        rel = _store_memory_file(data_dir, _safe_rel(name), text_clean)
+        rel = _store_memory_file(data_dir, _safe_rel(name), text_clean, ledger=plan.ledger, plan=plan)
         if rel and index_memory_text(data_dir / "personal.db", rel, text_clean):
             plan.memory_files += 1
     if options.restore_chats:
@@ -1395,6 +1950,10 @@ def _classify(parts: list[str]) -> str:
         return "memory" if (suffix in TEXT_SUFFIXES or suffix in _TEXT_EXTRA) else "file"
     if suffix in _MEDIA_SUFFIXES:
         return "file"
+    if filename in ("conversations.json", "prod-grok-backend.json", "myactivity.json", "myactivity.html"):
+        return "transcript"
+    if filename == "chat.html" and any(p in ("chatgpt", "openai", "takeout") for p in lower_parts):
+        return "transcript"
     if filename in ("memory.md", "muse-error-log.md", "muse-quotes.md"):
         return "memory"
     if "transcript" in filename:
@@ -1735,6 +2294,21 @@ def _read_text_entry(
     if text is None:
         plan.skipped_files += 1
         return
+    # Multi-AI JSON & Takeout HTML exports (ChatGPT conversations.json, Claude, Gemini, Grok)
+    low_member = member.lower()
+    ai_convs = parse_ai_export_json(text, member) if low_member.endswith(".json") else []
+    if not ai_convs and low_member.endswith((".html", ".htm")):
+        ai_convs = parse_takeout_html(text, member)
+    if ai_convs:
+        for conv in ai_convs:
+            existing = plan.chats_by_id.get(conv.external_id) if conv.external_id else None
+            if existing is not None:
+                _absorb_turns(existing, conv.turns)
+            else:
+                if conv.external_id:
+                    plan.chats_by_id[conv.external_id] = conv
+                plan.conversations.append(conv)
+        return
     turns = parse_transcript(text, member)
     parts = [p for p in member.replace("\\", "/").split("/") if p]
     if _in_archive(plan, member) and any(p.lower() == "chat-transcripts" for p in parts):
@@ -1747,13 +2321,18 @@ def _read_text_entry(
         )
     if turns:
         chat_id = _chat_id_of(text)
+        ext_key = f"muse:{chat_id}" if chat_id else ""
         existing = plan.chats_by_id.get(chat_id) if chat_id else None
         if existing is not None:
             # the same conversation, carried a second time: the messages join the one chat
             _absorb_turns(existing, turns)
             return
         conv = Conversation(
-            title=title_from_text(text, member), kind="transcript", turns=turns, source=member
+            title=title_from_text(text, member),
+            kind="transcript",
+            turns=turns,
+            source=member,
+            external_id=ext_key,
         )
         if chat_id:
             plan.chats_by_id[chat_id] = conv
@@ -1767,7 +2346,7 @@ def _read_text_entry(
             plan.duplicates += 1
         else:
             rel = _memory_rel(parts)
-            stored = _store_memory_file(data_dir, rel, text)
+            stored = _store_memory_file(data_dir, rel, text, ledger=plan.ledger, plan=plan)
             if stored and index_memory_text(data_dir / "personal.db", stored, text):
                 plan.memory_files += 1
     lowered = member.replace("\\", "/").lower()
@@ -1873,7 +2452,7 @@ def _read_memory_entry(
         plan.duplicates += 1
     else:
         rel = _memory_rel(parts)
-        stored = _store_memory_file(data_dir, rel, text)
+        stored = _store_memory_file(data_dir, rel, text, ledger=plan.ledger, plan=plan)
         if stored:
             plan.memory_files += 1
             # the search index is best-effort: a missing database must not hide the file
@@ -2136,10 +2715,12 @@ def apply_plan(svc: MuseService, plan: ImportPlan, options: ImportOptions) -> di
         "ok": True,
         "conversations": len(plan.conversations),
         "events_added": 0,
+        "events_updated": 0,
         "threads_created": 0,
         "threads_merged": 0,
         "messages_indexed": 0,
         "memory_files": plan.memory_files,
+        "files_updated": plan.files_updated,
         "apps_saved": sum(1 for a in plan.apps),
         "apps_registered": (
             sum(1 for a in plan.apps if a.registered) if options.apps in ("restore", "both") else 0
@@ -2154,23 +2735,25 @@ def apply_plan(svc: MuseService, plan: ImportPlan, options: ImportOptions) -> di
         # filled in by the caller when the uploaded file is kept under workspace/imports/
         "kept_copy": None,
     }
-    titles = {normalize_title(t.title): t.id for t in svc.threads.values() if t.title.strip()}
-    personal_db = svc.data_dir / "personal.db"
-    for conv in plan.conversations:
-        if options.restore_chats:
-            thread_id = _apply_conversation(svc, conv, options, titles, stats)
-            if thread_id:
-                # the next same-titled file merges into the chat this one just made
-                titles[normalize_title(conv.title)] = thread_id
-        else:
-            thread_id = f"import:{slugify(conv.title)}"
-        if options.background_memory and thread_id:
-            stats["messages_indexed"] += index_conversation_turns(personal_db, thread_id, conv)
     ledger = plan.ledger or ImportLedger(svc.data_dir / "imports.db")
     if plan.ledger is None:
         ledger.open()
     plan.ledger = None
+    titles = {normalize_title(t.title): t.id for t in svc.threads.values() if t.title.strip()}
+    personal_db = svc.data_dir / "personal.db"
     try:
+        for conv in plan.conversations:
+            if options.restore_chats:
+                thread_id = _apply_conversation(svc, conv, options, titles, stats, ledger=ledger)
+                if thread_id:
+                    # the next same-titled file merges into the chat this one just made
+                    titles[normalize_title(conv.title)] = thread_id
+                    if conv.external_id:
+                        ledger.remember_thread(conv.external_id, thread_id, conv.title)
+            else:
+                thread_id = f"import:{slugify(conv.external_id or conv.title)}"
+            if options.background_memory and thread_id:
+                stats["messages_indexed"] += index_conversation_turns(personal_db, thread_id, conv)
         for digest, kind in plan.ledger_marks:
             ledger.mark(digest, kind, plan.option_key, "import")
         ledger.commit()
@@ -2180,6 +2763,15 @@ def apply_plan(svc: MuseService, plan: ImportPlan, options: ImportOptions) -> di
     if verify is not None:
         stats["verify"] = verify
         _write_verify_report(svc, plan, verify)
+    if getattr(svc, "sync", None) is not None and any(
+        stats.get(k)
+        for k in ("events_added", "events_updated", "apps_saved", "files_updated", "memory_files", "profile_updated")
+    ):
+        try:
+            svc.sync.mirror_local_now()
+            svc.sync.peer_sync_soon(delay=1.0)
+        except Exception:
+            pass
     return stats
 
 
@@ -2193,8 +2785,10 @@ def _apply_conversation(
     options: ImportOptions,
     titles: dict[str, str],
     stats: dict[str, Any],
+    ledger: ImportLedger | None = None,
 ) -> str:
-    """One conversation becomes (or merges into) a chat; the thread id is returned."""
+    """One conversation becomes (or merges into) a chat; the thread id is returned.
+    Handles overlapping, edited, and newly added messages cleanly in place."""
     turns = [t for t in conv.turns if t.role in ("user", "assistant") and t.text.strip()][
         :MAX_EVENTS_PER_CONVERSATION
     ]
@@ -2219,10 +2813,25 @@ def _apply_conversation(
         else:
             stats["threads_created"] += 1
     else:
-        existing = titles.get(normalize_title(conv.title))
+        existing_by_ext = ledger.get_thread(conv.external_id) if (ledger and conv.external_id) else None
+        existing = (
+            existing_by_ext
+            if existing_by_ext and svc.threads.get(existing_by_ext) is not None
+            else titles.get(normalize_title(conv.title))
+        )
         if existing is not None and svc.threads.get(existing) is not None:
             tid = existing
             stats["threads_merged"] += 1
+            # If the conversation was renamed in the updated export, keep the fresher title
+            existing_th = svc.threads.get(existing)
+            if (
+                existing_by_ext == existing
+                and existing_th is not None
+                and conv.title.strip()
+                and normalize_title(existing_th.title) != normalize_title(conv.title)
+                and tid != "main"
+            ):
+                svc.rename_thread(tid, conv.title.strip())
         else:
             made = svc.create_thread(conv.title)
             stats["threads_created"] += 1
@@ -2234,6 +2843,18 @@ def _apply_conversation(
         _event_hash(str(ev.get("ts") or ""), str(ev.get("type") or ""), str(ev.get("text") or ""))
         for ev in thread.timeline.events
     }
+    by_source_id: dict[str, dict[str, Any]] = {}
+    by_ts_role: dict[tuple[str, str], dict[str, Any]] = {}
+    for ev in thread.timeline.events:
+        if not ev.get("imported"):
+            continue
+        smid = str(ev.get("source_msg_id") or "").strip()
+        if smid:
+            by_source_id[smid] = ev
+        ev_ts = str(ev.get("ts") or "")
+        ev_type = str(ev.get("type") or "")
+        if ev_ts and ev_ts != FLOOR_TS and ev_type in ("user", "assistant"):
+            by_ts_role.setdefault((ev_ts, ev_type), ev)
     # a chat view keeps the newest `max_events` messages: anything older than the oldest
     # kept one would be trimmed the moment it is added, so a second import of the same
     # archive must not re-add it (it is in the search index either way)
@@ -2243,26 +2864,51 @@ def _apply_conversation(
     )
     full = bool(events_cap) and len(thread.timeline.events) >= events_cap
     events: list[dict[str, Any]] = []
+    timeline_modified = False
     if conv.kind == "text" and not turns:
         # plain prose with no messages in it: shown in the chat as a note, kept in memory
         body = (conv.body or conv.source).strip()[:20_000]
-        events.append(
-            {
-                "type": "notice",
-                "level": "info",
-                "text": f"Imported from {conv.source}:\n\n{body}",
-                "imported": True,
-            }
-        )
+        note_text = f"Imported from {conv.source}:\n\n{body}"
+        if not any(ev.get("type") == "notice" and ev.get("text") == note_text for ev in thread.timeline.events):
+            events.append(
+                {
+                    "type": "notice",
+                    "level": "info",
+                    "text": note_text,
+                    "imported": True,
+                }
+            )
     for turn in turns:
         if _event_hash(turn.ts, turn.role, turn.text) in known:
             stats["duplicates"] += 1
+            continue
+        # Check if this turn edits an existing imported message in place
+        target_ev: dict[str, Any] | None = None
+        if turn.source_msg_id and turn.source_msg_id in by_source_id:
+            target_ev = by_source_id[turn.source_msg_id]
+        elif not turn.source_msg_id and turn.ts != FLOOR_TS and (turn.ts, turn.role) in by_ts_role:
+            target_ev = by_ts_role[(turn.ts, turn.role)]
+        if target_ev is not None:
+            if str(target_ev.get("text") or "") != turn.text:
+                target_ev["text"] = turn.text
+                if turn.source_msg_id:
+                    target_ev["source_msg_id"] = turn.source_msg_id
+                known.add(_event_hash(str(target_ev.get("ts") or turn.ts), turn.role, turn.text))
+                stats["events_updated"] += 1
+                timeline_modified = True
+            else:
+                stats["duplicates"] += 1
             continue
         if full and oldest_kept and turn.ts <= oldest_kept:
             # already trimmed by the chat's own size limit: do not add it again
             stats["duplicates"] += 1
             continue
-        events.append({"type": turn.role, "text": turn.text, "ts": turn.ts, "imported": True})
+        ev_obj: dict[str, Any] = {"type": turn.role, "text": turn.text, "ts": turn.ts, "imported": True}
+        if turn.source_msg_id:
+            ev_obj["source_msg_id"] = turn.source_msg_id
+        events.append(ev_obj)
+    if timeline_modified:
+        thread.timeline.save()
     if events:
         stats["events_added"] += thread.timeline.merge_sorted(events)
     # where the chat sits in the list comes from its messages, like every chat written
@@ -2287,25 +2933,49 @@ def _apply_conversation(
 def _insert_agent_messages(thread: Any, turns: list[Turn]) -> int:
     """The agent's own transcript learns the imported messages so a new message in that
     chat continues where it left off. Existing messages stay in the middle; imported ones
-    line up around them by time (the thread's start is the boundary)."""
+    line up around them by time (the thread's start is the boundary). Edited messages
+    update cleanly in place."""
     boundary = parse_timestamp(str(getattr(thread, "created_at", "") or "")) or datetime.now(
         UTC
     ).isoformat(timespec="seconds")
-    seen = {
-        (str(m.meta.get("imported_ts") or ""), m.content or "")
-        for m in thread.agent.messages
-        if (m.meta or {}).get("imported")
-    }
+    seen: set[tuple[str, str]] = set()
+    by_smid: dict[str, Message] = {}
+    by_ts_role: dict[tuple[str, str], Message] = {}
+    for m in thread.agent.messages:
+        meta = m.meta or {}
+        if not meta.get("imported"):
+            continue
+        ts_m = str(meta.get("imported_ts") or "")
+        seen.add((ts_m, m.content or ""))
+        smid = str(meta.get("source_msg_id") or "").strip()
+        if smid:
+            by_smid[smid] = m
+        r_m = str(getattr(m.role, "value", m.role) or "")
+        if ts_m and ts_m != FLOOR_TS and r_m in ("user", "assistant"):
+            by_ts_role.setdefault((ts_m, r_m), m)
     before: list[tuple[str, Message]] = []
     after: list[tuple[str, Message]] = []
+    updated = 0
     for turn in turns:
         if not turn.text.strip():
             continue
         if (turn.ts, turn.text) in seen:
             continue
+        existing_msg: Message | None = None
+        if turn.source_msg_id and turn.source_msg_id in by_smid:
+            existing_msg = by_smid[turn.source_msg_id]
+        elif not turn.source_msg_id and turn.ts != FLOOR_TS and (turn.ts, turn.role) in by_ts_role:
+            existing_msg = by_ts_role[(turn.ts, turn.role)]
+        if existing_msg is not None:
+            if (existing_msg.content or "") != turn.text:
+                existing_msg.content = turn.text
+                updated += 1
+            continue
         message = Message.user(turn.text) if turn.role == "user" else Message.assistant(turn.text)
         message.meta["imported"] = True
         message.meta["imported_ts"] = turn.ts
+        if turn.source_msg_id:
+            message.meta["source_msg_id"] = turn.source_msg_id
         if turn.ts <= boundary:
             before.append((turn.ts, message))
         else:
@@ -2313,9 +2983,10 @@ def _insert_agent_messages(thread: Any, turns: list[Turn]) -> int:
     before.sort(key=lambda pair: pair[0])
     after.sort(key=lambda pair: pair[0])
     agent = thread.agent
-    agent.messages = [m for _, m in before] + list(agent.messages) + [m for _, m in after]
-    agent._save_session()
-    return len(before) + len(after)
+    if before or after or updated:
+        agent.messages = [m for _, m in before] + list(agent.messages) + [m for _, m in after]
+        agent._save_session()
+    return len(before) + len(after) + updated
 
 
 # ------------------------------------------------------------------ public entry points

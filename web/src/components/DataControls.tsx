@@ -315,6 +315,22 @@ export function SyncControls({
     }
   };
 
+  const [enablingRemote, setEnablingRemote] = useState(false);
+
+  const enableRemoteAndRefreshCode = async () => {
+    setEnablingRemote(true);
+    try {
+      await api.personalCloudStart(true);
+      const info = await api.syncPairCode();
+      setPairCode(info);
+      toast(t("Personal Cloud remote tunnel is live! Your QR & link now work from anywhere."));
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setEnablingRemote(false);
+    }
+  };
+
   const generatePairCode = async () => {
     setPairing(true);
     try {
@@ -533,6 +549,26 @@ export function SyncControls({
                   {copiedUri ? t("Copied") : t("Copy pairing link")}
                 </button>
               </div>
+              {pairCode.remote_ready ? (
+                <div className="rounded-xl bg-emerald-500/10 px-2.5 py-1.5 text-[12px] leading-snug text-emerald-700 dark:text-emerald-300">
+                  {t("Works from anywhere (Wi-Fi or cellular data) via Personal Cloud.")}
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-500/10 px-2.5 py-2 text-[12px] leading-snug text-amber-700 dark:text-amber-300">
+                  <span className="min-w-0 flex-1">
+                    {t("Currently home Wi-Fi only. Enable Free Personal Cloud Tunnel to pair from anywhere over cellular or another Wi-Fi.")}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={enablingRemote}
+                    onClick={() => void enableRemoteAndRefreshCode()}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-accent px-3 py-1 text-[11.5px] font-medium text-accent-fg disabled:opacity-50"
+                  >
+                    {enablingRemote ? <Loader2 size={12} className="animate-spin" /> : null}
+                    {enablingRemote ? t("Starting…") : t("Enable Pair From Anywhere")}
+                  </button>
+                </div>
+              )}
               {pairCode.warning && (
                 <p className="rounded-xl bg-amber-500/10 px-2.5 py-1.5 text-[12px] leading-snug text-amber-600 dark:text-amber-400">
                   {t(pairCode.warning)}

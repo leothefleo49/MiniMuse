@@ -89,12 +89,12 @@ export function studioClipUrl(
   situationClips?: Record<string, string>,
 ): string | null {
   const customRaw = situationClips?.[mood] || (mood !== "error" && mood !== "call" ? situationClips?.[clipMood(mood)] : undefined);
-  // Guard against stale polluted 7x12 portrait call clips saved on non-call moods by older builds
+  // Guard against stale polluted 7x12 / portrait call clips saved on non-call moods by older builds
+  const lowRaw = (customRaw || "").toLowerCase();
   const isAccidentalCall =
     mood !== "call" &&
     !!customRaw &&
-    customRaw.toLowerCase().includes("call-") &&
-    customRaw.toLowerCase().includes("7x12");
+    (lowRaw === "call.mp4" || lowRaw === "dark-call.mp4" || lowRaw.includes("call-") || lowRaw.includes("7x12"));
   const custom = isAccidentalCall ? undefined : customRaw;
   if (custom) {
     const lower = custom.toLowerCase();
@@ -110,4 +110,16 @@ export function studioClipUrl(
     return withCacheBust(fileUrl(`avatar/${id}/${dark ? "dark-call.mp4" : "call.mp4"}`), updatedAt);
   }
   return withCacheBust(fileUrl(`avatar/${id}/${clipMood(mood)}.mp4`), updatedAt);
+}
+
+/** True when the active situation clip is a custom non-canonical clip whose first frame may differ from idle.webp. */
+export function hasCustomClipOverride(mood: string, situationClips?: Record<string, string>): boolean {
+  const raw = situationClips?.[mood] || (mood !== "error" && mood !== "call" ? situationClips?.[clipMood(mood)] : undefined);
+  if (!raw) return false;
+  const low = raw.trim().toLowerCase();
+  if (!low || low === `${clipMood(mood)}.mp4` || low === `${clipMood(mood)}.webp`) return false;
+  if (mood !== "call" && (low === "call.mp4" || low === "dark-call.mp4" || low.includes("call-") || low.includes("7x12"))) {
+    return false;
+  }
+  return low.endsWith(".mp4") || low.endsWith(".webm");
 }

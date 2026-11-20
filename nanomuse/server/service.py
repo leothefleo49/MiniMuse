@@ -9,6 +9,7 @@ user can fire off several requests without waiting for the last one to finish.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import mimetypes
@@ -4406,8 +4407,12 @@ class MuseService:
         out: list[dict[str, Any]] = []
         if not ws.exists():
             return out
+        skip_dirs = {"node_modules", ".bun-cache", "__pycache__", ".git", ".venv", "venv", "harness"}
         for p in ws.rglob("*"):
-            if not p.is_file() or any(part.startswith(".") for part in p.relative_to(ws).parts):
+            if not p.is_file():
+                continue
+            parts = p.relative_to(ws).parts
+            if any(part.startswith(".") or part in skip_dirs for part in parts):
                 continue
             try:
                 st = p.stat()
@@ -4427,6 +4432,189 @@ class MuseService:
                 break
         out.sort(key=lambda f: f["modified"], reverse=True)
         return out[:limit]
+
+    def list_apps(self) -> list[dict[str, Any]]:
+        """Discover runnable web apps in the workspace (folder apps, spaces, standalone HTML,
+        and custom_apps rows in personal.db) so both PC and synced phones show every app cleanly."""
+        ws = self.workspace()
+        apps_by_slug: dict[str, dict[str, Any]] = {}
+        import_dup_re = re.compile(r"-import-\d+$", re.IGNORECASE)
+
+        def _pretty_title(slug: str) -> str:
+            return " ".join(w.capitalize() for w in re.split(r"[-_]+", slug) if w) or slug
+
+        def _register(
+            slug: str,
+            *,
+            title: str = "",
+            description: str = "",
+            launch_url: str = "",
+            file_path: str = "",
+            icon: str = "",
+            modified: float = 0.0,
+            kind: str = "app",
+        ) -> None:
+            clean = re.sub(r"[^a-z0-9_-]+", "-", slug.strip().lower()).strip("-")
+            if not clean or clean in ("index", "code-files", "projects", "resume-source"):
+                return
+            existing = apps_by_slug.get(clean)
+            if existing is None:
+                apps_by_slug[clean] = {
+                    "slug": clean,
+                    "title": title or _pretty_title(clean),
+                    "description": description,
+                    "url": launch_url,
+                    "file_path": file_path,
+                    "icon": icon,
+                    "kind": kind,
+                    "modified": datetime.fromtimestamp(modified, UTC).isoformat(timespec="seconds")
+                    if modified > 0
+                    else "",
+                    "_mtime": modified,
+                }
+            else:
+                if title and existing["title"] == _pretty_title(clean):
+                    existing["title"] = title
+                if description and not existing["description"]:
+                    existing["description"] = description
+                if icon and not existing["icon"]:
+                    existing["icon"] = icon
+                if launch_url and (not existing["url"] or kind == "space"):
+                    existing["url"] = launch_url
+                if file_path and not existing["file_path"]:
+                    existing["file_path"] = file_path
+                if modified > existing["_mtime"]:
+                    existing["_mtime"] = modified
+                    existing["modified"] = datetime.fromtimestamp(modified, UTC).isoformat(
+                        timespec="seconds"
+                    )
+
+        # 1. Folder apps under workspace/apps/<slug>
+        apps_dir = ws / "apps"
+        if apps_dir.is_dir():
+            for child in sorted(apps_dir.iterdir()):
+                if child.name.startswith("."):
+                    continue
+                if child.is_dir():
+                    slug = child.name
+                    meta_title = ""
+                    meta_desc = ""
+                    space_json = child / "space.json"
+                    if space_json.is_file():
+                        with contextlib.suppress(Exception):
+                            meta = json.loads(space_json.read_text(encoding="utf-8"))
+                            if isinstance(meta, dict):
+                                meta_title = str(meta.get("name") or meta.get("title") or "").strip()
+                                meta_desc = str(meta.get("description") or "").strip()
+                    icon_rel = ""
+                    for icon_name in ("icon.webp", "icon.png", "icon.jpg", "icon.svg"):
+                        if (child / icon_name).is_file():
+                            icon_rel = f"apps/{slug}/{icon_name}"
+                            break
+                    entry: Path | None = None
+                    for cand in (
+                        child / "space-build" / "index.html",
+                        child / "space-build-cvm" / "index.html",
+                        child / "index.html",
+                        child / f"{slug}.html",
+                        child / "client" / "dist-cvm" / "index.html",
+                    ):
+                        if cand.is_file():
+                            entry = cand
+                            break
+                    if entry is None:
+                        htmls = [
+                            h
+                            for h in sorted(child.glob("*.html"))
+                            if not import_dup_re.search(h.stem)
+                        ]
+                        if htmls:
+                            entry = htmls[0]
+                    if entry is not None:
+                        rel_entry = entry.relative_to(ws).as_posix()
+                        mtime = entry.stat().st_mtime
+                        launch = (
+                            f"/spaces/{slug}/"
+                            if (ws / "spaces" / slug / "index.html").is_file()
+                            else f"/apps/{slug}/"
+                        )
+                        _register(
+                            slug,
+                            title=meta_title,
+                            description=meta_desc,
+                            launch_url=launch,
+                            file_path=rel_entry,
+                            icon=icon_rel,
+                            modified=mtime,
+                            kind="space" if space_json.is_file() else "app",
+                        )
+                elif child.is_file() and child.suffix.lower() in (".html", ".htm"):
+                    if import_dup_re.search(child.stem):
+                        continue
+                    _register(
+                        child.stem,
+                        launch_url=f"/apps/{child.stem}",
+                        file_path=child.relative_to(ws).as_posix(),
+                        modified=child.stat().st_mtime,
+                        kind="html",
+                    )
+
+        # 2. Built spaces under workspace/spaces/<slug>
+        spaces_dir = ws / "spaces"
+        if spaces_dir.is_dir():
+            for child in sorted(spaces_dir.iterdir()):
+                idx = child / "index.html"
+                if child.is_dir() and idx.is_file():
+                    _register(
+                        child.name,
+                        launch_url=f"/spaces/{child.name}/",
+                        file_path=idx.relative_to(ws).as_posix(),
+                        modified=idx.stat().st_mtime,
+                        kind="space",
+                    )
+
+        # 3. Top-level standalone HTML apps (e.g. one-for-all.html, mha-quirk-rankings.html)
+        if ws.is_dir():
+            for child in sorted(ws.glob("*.html")):
+                if child.name.startswith(".") or import_dup_re.search(child.stem):
+                    continue
+                _register(
+                    child.stem,
+                    launch_url=f"/apps/{child.stem}",
+                    file_path=child.relative_to(ws).as_posix(),
+                    modified=child.stat().st_mtime,
+                    kind="html",
+                )
+
+        # 4. Registered custom_apps in personal.db
+        personal_db = self.data_dir / "personal.db"
+        if personal_db.is_file():
+            with contextlib.suppress(Exception):
+                conn = sqlite3.connect(personal_db)
+                conn.row_factory = sqlite3.Row
+                try:
+                    rows = conn.execute(
+                        "SELECT slug, title, description, file_path FROM custom_apps"
+                    ).fetchall()
+                    for r in rows:
+                        slug = str(r["slug"] or "").strip()
+                        fp = str(r["file_path"] or "").strip()
+                        if slug:
+                            _register(
+                                slug,
+                                title=str(r["title"] or "").strip(),
+                                description=str(r["description"] or "").strip(),
+                                launch_url=f"/apps/{slug}",
+                                file_path=fp,
+                                kind="app",
+                            )
+                finally:
+                    conn.close()
+
+        items = sorted(apps_by_slug.values(), key=lambda a: (-float(a["_mtime"]), a["title"]))
+        for item in items:
+            item.pop("_mtime", None)
+        return items
 
     # ------------------------------------------------------------------ feed / upcoming
     def feed(self, limit: int = 60) -> list[dict[str, Any]]:
@@ -4961,15 +5149,21 @@ class MuseService:
                 policy[device] = rows
             save_app_settings(self.data_dir, {**stored, "permissions": policy})
             self._apply_permission_policy()
-        if "show_thinking" in data:
-            self.settings.agent.show_thinking = bool(data["show_thinking"])
-            self.ui.show_thinking = bool(data["show_thinking"])
-        if "allow_self_improve" in data:
-            self.settings.agent.allow_self_improve = bool(data["allow_self_improve"])
-        if (lang := data.get("language")) is not None:
-            self.settings.agent.language = str(lang)[:20] or "auto"
         agent_patch: dict[str, Any] = {}
         sentinel_patch: dict[str, Any] = {}
+        if "show_thinking" in data:
+            val = bool(data["show_thinking"])
+            self.settings.agent.show_thinking = val
+            self.ui.show_thinking = val
+            agent_patch["show_thinking"] = val
+        if "allow_self_improve" in data:
+            val = bool(data["allow_self_improve"])
+            self.settings.agent.allow_self_improve = val
+            agent_patch["allow_self_improve"] = val
+        if (lang := data.get("language")) is not None:
+            val = str(lang)[:20] or "auto"
+            self.settings.agent.language = val
+            agent_patch["language"] = val
         if (mode := data.get("sentinel_mode")) in ("ask", "task", "strict", "auto"):
             sentinel_patch["mode"] = mode
 
@@ -5019,6 +5213,9 @@ class MuseService:
             stored["server"] = {**stored.get("server", {}), **server_patch}
             save_app_settings(self.data_dir, stored)
         self.bus.publish({"kind": "settings", "settings": self.settings_view()})
+        if getattr(self, "sync", None) is not None:
+            with contextlib.suppress(Exception):
+                self.sync.peer_sync_soon(delay=0.6)
         return self.settings_view()
 
     def state(self) -> dict[str, Any]:

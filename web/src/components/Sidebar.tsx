@@ -1,4 +1,4 @@
-import { Bug, CalendarDays, LayoutGrid, Lightbulb, MapPin, Maximize2, Menu, MessageCircle, Minimize2, MonitorSmartphone, Newspaper, PanelLeftClose, PanelLeftOpen, Search, SlidersHorizontal, SquareCheckBig, TerminalSquare, UserRound, Wrench, X } from "lucide-react";
+import { Bug, CalendarDays, LayoutGrid, Lightbulb, MapPin, Maximize2, Menu, MessageCircle, Minimize2, MonitorSmartphone, Newspaper, PanelLeftClose, PanelLeftOpen, Search, SlidersHorizontal, SquareCheckBig, TerminalSquare, Wrench, X } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import { desktopBridge, toggleDesktopFullscreen, useDesktopFullscreen } from "../desktop";
 import { directPeersOnline } from "../devicePeers";
@@ -119,7 +119,10 @@ export function Sidebar() {
         >
           <Avatar profile={profile} status={status} size={44} />
           {pendingApprovals > 0 && (
-            <span className="pointer-events-none absolute -right-1 -top-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-surface bg-rose-500 px-1 text-[10.5px] font-bold text-white">
+            <span
+              style={{ transform: "translateZ(2px)" }}
+              className="pointer-events-none absolute -right-1 -top-1 z-30 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-surface bg-rose-500 px-1 text-[10.5px] font-bold text-white"
+            >
               {pendingApprovals}
             </span>
           )}
@@ -158,16 +161,6 @@ export function Sidebar() {
           >
             {desktopFs ? <Minimize2 size={19} className="text-accent" /> : <Maximize2 size={19} className="text-fg/60" />}
             <span className="max-w-full truncate">{desktopFs ? t("Exit full") : t("Fullscreen")}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("account")}
-            aria-current={state.tab === "account" ? "page" : undefined}
-            className={railButton(state.tab === "account")}
-            title={state.hub?.account.signed_in ? state.hub.account.hint : t("Account")}
-          >
-            <UserRound size={21} className={state.tab === "account" ? "text-accent" : "text-fg/60"} />
-            <span className="max-w-full truncate">{t("Account")}</span>
           </button>
           <button type="button" onClick={() => setTab("you")} aria-current={state.tab === "you" ? "page" : undefined} className={railButton(state.tab === "you")}>
             <SlidersHorizontal size={21} className={state.tab === "you" ? "text-accent" : "text-fg/60"} />

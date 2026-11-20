@@ -175,13 +175,60 @@ _CANONICAL_AVATAR_FILES = (
 )
 
 
+def _is_private_or_tailscale_ip(host: str) -> bool:
+    """True only for RFC1918 private LAN IPs or Tailscale CGNAT (100.64.0.0/10) — NEVER loopback
+    and NEVER raw public carrier/WAN NAT IPs that cannot accept inbound :8787 callbacks."""
+    import ipaddress
+
+    h = str(host or "").strip().strip("[]")
+    if not h:
+        return False
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    if ip.is_loopback or ip.is_unspecified or ip.is_multicast:
+        return False
+    if ip.is_private or ip.is_link_local:
+        return True
+    if isinstance(ip, ipaddress.IPv4Address):
+        # Tailscale CGNAT range 100.64.0.0/10
+        return ip in ipaddress.IPv4Network("100.64.0.0/10")
+    return False
+
+
+def _is_raw_public_http_ip(url: str) -> bool:
+    """True for raw ``http://<public-ip>:port`` URLs (e.g. carrier NAT IPs logged from a proxy)
+    which are almost never directly dialable and must never replace HTTPS tunnel / LAN URLs."""
+    import ipaddress
+
+    u = str(url or "").strip().lower()
+    if not u.startswith("http://"):
+        return False
+    host = u[7:].split("/", 1)[0].split(":", 1)[0].strip("[]")
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return False
+    if isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.IPv4Network("100.64.0.0/10"):
+        return False
+    return True
+
+
 def _is_lan_only_url(url: str) -> bool:
-    """True when URL points to a private home-Wi-Fi LAN IP (not Tailscale 100.x, *.ts.net, or public HTTPS)."""
+    """True when URL points to a private home-Wi-Fi LAN IP or unreachable raw public HTTP IP
+    (not Tailscale 100.x, *.ts.net, or HTTPS Personal Cloud / domain)."""
     u = str(url or "").strip().lower()
     if not u:
         return True
     if u.startswith("https://") or ".ts.net" in u or "trycloudflare.com" in u:
         return False
+    if _is_raw_public_http_ip(u):
+        return True
     host = u.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].strip("[]")
     if not host or host in ("localhost", "127.0.0.1", "::1"):
         return True
@@ -493,7 +540,7 @@ class ConversationSync:
 
     def _load_peers(self) -> list[dict[str, str]]:
         """All paired devices from ``pairs.json``, with their tokens out of the vault."""
-        from nanomuse.vault.vault import CredentialVault
+        from nanomuse.vault.vault import CredentialVault, is_unresolved_placeholder
 
         pairs = load_pairs(self.svc.data_dir)
         if not pairs:
@@ -503,9 +550,26 @@ class ConversationSync:
         for raw in pairs:
             peer = dict(raw)
             try:
-                peer["token"] = str(vault.resolve(peer.get("key") or "", strict=False) or "")
+                resolved = str(vault.resolve(peer.get("key") or "", strict=False) or "").strip()
+                peer["token"] = "" if is_unresolved_placeholder(resolved) else resolved
             except Exception:
                 peer["token"] = ""
+            # Deprioritize poisoned raw public http://<carrier-ip>:8787 URLs behind valid HTTPS/Tailscale/LAN URLs
+            raw_urls = [
+                str(u).strip().rstrip("/")
+                for u in [peer.get("url"), *(peer.get("urls") or [])]
+                if str(u or "").strip().startswith(("http://", "https://"))
+            ]
+            dedup: list[str] = []
+            for u in raw_urls:
+                if u not in dedup:
+                    dedup.append(u)
+            good = [u for u in dedup if not _is_raw_public_http_ip(u)]
+            bad = [u for u in dedup if _is_raw_public_http_ip(u)]
+            ordered = good + bad
+            if ordered:
+                peer["url"] = ordered[0]
+                peer["urls"] = ordered[:8]
             loaded.append(peer)
         return loaded
 
@@ -611,6 +675,13 @@ class ConversationSync:
                 if u not in dedup_urls:
                     dedup_urls.append(u)
             remote_ready = any(not _is_lan_only_url(u) for u in dedup_urls)
+            last_err = str(st.get("last_error") or "")
+            auth_err = bool(
+                st.get("auth_error")
+                or not (p.get("token") or "").strip()
+                or "token" in last_err.lower()
+                or "401" in last_err
+            )
             out.append(
                 {
                     "id": p.get("id") or "",
@@ -621,7 +692,8 @@ class ConversationSync:
                     "remote_ready": remote_ready,
                     "online": bool(st.get("online", False)),
                     "last_sync_at": st.get("last_sync_at") or cur.get("last_sync_at") or None,
-                    "last_error": st.get("last_error") or "",
+                    "last_error": last_err,
+                    "auth_error": auth_err,
                     "pending": max(0, int(local_cursor) - out_seq),
                 }
             )
@@ -653,10 +725,7 @@ class ConversationSync:
             "pending_offline": self.pending_offline_count(),
             "device_id": self.svc.hub.device_id,
             "device_name": self.svc.hub.device_name,
-            "urls": candidate_urls(
-                int(getattr(self.svc.settings.server, "port", 8787) or 8787),
-                str(getattr(self.svc.settings.server, "host", "127.0.0.1") or "127.0.0.1"),
-            ),
+            "urls": self._my_reachable_urls(),
             "paused": self._paused,
             "cursor": self.cursor,
             "last_pull_at": self.last_pull_at,
@@ -1943,8 +2012,12 @@ class ConversationSync:
         if not did or did == self.svc.hub.device_id:
             return False
         p = int(port or 8787)
-        cand_urls = [u.strip().rstrip("/") for u in (urls or []) if u and u.strip().startswith(("http://", "https://"))]
-        if ip and not ip.startswith("127.") and ip != "testclient":
+        cand_urls = [
+            u.strip().rstrip("/")
+            for u in (urls or [])
+            if u and u.strip().startswith(("http://", "https://")) and not _is_raw_public_http_ip(u)
+        ]
+        if ip and _is_private_or_tailscale_ip(ip):
             direct = f"http://{ip}:{p}"
             if direct not in cand_urls:
                 cand_urls.insert(0, direct)
@@ -1954,13 +2027,13 @@ class ConversationSync:
             {
                 "type": "nanomuse_peer",
                 "id": did,
-                "name": name or ip or did,
+                "name": name or (ip if _is_private_or_tailscale_ip(ip) else did),
                 "kind": kind or "phone",
                 "port": p,
                 "urls": cand_urls,
                 "pair_ready": False,
             },
-            sender_ip=ip if not ip.startswith("127.") and ip != "testclient" else "",
+            sender_ip=ip if _is_private_or_tailscale_ip(ip) else "",
         )
         return self._refresh_peer_urls()
 
@@ -2132,8 +2205,19 @@ class ConversationSync:
         cur = peer_cursors.setdefault(pkey, {"in": 0, "out": 0})
         in_seq = int(cur.get("in") or 0)
         out_seq = int(cur.get("out") or 0)
+        tok = str(peer.get("token") or "").strip()
+        if not tok or "{{vault:" in tok:
+            self._peer_status[pkey] = {
+                "online": False,
+                "auth_error": True,
+                "last_sync_at": cur.get("last_sync_at"),
+                "last_error": "Sync token missing — tap Connect remotely and paste a pairing link or 6-char code to re-link without losing chats.",
+            }
+            raise RuntimeError(
+                "Sync token missing — tap Connect remotely and paste a pairing link or 6-char code to re-link without losing chats."
+            )
         client = SyncClient(CloudClient(peer["url"]))
-        client.cloud.api_key = peer.get("token") or ""
+        client.cloud.api_key = tok
         applied = 0
         pushed = 0
         peer_name = _clean_peer_name(
@@ -2144,6 +2228,19 @@ class ConversationSync:
         # Ensure peer's sync store is turned on
         try:
             await client.set_enabled(True)
+        except CloudError as exc:
+            if exc.status == 401:
+                msg = (
+                    "Sync token expired or not recognized by the other device — tap Connect remotely "
+                    "and paste its pairing link or 6-char code to re-link without losing chats."
+                )
+                self._peer_status[pkey] = {
+                    "online": False,
+                    "auth_error": True,
+                    "last_sync_at": cur.get("last_sync_at"),
+                    "last_error": msg,
+                }
+                raise RuntimeError(msg) from None
         except Exception:
             pass
         # 1. Pull missed changes from peer in seq order. The first pass of a device that
@@ -2155,7 +2252,22 @@ class ConversationSync:
         for _round in range(MAX_ROUNDS):
             tail = TAIL if (first_round and in_seq == 0 and not cur.get("tail_done")) else 0
             first_round = False
-            out = await client.changes(in_seq, PAGE, scope=self.scope, tail=tail)
+            try:
+                out = await client.changes(in_seq, PAGE, scope=self.scope, tail=tail)
+            except CloudError as exc:
+                if exc.status == 401:
+                    msg = (
+                        "Sync token expired or not recognized by the other device — tap Connect remotely "
+                        "and paste its pairing link or 6-char code to re-link without losing chats."
+                    )
+                    self._peer_status[pkey] = {
+                        "online": False,
+                        "auth_error": True,
+                        "last_sync_at": cur.get("last_sync_at"),
+                        "last_error": msg,
+                    }
+                    raise RuntimeError(msg) from None
+                raise
             # a different store behind the same peer (paired again, or the other app now
             # uses another data folder) has a new sequence space: a saved cursor that
             # points into the old one would silently skip everything
@@ -2298,7 +2410,98 @@ class ConversationSync:
         self._save()
         return applied, pushed
 
-    # ------------------------------------------------------------------ Muse data & avatar/frames sync
+    # ------------------------------------------------------------------ Muse data & avatar/frames/apps sync
+    def list_app_files(self) -> list[dict[str, Any]]:
+        """List all runnable app files in workspace (*.html, apps/**, spaces/**) excluding
+        build caches/dependencies/import-dup clutter so paired phones receive every PC app cleanly."""
+        import re as _re
+
+        ws = self.svc.workspace()
+        if not ws.is_dir():
+            return []
+        skip_dirs = {
+            "node_modules",
+            ".bun-cache",
+            "__pycache__",
+            ".git",
+            ".venv",
+            "venv",
+            "harness",
+            ".next",
+            ".cache",
+        }
+        dup_re = _re.compile(r"-import-\d+\.html$", _re.IGNORECASE)
+        items: list[tuple[int, str, int, float]] = []
+
+        def _priority(rel: str) -> int:
+            low = rel.lower()
+            if low.endswith("index.html") or low.endswith("space.json") or "/icon." in low:
+                return 0
+            if "space-build" in low or low.startswith("spaces/"):
+                return 1
+            if low.endswith((".html", ".htm", ".db")):
+                return 2
+            return 3
+
+        # 1. Top-level standalone HTML apps
+        for f in sorted(ws.glob("*.html")):
+            if not f.is_file() or dup_re.search(f.name):
+                continue
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            if 0 < st.st_size <= 25 * 1024 * 1024:
+                items.append((0, f.name, st.st_size, round(float(st.st_mtime), 2)))
+
+        # 2. workspace/spaces/** and workspace/apps/**
+        for sub_name in ("spaces", "apps"):
+            sub_root = ws / sub_name
+            if not sub_root.is_dir():
+                continue
+            for f in sorted(sub_root.rglob("*")):
+                if not f.is_file():
+                    continue
+                rel_parts = f.relative_to(ws).parts
+                if any(part.startswith(".") or part in skip_dirs for part in rel_parts):
+                    continue
+                low_name = f.name.lower()
+                if (
+                    low_name.endswith(".pyc")
+                    or low_name.startswith("tsbuildinfo")
+                    or low_name in (".ds_store", "thumbs.db")
+                    or dup_re.search(low_name)
+                ):
+                    continue
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                if st.st_size <= 0 or st.st_size > 25 * 1024 * 1024:
+                    continue
+                rel = "/".join(rel_parts)
+                items.append((_priority(rel), rel, st.st_size, round(float(st.st_mtime), 2)))
+
+        items.sort(key=lambda x: (x[0], x[1]))
+        return [
+            {"rel": rel, "size": sz, "mtime": mt}
+            for _, rel, sz, mt in items[:1500]
+        ]
+
+    def list_app_dbs(self) -> list[dict[str, Any]]:
+        """List portable app SQLite DBs in data_dir (habit-tracker.db, meal-rotation.db)."""
+        out: list[dict[str, Any]] = []
+        for name in ("habit-tracker.db", "meal-rotation.db"):
+            p = self.svc.data_dir / name
+            if p.is_file():
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                if 0 < st.st_size <= 50 * 1024 * 1024:
+                    out.append({"name": name, "size": st.st_size, "mtime": round(float(st.st_mtime), 2)})
+        return out
+
     def list_avatar_files(self, face: str | None = None) -> list[dict[str, Any]]:
         """List files (stills, animated clips, and frames) for the active avatar face first,
         followed by any other saved 3D/studio faces so every animation syncs across devices."""
@@ -2392,7 +2595,26 @@ class ConversationSync:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("export_muse_data reminders: {}", exc)
 
-        # Small standalone HTML apps in workspace/ or workspace/apps/
+        # Apps manifest (all runnable apps, spaces, assets & standalone HTML) + app SQLite DBs
+        apps_manifest = self.list_app_files()
+        app_dbs = self.list_app_dbs()
+        custom_apps: list[dict[str, Any]] = []
+        personal_db = self.svc.data_dir / "personal.db"
+        if personal_db.is_file():
+            try:
+                conn = sqlite3.connect(str(personal_db))
+                conn.row_factory = sqlite3.Row
+                custom_apps = [
+                    dict(r)
+                    for r in conn.execute(
+                        "SELECT slug, title, description, file_path, created_at, updated_at FROM custom_apps"
+                    ).fetchall()
+                ]
+                conn.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("export_muse_data custom_apps: {}", exc)
+
+        # Small standalone HTML apps in workspace/ or workspace/apps/ (backward-compat for older peers)
         workspace_apps: list[dict[str, Any]] = []
         try:
             ws = self.svc.workspace()
@@ -2443,6 +2665,9 @@ class ConversationSync:
             "reachable_urls": self._my_reachable_urls(),
             "profile": self.svc.profile.to_dict(),
             "avatar_manifest": self.list_avatar_files(),
+            "apps_manifest": apps_manifest,
+            "app_dbs": app_dbs,
+            "custom_apps": custom_apps,
             "memories": memories,
             "goals": goals,
             "goal_steps": goal_steps,
@@ -2855,6 +3080,51 @@ class ConversationSync:
                 except Exception:
                     pass
 
+        # 6b. Custom apps metadata in personal.db
+        incoming_custom_apps = payload.get("custom_apps")
+        if isinstance(incoming_custom_apps, list) and incoming_custom_apps:
+            personal_db = self.svc.data_dir / "personal.db"
+            try:
+                conn = sqlite3.connect(str(personal_db))
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS custom_apps (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        slug TEXT UNIQUE NOT NULL,
+                        title TEXT NOT NULL,
+                        description TEXT DEFAULT '',
+                        file_path TEXT NOT NULL,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                for row in incoming_custom_apps:
+                    if not isinstance(row, dict):
+                        continue
+                    slug = str(row.get("slug") or "").strip()
+                    title = str(row.get("title") or slug).strip()
+                    fp = str(row.get("file_path") or "").strip()
+                    if not slug or not fp:
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO custom_apps (slug, title, description, file_path, updated_at)
+                        VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+                        ON CONFLICT(slug) DO UPDATE SET
+                            title = excluded.title,
+                            description = CASE WHEN excluded.description != '' THEN excluded.description ELSE custom_apps.description END,
+                            file_path = excluded.file_path,
+                            updated_at = excluded.updated_at
+                        """,
+                        (slug, title, str(row.get("description") or ""), fp, row.get("updated_at")),
+                    )
+                    counts["apps"] += 1
+                conn.commit()
+                conn.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("apply_muse_data custom_apps: {}", exc)
+
         # Notify live UI if anything changed
         if any(counts.values()) and getattr(self.svc, "bus", None):
             try:
@@ -2910,7 +3180,102 @@ class ConversationSync:
                                 dest.write_bytes(fr.content)
                         except Exception:
                             pass
+
+                    # Download missing or newer workspace app files (apps/**, spaces/**, *.html)
+                    # so every PC app slides cleanly over to paired phones & devices!
+                    apps_manifest = remote_data.get("apps_manifest") or []
+                    ws_root = self.svc.workspace()
+                    apps_downloaded = 0
+                    for item in apps_manifest:
+                        if not isinstance(item, dict):
+                            continue
+                        rel = str(item.get("rel") or "").replace("\\", "/").strip("/")
+                        expected_sz = int(item.get("size") or 0)
+                        remote_mt = float(item.get("mtime") or 0.0)
+                        if not rel or ".." in rel:
+                            continue
+                        parts = [p for p in rel.split("/") if p and p not in (".", "..")]
+                        if not parts:
+                            continue
+                        # Only allow top-level *.html, apps/**, spaces/**
+                        if len(parts) == 1 and not parts[0].lower().endswith((".html", ".htm")):
+                            continue
+                        if len(parts) > 1 and parts[0] not in ("apps", "spaces"):
+                            continue
+                        dest = ws_root.joinpath(*parts)
+                        if dest.is_file():
+                            try:
+                                st = dest.stat()
+                                if (expected_sz > 0 and st.st_size == expected_sz) or (
+                                    remote_mt > 0 and st.st_mtime >= remote_mt - 1.0
+                                ):
+                                    continue
+                            except OSError:
+                                pass
+                        try:
+                            fr = await hc.get(
+                                f"{base}/v1/sync/apps/{rel}",
+                                headers=headers,
+                                timeout=25.0,
+                            )
+                            if fr.status_code == 200 and fr.content is not None:
+                                dest.parent.mkdir(parents=True, exist_ok=True)
+                                tmp = dest.with_name(f".{dest.name}.sync.tmp")
+                                tmp.write_bytes(fr.content)
+                                tmp.replace(dest)
+                                if remote_mt > 0:
+                                    try:
+                                        os.utime(dest, (remote_mt, remote_mt))
+                                    except OSError:
+                                        pass
+                                apps_downloaded += 1
+                        except Exception:
+                            pass
+
+                    # Download newer/missing portable app SQLite DBs (habit-tracker.db, meal-rotation.db)
+                    for db_item in remote_data.get("app_dbs") or []:
+                        if not isinstance(db_item, dict):
+                            continue
+                        db_name = str(db_item.get("name") or "").strip()
+                        if db_name not in ("habit-tracker.db", "meal-rotation.db"):
+                            continue
+                        remote_mt = float(db_item.get("mtime") or 0.0)
+                        expected_sz = int(db_item.get("size") or 0)
+                        dest_db = self.svc.data_dir / db_name
+                        if dest_db.is_file():
+                            try:
+                                st = dest_db.stat()
+                                if (expected_sz > 0 and st.st_size == expected_sz) or (
+                                    remote_mt > 0 and st.st_mtime >= remote_mt - 1.0
+                                ):
+                                    continue
+                            except OSError:
+                                pass
+                        try:
+                            fr = await hc.get(
+                                f"{base}/v1/sync/app-db/{db_name}",
+                                headers=headers,
+                                timeout=25.0,
+                            )
+                            if fr.status_code == 200 and fr.content[:16] == b"SQLite format 3\x00":
+                                tmp_db = dest_db.with_name(f".{db_name}.sync.tmp")
+                                tmp_db.write_bytes(fr.content)
+                                tmp_db.replace(dest_db)
+                                if remote_mt > 0:
+                                    try:
+                                        os.utime(dest_db, (remote_mt, remote_mt))
+                                    except OSError:
+                                        pass
+                                apps_downloaded += 1
+                        except Exception:
+                            pass
+
                     self.apply_muse_data(remote_data)
+                    if apps_downloaded and getattr(self.svc, "bus", None):
+                        try:
+                            self.svc.bus.publish({"kind": "sync", "sync": self.view()})
+                        except Exception:
+                            pass
 
             # 2. Push our Muse data + latest Personal Cloud URLs + valid return token to the peer
             local_data = self.export_muse_data()
@@ -2934,6 +3299,7 @@ class ConversationSync:
                     "g": len(local_data.get("goals") or []),
                     "r": len(local_data.get("reminders") or []),
                     "a": len(local_data.get("avatar_manifest") or []),
+                    "app_files": len(local_data.get("apps_manifest") or []),
                     "apps": [(x.get("rel"), x.get("mtime")) for x in (local_data.get("workspace_apps") or [])],
                 },
                 sort_keys=True,
@@ -3253,10 +3619,10 @@ class ConversationSync:
                 port = hostport.rsplit(":", 1)[1]
                 break
         out: list[str] = []
-        if client_ip and not from_loopback and port.isdigit():
+        if client_ip and not from_loopback and _is_private_or_tailscale_ip(client_ip) and port.isdigit():
             out.append(f"http://{client_ip}:{port}")
         for url in usable:
-            if url not in out:
+            if not _is_raw_public_http_ip(url) and url not in out:
                 out.append(url)
         return out
 
@@ -3357,11 +3723,20 @@ class ConversationSync:
                 "urls": my_urls,
                 "peer_token": return_token,
             }
+            # Try private LAN URLs fast first (2.5s), then remote HTTPS/Tailscale URLs (15s)
+            # so pairing works instantaneously on Wi-Fi AND reliably from anywhere on cellular!
+            lan_urls = [u for u in urls if _is_lan_only_url(u) and not _is_raw_public_http_ip(u)]
+            remote_urls = [u for u in urls if not _is_lan_only_url(u)]
+            ordered_urls = remote_urls + lan_urls if any("trycloudflare.com" in u or ".ts.net" in u for u in remote_urls) else lan_urls + remote_urls
+            for u in urls:
+                if u not in ordered_urls:
+                    ordered_urls.append(u)
             last_err = "no answer"
-            tried = ", ".join(u.rstrip("/") for u in urls)
-            async with httpx.AsyncClient(timeout=20.0) as hc:
-                for base in urls:
-                    try:
+            tried = ", ".join(u.rstrip("/") for u in ordered_urls)
+            for base in ordered_urls:
+                timeout_s = 3.0 if _is_lan_only_url(base) and len(ordered_urls) > 1 else 18.0
+                try:
+                    async with httpx.AsyncClient(timeout=timeout_s) as hc:
                         r = await hc.post(base.rstrip("/") + "/v1/sync/pair/claim", json=payload)
                         data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
                         if r.status_code == 200 and data.get("ok"):
@@ -3378,7 +3753,9 @@ class ConversationSync:
                             r_urls = [
                                 str(u).strip().rstrip("/")
                                 for u in (data.get("urls") or [])
-                                if isinstance(u, str) and str(u).strip().startswith(("http://", "https://"))
+                                if isinstance(u, str)
+                                and str(u).strip().startswith(("http://", "https://"))
+                                and not _is_raw_public_http_ip(u)
                             ]
                             if not peer_tok:
                                 raise ValueError("Peer did not return a pairing token")
@@ -3389,7 +3766,7 @@ class ConversationSync:
                                 name=r_name,
                                 device_id=r_id,
                                 kind=r_kind,
-                                urls=[base, *r_urls, *urls],
+                                urls=[base, *r_urls, *[u for u in ordered_urls if not _is_raw_public_http_ip(u)]],
                             )
                             self.state["enabled"] = True
                             if sync_side_chats and not self.state.get("side_chats_set"):
@@ -3399,6 +3776,10 @@ class ConversationSync:
                             if isinstance(data.get("setup_bundle"), dict):
                                 bundle_res = self.apply_setup_bundle(data["setup_bundle"])
                             self.reload_peers()
+                            # Clear any previous auth error on this peer
+                            for p_item in self.peers:
+                                if (r_id and p_item.get("id") == r_id) or p_item.get("url") == base.rstrip("/"):
+                                    self._peer_status.pop(self._peer_key_of(p_item), None)
                             # the first pass can move a whole history: let the screen show its
                             # progress (poll /api/sync/state) instead of holding the request open
                             self.peer_sync_soon(delay=0.05)
@@ -3414,12 +3795,11 @@ class ConversationSync:
                         if r.status_code in (401, 429):
                             # the code itself was refused: the address was fine
                             raise ValueError(last_err)
-                    except httpx.HTTPError as exc:
-                        last_err = str(exc) or exc.__class__.__name__
+                except httpx.HTTPError as exc:
+                    last_err = str(exc) or exc.__class__.__name__
             raise ValueError(
-                f"Could not reach {tried} ({last_err}). Both devices have to be on the same "
-                "Wi-Fi or Tailscale, and the other app has to be running and allowed through "
-                "its firewall."
+                f"Could not reach {tried} ({last_err}). Make sure the other device is open and "
+                "either on the same Wi-Fi or has its Personal Cloud Free Tunnel / Tailscale active."
             )
         if token.strip():
             base = urls[0]
@@ -3447,27 +3827,18 @@ class ConversationSync:
             }
         raise ValueError("Provide the 6-character pairing code or the device's token")
 
-    async def update_peer_urls(self, identifier: str, url: str) -> dict[str, Any]:
+    async def update_peer_urls(self, identifier: str, url: str, code: str = "") -> dict[str, Any]:
         """Add/prioritize a remote Personal Cloud, Cloudflare Tunnel, or Tailscale URL on an
-        existing paired device without losing its pairing token or sync history, then sync now."""
+        existing paired device without losing its pairing token or sync history, then sync now.
+        If a pairing link (nanomuse://pair?...) or 6-character code is included, also refreshes
+        the peer's auth token cleanly so 401 token errors heal in one step."""
         from nanomuse.sync.peer import save_pairs
 
         clean_url = str(url or "").strip()
         if not clean_url:
-            raise ValueError("Enter your computer's Personal Cloud, Cloudflare Tunnel, or Tailscale URL")
+            raise ValueError("Enter your computer's Personal Cloud URL or paste its pairing link")
         parsed = parse_pair_payload(clean_url)
-        new_urls = [
-            str(u).strip().rstrip("/")
-            for u in (parsed.get("urls") or [])
-            if str(u or "").strip().startswith(("http://", "https://"))
-        ]
-        if not new_urls:
-            if not clean_url.startswith(("http://", "https://")):
-                clean_url = ("https://" if ("trycloudflare.com" in clean_url or clean_url.count(".") >= 2 and ":" not in clean_url) else "http://") + clean_url
-            clean_url = clean_url.rstrip("/")
-            if not clean_url.startswith(("http://", "https://")):
-                raise ValueError("Enter a valid http:// or https:// address")
-            new_urls = [clean_url]
+        norm_code = normalize_pair_code(code or str(parsed.get("code") or ""))
 
         stored = load_pairs(self.svc.data_dir)
         ident = str(identifier or "").strip()
@@ -3482,16 +3853,44 @@ class ConversationSync:
                 break
         if match is None and len(stored) == 1:
             match = stored[0]
+
+        # If a pairing link or 6-char code was supplied, re-claim cleanly to refresh both URL & token!
+        if norm_code:
+            target_for_claim = clean_url
+            if not (parsed.get("urls") or []) and match is not None:
+                target_for_claim = str(match.get("url") or "")
+            res = await self.pair_with_remote(
+                target=target_for_claim,
+                code=norm_code,
+                name=str((match or {}).get("name") or parsed.get("name") or ""),
+                sync_side_chats=self.side_chats,
+            )
+            sync_res = await self.sync_peers()
+            return {"ok": True, "repaired": True, **sync_res, **self.view(), "peer": res.get("peer")}
+
+        new_urls = [
+            str(u).strip().rstrip("/")
+            for u in (parsed.get("urls") or [])
+            if str(u or "").strip().startswith(("http://", "https://"))
+        ]
+        if not new_urls:
+            if not clean_url.startswith(("http://", "https://")):
+                clean_url = ("https://" if ("trycloudflare.com" in clean_url or clean_url.count(".") >= 2 and ":" not in clean_url) else "http://") + clean_url
+            clean_url = clean_url.rstrip("/")
+            if not clean_url.startswith(("http://", "https://")):
+                raise ValueError("Enter a valid http:// or https:// address")
+            new_urls = [clean_url]
+
         if match is None:
             raise ValueError("Paired device not found")
 
         merged: list[str] = []
         for u in [*new_urls, match.get("url"), *(match.get("urls") or [])]:
             cu = str(u or "").strip().rstrip("/")
-            if cu.startswith(("http://", "https://")) and cu not in merged:
+            if cu.startswith(("http://", "https://")) and not _is_raw_public_http_ip(cu) and cu not in merged:
                 merged.append(cu)
-        match["url"] = merged[0]
-        match["urls"] = merged[:8]
+        match["url"] = merged[0] if merged else new_urls[0]
+        match["urls"] = (merged or new_urls)[:8]
         save_pairs(self.svc.data_dir, stored)
         self.reload_peers()
         res = await self.sync_peers()

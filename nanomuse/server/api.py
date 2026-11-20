@@ -238,6 +238,7 @@ class SettingsBody(BaseModel):
     profile: dict[str, Any] | None = None
     sentinel_mode: str | None = None
     show_thinking: bool | None = None
+    allow_self_improve: bool | None = None
     language: str | None = None
     # the working caps, editable live (no restart); a value <= 0 is ignored
     max_steps: int | None = Field(default=None, ge=0)
@@ -825,6 +826,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     svc = service or MuseService(settings)
     update_check = UpdateCheck(svc.settings.server.update_check, repo=svc.settings.server.update_repo)
     personal_cloud = PersonalCloudManager(port=svc.settings.server.port, data_dir=svc.data_dir)
+    svc.personal_cloud = personal_cloud
     svc.sync.set_personal_cloud_urls_provider(lambda: personal_cloud.all_urls())
     watch_codes: dict[str, float] = {}
     # what the background watch finder last saw (shown in the Devices screen)
@@ -954,6 +956,12 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         starting = asyncio.create_task(svc.start(), name="services-start")
         await asyncio.wait({starting}, timeout=settings.server.start_grace)
+        with contextlib.suppress(Exception):
+            av_root = svc.workspace() / "avatar"
+            if av_root.is_dir():
+                for face_dir in av_root.iterdir():
+                    if face_dir.is_dir() and not face_dir.name.startswith("."):
+                        _heal_face_canonical_clips(face_dir)
         updater_task = asyncio.create_task(_auto_update_loop(), name="auto-update-loop")
         watch_task = asyncio.create_task(_watch_autodetect_loop(), name="watch-autodetect")
         tunnel_boot_task = (
@@ -1008,6 +1016,14 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
 
     # ------------------------------------------------------------------ auth
     def _is_trusted(request: Request) -> bool:
+        # Proxied requests (e.g. Cloudflare Tunnel forwarding to 127.0.0.1) carry forwarded headers
+        # and MUST always present a valid token — never bypass auth for remote tunnel visitors.
+        if (
+            request.headers.get("cf-connecting-ip")
+            or request.headers.get("x-forwarded-for")
+            or request.headers.get("x-real-ip")
+        ):
+            return False
         client_host = request.client.host if request.client else ""
         if client_host in ("127.0.0.1", "::1", "localhost"):
             return True
@@ -2667,10 +2683,17 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                 if isinstance(raw, dict):
                     model_raw = raw
 
-        # Clean any stale polluted 7x12 call-* entry from non-call situation_clips
+        # Clean any stale polluted 7x12 / portrait call-* entry from non-call situation_clips
         def _is_accidental_call(val: Any) -> bool:
             s = str(val or "").strip().lower()
-            return bool(s and ("call-" in s and "7x12" in s))
+            if not s:
+                return False
+            if s in ("call.mp4", "dark-call.mp4") or "call-" in s or "7x12" in s:
+                return True
+            cand = face_dir / Path(s).name
+            if cand.is_file() and cand.suffix.lower() == ".mp4" and _mp4_is_portrait_call(cand):
+                return True
+            return False
 
         if isinstance(model_raw.get("situation_clips"), dict):
             sits_m = dict(model_raw["situation_clips"])
@@ -3195,13 +3218,46 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         }
 
     @app.post("/api/sync/pair/code", dependencies=dep)
-    async def sync_pair_code() -> dict[str, Any]:
-        """Generate a short-lived 6-character pairing code & QR link for another device."""
+    async def sync_pair_code(ensure_remote: bool = Query(True)) -> dict[str, Any]:
+        """Generate a short-lived 6-character pairing code & QR link for another device.
+        Automatically ensures the Free Cloudflare Quick Tunnel is running (when cloudflared is
+        installed and no Tailscale/HTTPS remote address is active yet) so the generated QR & link
+        work from anywhere over Wi-Fi or cellular data."""
         from nanomuse.server.channels_api import _qr_png
+        from nanomuse.server.personal_cloud import cloudflared_bin
+
+        cf_installed = bool(cloudflared_bin(svc.data_dir))
+        if ensure_remote and cf_installed and not os.environ.get("PYTEST_CURRENT_TEST"):
+            cur_urls = svc.sync._my_reachable_urls()
+            has_remote = any(
+                u.startswith("https://") or ".ts.net" in u or "trycloudflare.com" in u
+                for u in cur_urls
+            )
+            if not has_remote:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        personal_cloud.start_tunnel(auto_install=False),
+                        timeout=8.0,
+                    )
 
         info = svc.sync.issue_pair_code()
         uri = str(info.get("pair_uri") or "")
-        return {**info, "qr_png": _qr_png(uri) if uri else ""}
+        urls = list(info.get("urls") or [])
+        remote_url = next(
+            (
+                u
+                for u in urls
+                if u.startswith("https://") or ".ts.net" in u or "trycloudflare.com" in u
+            ),
+            "",
+        )
+        return {
+            **info,
+            "qr_png": _qr_png(uri) if uri else "",
+            "remote_ready": bool(remote_url),
+            "remote_url": remote_url,
+            "cloudflared_installed": cf_installed,
+        }
 
     @app.post("/api/sync/pair/claim", dependencies=dep)
     async def sync_pair_with(body: PairWithBody) -> dict[str, Any]:
@@ -3235,6 +3291,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             return await svc.sync.update_peer_urls(
                 identifier=str(body.get("identifier") or ""),
                 url=str(body.get("url") or ""),
+                code=str(body.get("code") or ""),
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
@@ -5512,6 +5569,10 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     async def list_files(limit: int = Query(200, ge=1, le=2000)) -> list[dict[str, Any]]:
         return svc.list_files(limit)
 
+    @app.get("/api/apps", dependencies=dep)
+    async def list_apps() -> list[dict[str, Any]]:
+        return svc.list_apps()
+
     @app.post("/api/files/upload", dependencies=dep)
     async def upload_file(
         request: Request, name: str = Query(..., min_length=1, max_length=255)
@@ -6221,6 +6282,54 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         media = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         return FileResponse(target, media_type=media)
 
+    @app.get("/v1/sync/apps/{relpath:path}", dependencies=dep_sync)
+    async def peer_get_app_file(relpath: str) -> FileResponse:
+        parts = [p for p in relpath.replace("\\", "/").split("/") if p and p not in (".", "..")]
+        if not parts:
+            raise HTTPException(400, "invalid app path")
+        if len(parts) == 1 and not parts[0].lower().endswith((".html", ".htm")):
+            raise HTTPException(403, "only standalone html apps may be synced from workspace root")
+        if len(parts) > 1 and parts[0] not in ("apps", "spaces"):
+            raise HTTPException(403, "path outside synced apps/spaces directories")
+        ws_root = svc.workspace().resolve()
+        target = ws_root.joinpath(*parts).resolve()
+        try:
+            target.relative_to(ws_root)
+        except ValueError as exc:
+            raise HTTPException(403, "path escapes workspace") from exc
+        if not target.is_file():
+            raise HTTPException(404, "app file not found")
+        media = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        return FileResponse(target, media_type=media)
+
+    @app.get("/v1/sync/app-db/{db_name}", dependencies=dep_sync)
+    async def peer_get_app_db(db_name: str) -> Response:
+        import sqlite3
+        import tempfile
+
+        clean = db_name.strip()
+        if clean not in ("habit-tracker.db", "meal-rotation.db"):
+            raise HTTPException(403, "unsupported app db")
+        src = svc.data_dir / clean
+        if not src.is_file():
+            raise HTTPException(404, "app db not found")
+        # Use SQLite online backup API so the snapshot is consistent even during writes
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+            tmp_path = Path(tf.name)
+        try:
+            src_conn = sqlite3.connect(str(src))
+            dst_conn = sqlite3.connect(str(tmp_path))
+            try:
+                src_conn.backup(dst_conn)
+            finally:
+                dst_conn.close()
+                src_conn.close()
+            raw = tmp_path.read_bytes()
+        finally:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+        return Response(content=raw, media_type="application/x-sqlite3")
+
     app.include_router(
         make_peer_router(
             settings.data_dir / "sync-peer.db",
@@ -6321,7 +6430,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
 
     install_channels(app, svc, dep)  # /api/channels — Feishu, DingTalk, WeCom, Telegram
     install_ofa(app, svc, dep)
-    install_spaces(app, dep)  # /api/ofa/*, /one-for-all, /mha-rankings, /apps/{slug}
+    install_spaces(app, dep, svc=svc)  # /api/ofa/*, /one-for-all, /mha-rankings, /apps/{slug}
     return app
 
 

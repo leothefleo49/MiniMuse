@@ -222,10 +222,12 @@ export type ImportResult = {
   ok: boolean;
   conversations: number;
   events_added: number;
+  events_updated?: number;
   threads_created: number;
   threads_merged: number;
   messages_indexed: number;
   memory_files: number;
+  files_updated?: number;
   apps_saved: number;
   apps_registered: number;
   profile_updated?: boolean;
@@ -382,10 +384,10 @@ export const api = {
     ),
   syncUnpair: (identifier: string) =>
     request<{ ok: boolean } & SyncState>("/api/sync/pair/unpair", json({ identifier })),
-  syncUpdatePeerUrl: (identifier: string, url: string) =>
-    request<{ ok: boolean; applied?: number; pushed?: number } & SyncState>(
+  syncUpdatePeerUrl: (identifier: string, url: string, code = "") =>
+    request<{ ok: boolean; repaired?: boolean; applied?: number; pushed?: number } & SyncState>(
       "/api/sync/pair/update-url",
-      json({ identifier, url }),
+      json({ identifier, url, code }),
     ),
   syncFreshResync: (identifier = "") =>
     request<{ ok: boolean; fresh?: boolean; applied?: number; pushed?: number } & SyncState>(
@@ -578,6 +580,7 @@ export const api = {
   fireTrigger: (id: string) => request<Trigger>(`/api/triggers/${id}/fire`, { method: "POST" }),
   cancelTrigger: (id: string) => request<Trigger>(`/api/triggers/${id}`, { method: "DELETE" }),
   files: (limit = 300) => request<FileInfo[]>(`/api/files?limit=${limit}`),
+  apps: () => request<import("./types").AppEntry[]>("/api/apps"),
   /** Raw contents of a workspace file, fetched with the token in a header (never in a URL). */
   fileText: async (path: string): Promise<string> => {
     const headers: Record<string, string> = {};

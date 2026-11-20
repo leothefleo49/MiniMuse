@@ -17,16 +17,19 @@ from typing import Any
 from loguru import logger
 
 from nanomuse.schema import RiskLevel, ToolResult
-from nanomuse.tools.base import BaseTool
+from nanomuse.tools.base import BaseTool, CallAssessment
 
 
 class SystemAdminTool(BaseTool):
     name: str = "system_admin"
     description: str = (
-        "Administer this nanoMuse itself: list the configured AIs (models), add a new AI "
-        "endpoint with its API key, switch the default AI (the person gets a card to "
-        "accept), set or remove usage limits and warnings, and restart the server after "
-        "a build. Use `list` first to see ids."
+        "Administer this MiniMuse itself: inspect or update ANY MiniMuse app setting when "
+        "explicitly requested by the user (`get_settings`, `update_settings`), control the "
+        "Personal Cloud Free Tunnel (`personal_cloud`), list configured AIs (`list`), add a "
+        "new AI endpoint with its API key (`add_model`), switch the default AI (`set_default_model`), "
+        "manage usage limits (`list_usage_limits`, `set_usage_limit`, `remove_usage_limit`), "
+        "and restart the server (`restart_server`). Never change settings unless the user "
+        "explicitly asked."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -35,6 +38,9 @@ class SystemAdminTool(BaseTool):
                 "type": "string",
                 "enum": [
                     "list",
+                    "get_settings",
+                    "update_settings",
+                    "personal_cloud",
                     "add_model",
                     "set_default_model",
                     "list_usage_limits",
@@ -42,6 +48,31 @@ class SystemAdminTool(BaseTool):
                     "remove_usage_limit",
                     "restart_server",
                 ],
+            },
+            "settings": {
+                "type": "object",
+                "description": (
+                    "update_settings: dict of MiniMuse settings to update immediately. Supported keys: "
+                    "profile ({name, tagline, avatar, emoji, color, avatar_bg_mode ['theme'|'default'|'color'|'image'], "
+                    "avatar_bg_color, avatar_bg_image, avatar_border_mode ['theme'|'color'|'none'], "
+                    "avatar_border_color, avatar_border_glow [0-100], avatar_animated [bool], "
+                    "tone [''|'formal'|'casual'|'playful'|'concise'], communication [''|'short'|'detailed'|'bullets'], "
+                    "style, user_name, proactivity ['off'|'low'|'default'|'high'], goal_interval_minutes, quiet_hours}), "
+                    "ui ({theme ['light'|'dark'], bg, accent, bubble, scale, show_calendar ['true'|'false'], "
+                    "show_location ['true'|'false'], map_app}), "
+                    "sentinel_mode ('strict'|'ask'|'task'|'auto'), permissions ({device: {cap: 'always'|'ask'|'never'}}), "
+                    "show_thinking (bool), allow_self_improve (bool), language (str, e.g. 'auto'|'English'|'中文'), "
+                    "model_choice (str), background_model (str), cloud_mode ('local'|'hybrid'|'cloud'), "
+                    "cloud_slots ({chat, media, sync}), cloud_prompts (bool), auto_update (bool), "
+                    "trash_retention_days (int), max_steps (int), auto_continue (bool), max_continues (int), "
+                    "max_context_messages (int), max_context_tokens (int), max_context_images (int), "
+                    "sync_enabled (bool), sync_side_chats (bool), personal_cloud_auto_tunnel (bool)."
+                ),
+            },
+            "tunnel_action": {
+                "type": "string",
+                "enum": ["status", "start", "stop", "auto_on", "auto_off"],
+                "description": "personal_cloud: check status, start/stop Free Cloudflare Quick Tunnel, or toggle auto-start.",
             },
             "label": {"type": "string", "description": "Display name for add_model"},
             "base_url": {
@@ -107,11 +138,38 @@ class SystemAdminTool(BaseTool):
     def attach(self, svc: Any) -> None:
         self.svc = svc
 
+    def assess(self, arguments: dict[str, Any]) -> CallAssessment:
+        act = str(arguments.get("action") or "list").strip()
+        if act in ("list", "get_settings", "list_usage_limits") or (
+            act == "personal_cloud" and str(arguments.get("tunnel_action") or "status") == "status"
+        ):
+            return CallAssessment(
+                risk=RiskLevel.SAFE,
+                summary=f"Inspect MiniMuse {act.replace('_', ' ')}",
+            )
+        if act == "update_settings":
+            s = arguments.get("settings")
+            keys = sorted(s.keys()) if isinstance(s, dict) else [k for k in arguments if k not in ("action", "step")]
+            return CallAssessment(
+                risk=RiskLevel.SENSITIVE,
+                summary=f"Update MiniMuse settings ({', '.join(keys[:6]) or 'profile/ui'})",
+            )
+        return CallAssessment(
+            risk=RiskLevel.SENSITIVE,
+            summary=f"system_admin {act}",
+        )
+
     # ------------------------------------------------------------------ actions
     async def execute(self, action: str = "list", **kwargs: Any) -> ToolResult:
         try:
             if action == "list":
                 return ToolResult(output=self._list())
+            if action == "get_settings":
+                return ToolResult(output=self._get_settings())
+            if action == "update_settings":
+                return await self._update_settings(kwargs.get("settings") or kwargs)
+            if action == "personal_cloud":
+                return await self._personal_cloud(str(kwargs.get("tunnel_action") or "status"))
             if action == "add_model":
                 return await self._add_model(kwargs)
             if action == "set_default_model":
@@ -128,6 +186,185 @@ class SystemAdminTool(BaseTool):
         except Exception as exc:  # noqa: BLE001
             logger.exception("system_admin {} failed", action)
             return ToolResult.fail(f"{type(exc).__name__}: {exc}")
+
+    # ------------------------------------------------------------------ app settings
+    def _get_settings(self) -> str:
+        svc = self._svc()
+        sv = svc.settings_view()
+        prof = svc.profile.to_dict()
+        sync_v = svc.sync.view() if getattr(svc, "sync", None) is not None else {}
+        pc = getattr(svc, "personal_cloud", None)
+        pc_status = pc.status(probe_tailscale=False) if pc is not None else None
+        snapshot = {
+            "profile": prof,
+            "ui": sv.get("ui") or {},
+            "agent": sv.get("agent") or {},
+            "llm": {
+                "provider": (sv.get("llm") or {}).get("provider"),
+                "model": (sv.get("llm") or {}).get("model"),
+                "model_choice": (sv.get("llm") or {}).get("model_choice"),
+                "background_model": (sv.get("llm") or {}).get("background_model"),
+            },
+            "sentinel": sv.get("sentinel") or {},
+            "permissions": sv.get("permissions") or {},
+            "cloud_mode": sv.get("cloud_mode"),
+            "cloud_slots": sv.get("cloud_slots"),
+            "cloud_prompts": sv.get("cloud_prompts"),
+            "auto_update": sv.get("auto_update"),
+            "trash_retention_days": sv.get("trash_retention_days"),
+            "sync": {
+                "enabled": sync_v.get("enabled"),
+                "side_chats": sync_v.get("side_chats"),
+                "peers_count": len(sync_v.get("peers") or []),
+                "pending_offline": sync_v.get("pending_offline"),
+            },
+            "personal_cloud": {
+                "best_url": pc_status.get("best_url"),
+                "tunnel_running": (pc_status.get("tunnel") or {}).get("running"),
+                "tunnel_url": (pc_status.get("tunnel") or {}).get("url"),
+                "auto_tunnel": pc_status.get("auto_tunnel"),
+                "cloudflared_installed": pc_status.get("cloudflared_installed"),
+            }
+            if isinstance(pc_status, dict)
+            else None,
+        }
+        return json.dumps(snapshot, ensure_ascii=False, indent=2)
+
+    async def _update_settings(self, raw: Any) -> ToolResult:
+        svc = self._svc()
+        if not isinstance(raw, dict):
+            return ToolResult.fail("update_settings requires a settings object")
+        payload = dict(raw)
+        payload.pop("action", None)
+        payload.pop("step", None)
+        if not payload:
+            return ToolResult.fail("No settings fields provided to update")
+
+        applied: list[str] = []
+
+        # 1. Sync toggles
+        if "sync_enabled" in payload and getattr(svc, "sync", None) is not None:
+            val = bool(payload.pop("sync_enabled"))
+            await svc.sync.set_enabled(val)
+            applied.append(f"sync_enabled={val}")
+        if "sync_side_chats" in payload and getattr(svc, "sync", None) is not None:
+            val = bool(payload.pop("sync_side_chats"))
+            svc.sync.set_side_chats(val)
+            applied.append(f"sync_side_chats={val}")
+
+        # 2. Personal cloud auto-tunnel toggle
+        if "personal_cloud_auto_tunnel" in payload:
+            val = bool(payload.pop("personal_cloud_auto_tunnel"))
+            pc = getattr(svc, "personal_cloud", None)
+            if pc is not None:
+                pc.set_auto_tunnel(val)
+                applied.append(f"personal_cloud_auto_tunnel={val}")
+
+        # 3. Allow top-level profile keys convenience (e.g. avatar_bg_mode="default")
+        profile_keys = {
+            "name",
+            "tagline",
+            "avatar",
+            "emoji",
+            "color",
+            "avatar_bg_mode",
+            "avatar_bg_color",
+            "avatar_bg_image",
+            "avatar_border_mode",
+            "avatar_border_color",
+            "avatar_border_glow",
+            "avatar_animated",
+            "avatar_situation_clips",
+            "tone",
+            "communication",
+            "style",
+            "user_name",
+            "proactivity",
+            "goal_interval_minutes",
+            "quiet_hours",
+        }
+        prof_patch = dict(payload.get("profile") or {}) if isinstance(payload.get("profile"), dict) else {}
+        for k in list(payload.keys()):
+            if k in profile_keys:
+                prof_patch[k] = payload.pop(k)
+        if prof_patch:
+            payload["profile"] = prof_patch
+
+        # 4. Allow top-level UI keys convenience (e.g. theme="dark", accent="#...")
+        ui_keys = {"theme", "bg", "accent", "bubble", "scale", "show_calendar", "show_location", "map_app"}
+        ui_patch = dict(payload.get("ui") or {}) if isinstance(payload.get("ui"), dict) else {}
+        for k in list(payload.keys()):
+            if k in ui_keys:
+                val = payload.pop(k)
+                ui_patch[k] = "true" if val is True else "false" if val is False else str(val)
+        if ui_patch:
+            payload["ui"] = ui_patch
+
+        # 5. Apply all standard MiniMuse settings immediately (persists to profile.json / app-settings.json & broadcasts WS)
+        allowed_top = {
+            "profile",
+            "sentinel_mode",
+            "show_thinking",
+            "allow_self_improve",
+            "language",
+            "max_steps",
+            "auto_continue",
+            "max_continues",
+            "max_context_messages",
+            "max_context_tokens",
+            "max_context_images",
+            "always_ask_tools",
+            "always_allow_tools",
+            "model_choice",
+            "background_model",
+            "cloud_mode",
+            "cloud_slots",
+            "cloud_prompts",
+            "ui",
+            "permissions",
+            "auto_update",
+            "trash_retention_days",
+        }
+        filtered = {k: v for k, v in payload.items() if k in allowed_top}
+        unknown = [k for k in payload.keys() if k not in allowed_top]
+        if filtered:
+            svc.update_settings(filtered)
+            for k, v in filtered.items():
+                if isinstance(v, dict):
+                    applied.append(f"{k}={json.dumps(v, ensure_ascii=False)}")
+                else:
+                    applied.append(f"{k}={v!r}")
+        if not applied:
+            return ToolResult.fail(
+                f"No supported settings keys found (ignored: {', '.join(unknown)}). "
+                "Call get_settings first to inspect valid keys."
+            )
+        note = f" (ignored unsupported keys: {', '.join(unknown)})" if unknown else ""
+        return ToolResult(
+            output=f"Settings saved immediately and synced: {'; '.join(applied)}.{note}"
+        )
+
+    async def _personal_cloud(self, tunnel_action: str) -> ToolResult:
+        svc = self._svc()
+        pc = getattr(svc, "personal_cloud", None)
+        if pc is None:
+            return ToolResult.fail("Personal Cloud manager is not attached on this runtime.")
+        act = tunnel_action.strip().lower()
+        if act == "start":
+            st = await pc.start_tunnel(auto_install=False)
+            if getattr(svc, "sync", None) is not None:
+                svc.sync.peer_sync_soon(delay=0.5)
+        elif act == "stop":
+            st = await pc.stop_tunnel()
+        elif act == "auto_on":
+            pc.set_auto_tunnel(True)
+            st = pc.status(probe_tailscale=True)
+        elif act == "auto_off":
+            pc.set_auto_tunnel(False)
+            st = pc.status(probe_tailscale=True)
+        else:
+            st = pc.status(probe_tailscale=True)
+        return ToolResult(output=json.dumps(st, ensure_ascii=False, indent=2))
 
     # ------------------------------------------------------------------ models
     def _list(self) -> str:

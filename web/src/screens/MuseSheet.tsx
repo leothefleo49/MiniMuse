@@ -118,7 +118,7 @@ export function MuseSheet({ open, onClose }: { open: boolean; onClose: () => voi
         >
           <Share2 size={16} />
         </button>
-        <div className="relative overflow-visible">
+        <div className="relative isolate overflow-visible">
           <Avatar profile={state.profile} status={state.status} size={72} />
           {/* the pen badge, bottom-right of the face: straight to Avatar Studio */}
           <button
@@ -126,7 +126,8 @@ export function MuseSheet({ open, onClose }: { open: boolean; onClose: () => voi
             aria-label={t("Edit")}
             title={t("Avatar studio")}
             onClick={() => go("avatar")}
-            className="absolute -bottom-0.5 -right-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-surface text-fg shadow-[0_1px_4px_rgba(0,0,0,0.18)] hover:bg-surface-2 dark:border dark:border-border"
+            style={{ transform: "translateZ(2px)" }}
+            className="absolute -bottom-0.5 -right-0.5 z-30 flex h-6 w-6 items-center justify-center rounded-full bg-surface text-fg shadow-[0_1px_4px_rgba(0,0,0,0.22)] hover:bg-surface-2 dark:border dark:border-border"
           >
             <Pencil size={13} />
           </button>

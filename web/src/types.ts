@@ -443,6 +443,7 @@ export interface SyncPeerInfo {
   online: boolean;
   last_sync_at: string | null;
   last_error: string;
+  auth_error?: boolean;
   pending: number;
 }
 
@@ -464,8 +465,22 @@ export interface PairCodeInfo {
   urls: string[];
   pair_uri: string;
   qr_png?: string;
+  remote_ready?: boolean;
+  remote_url?: string;
+  cloudflared_installed?: boolean;
   /** set when no other device could actually reach this one (loopback-only or no network) */
   warning?: string;
+}
+
+export interface AppEntry {
+  slug: string;
+  title: string;
+  description?: string;
+  url: string;
+  file_path?: string;
+  icon?: string;
+  kind: "space" | "app" | "html";
+  modified?: string;
 }
 
 export interface TrashedThread {

@@ -56,7 +56,10 @@ export function MuseHeader({
         <button type="button" onClick={onAvatar} aria-label={name} className="relative z-20 rounded-full p-1.5 overflow-visible">
           <Avatar profile={profile} status={status} size={size} />
           {badge !== undefined && badge > 0 && (
-            <span className="pointer-events-none absolute -right-0.5 top-0 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-bg bg-rose-500 px-1 text-[10.5px] font-bold text-white">
+            <span
+              style={{ transform: "translateZ(2px)" }}
+              className="pointer-events-none absolute -right-0.5 top-0 z-30 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-bg bg-rose-500 px-1 text-[10.5px] font-bold text-white"
+            >
               {badge}
             </span>
           )}

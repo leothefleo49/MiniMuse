@@ -20,6 +20,43 @@ SPACES_DIR = Path.home() / ".nanomuse" / "workspace" / "spaces"
 HT_DB = Path.home() / ".nanomuse" / "habit-tracker.db"
 MR_DB = Path.home() / ".nanomuse" / "meal-rotation.db"
 
+_ACTIVE_WORKSPACE: Path | None = None
+_ACTIVE_DATA_DIR: Path | None = None
+
+
+def _resolve_spaces_dir() -> Path:
+    if _ACTIVE_WORKSPACE is not None:
+        cand = _ACTIVE_WORKSPACE / "spaces"
+        if cand.is_dir():
+            return cand
+    return SPACES_DIR
+
+
+def _resolve_apps_dir() -> Path | None:
+    if _ACTIVE_WORKSPACE is not None:
+        cand = _ACTIVE_WORKSPACE / "apps"
+        if cand.is_dir():
+            return cand
+    fallback = Path.home() / ".nanomuse" / "workspace" / "apps"
+    return fallback if fallback.is_dir() else None
+
+
+def _resolve_db(filename: str, fallback: Path) -> Path:
+    if _ACTIVE_DATA_DIR is not None:
+        cand = _ACTIVE_DATA_DIR / filename
+        if cand.is_file():
+            return cand
+    if _ACTIVE_WORKSPACE is not None:
+        slug = filename.removesuffix(".db")
+        app_db = _ACTIVE_WORKSPACE / "apps" / slug / "app.db"
+        if app_db.is_file():
+            return app_db
+    if fallback.is_file():
+        return fallback
+    if _ACTIVE_DATA_DIR is not None:
+        return _ACTIVE_DATA_DIR / filename
+    return fallback
+
 
 class ActionCall(BaseModel):
     action: str
@@ -28,13 +65,13 @@ class ActionCall(BaseModel):
 
 
 def get_ht_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(HT_DB)
+    conn = sqlite3.connect(_resolve_db("habit-tracker.db", HT_DB))
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def get_mr_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(MR_DB)
+    conn = sqlite3.connect(_resolve_db("meal-rotation.db", MR_DB))
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -668,7 +705,48 @@ def handle_mr_action(action: str, args: dict[str, Any]) -> Any:
 # ==============================================================================
 # Routes
 # ==============================================================================
-def install_spaces(app: FastAPI, dependencies: list[Any] | None = None) -> None:
+def _space_root(slug: str) -> Path:
+    clean = "".join(c for c in slug.strip().lower() if c.isalnum() or c in "-_")
+    for base_cand in (
+        _resolve_spaces_dir() / clean,
+        (_resolve_apps_dir() / clean / "space-build") if _resolve_apps_dir() else None,
+        (_resolve_apps_dir() / clean / "space-build-cvm") if _resolve_apps_dir() else None,
+        (_resolve_apps_dir() / clean) if _resolve_apps_dir() else None,
+    ):
+        if base_cand is not None and (base_cand / "index.html").is_file():
+            return base_cand
+    return _resolve_spaces_dir() / clean
+
+
+def _serve_space_file(slug: str, file_path: str) -> FileResponse:
+    base = _space_root(slug).resolve()
+    if file_path:
+        cand = (base / file_path).resolve()
+        try:
+            cand.relative_to(base)
+        except ValueError as exc:
+            raise HTTPException(403, "path outside space") from exc
+        if cand.is_file():
+            return FileResponse(cand, headers={"Cache-Control": "no-cache"})
+    idx = base / "index.html"
+    if idx.is_file():
+        return FileResponse(idx, headers={"Cache-Control": "no-cache"})
+    raise HTTPException(404, f"{slug} space build not found")
+
+
+def install_spaces(
+    app: FastAPI, dependencies: list[Any] | None = None, svc: Any = None
+) -> None:
+    global _ACTIVE_WORKSPACE, _ACTIVE_DATA_DIR
+    if svc is not None:
+        try:
+            _ACTIVE_WORKSPACE = Path(svc.workspace())
+        except Exception:
+            pass
+        try:
+            _ACTIVE_DATA_DIR = Path(svc.data_dir)
+        except Exception:
+            pass
     dep = dependencies or []
     first_new = len(app.router.routes)
 
@@ -682,13 +760,7 @@ def install_spaces(app: FastAPI, dependencies: list[Any] | None = None) -> None:
     @app.get("/spaces/habit-tracker/{file_path:path}", include_in_schema=False)
     @app.get("/spaces/habit-tracker", include_in_schema=False)
     async def serve_ht_asset(file_path: str = "") -> FileResponse:
-        base = SPACES_DIR / "habit-tracker"
-        p = base / file_path if file_path else base / "index.html"
-        if not p.is_file():
-            p = base / "index.html"
-        if not p.is_file():
-            raise HTTPException(404, "habit-tracker space build not found")
-        return FileResponse(p, headers={"Cache-Control": "no-cache"})
+        return _serve_space_file("habit-tracker", file_path)
 
     # 2. Meal Rotation
     @app.post("/spaces/meal-rotation/actions", dependencies=dep)
@@ -700,25 +772,18 @@ def install_spaces(app: FastAPI, dependencies: list[Any] | None = None) -> None:
     @app.get("/spaces/meal-rotation/{file_path:path}", include_in_schema=False)
     @app.get("/spaces/meal-rotation", include_in_schema=False)
     async def serve_mr_asset(file_path: str = "") -> FileResponse:
-        base = SPACES_DIR / "meal-rotation"
-        p = base / file_path if file_path else base / "index.html"
-        if not p.is_file():
-            p = base / "index.html"
-        if not p.is_file():
-            raise HTTPException(404, "meal-rotation space build not found")
-        return FileResponse(p, headers={"Cache-Control": "no-cache"})
+        return _serve_space_file("meal-rotation", file_path)
 
-    # 3. MHA Rankings
+    # 3. MHA Rankings & any other synced Space app
     @app.get("/spaces/mha-quirk-rankings/{file_path:path}", include_in_schema=False)
     @app.get("/spaces/mha-quirk-rankings", include_in_schema=False)
     async def serve_mha_asset(file_path: str = "") -> FileResponse:
-        base = SPACES_DIR / "mha-quirk-rankings"
-        p = base / file_path if file_path else base / "index.html"
-        if not p.is_file():
-            p = base / "index.html"
-        if not p.is_file():
-            raise HTTPException(404, "mha-quirk-rankings space build not found")
-        return FileResponse(p, headers={"Cache-Control": "no-cache"})
+        return _serve_space_file("mha-quirk-rankings", file_path)
+
+    @app.get("/spaces/{slug}/{file_path:path}", include_in_schema=False)
+    @app.get("/spaces/{slug}", include_in_schema=False)
+    async def serve_generic_space(slug: str, file_path: str = "") -> FileResponse:
+        return _serve_space_file(slug, file_path)
 
     # 4. Top-level redirects
     @app.get("/one-for-all", include_in_schema=False)
