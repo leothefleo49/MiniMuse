@@ -1,13 +1,13 @@
 {
   "name": "rootfs.tar.xz",
-  "version": "1.2.18+local",
-  "nanomuse": "1.2.17",
+  "version": "1.2.19+local",
+  "nanomuse": "1.2.19",
   "arch": "aarch64",
   "alpine": "3.21.3",
   "python": "3.12.16",
   "node": "v22.23.5",
-  "size": 83294004,
-  "unpacked": 365704335,
-  "sha256": "ea3cd5be5ffc8a50bcfbe4bf6f9d5f34fa60bd3ecb1bf798637f9ec7afbffb45",
-  "built": "2026-11-20T01:29:51Z"
+  "size": 84542184,
+  "unpacked": 365753893,
+  "sha256": "a786204d581f7e63464d45a14223622ebba924d16c87b87a9bb80cb23f33d519",
+  "built": "2026-11-20T05:17:25Z"
 }

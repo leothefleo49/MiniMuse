@@ -21,6 +21,14 @@ export function ImportProgress() {
   const announced = useRef<Set<string>>(new Set());
   const watchedRef = useRef<Set<string>>(new Set());
   const baseline = useRef<Set<string> | null>(null);
+  const toastRef = useRef(toast);
+  const refreshRef = useRef(refreshSettings);
+  const tRef = useRef(t);
+  useEffect(() => {
+    toastRef.current = toast;
+    refreshRef.current = refreshSettings;
+    tRef.current = t;
+  }, [toast, refreshSettings, t]);
 
   useEffect(() => {
     let timer = 0;
@@ -43,12 +51,12 @@ export function ImportProgress() {
           if (ACTIVE.has(job.phase) || !watchedRef.current.has(job.id) || announced.current.has(job.id)) continue;
           announced.current.add(job.id);
           if (job.phase === "done" && job.result) {
-            toast(t("Import finished: {summary}", { summary: summaryOf(job.result, t) }));
-            if (job.result.profile_updated || job.result.avatar_files) void refreshSettings().catch(() => undefined);
+            toastRef.current(tRef.current("Import finished: {summary}", { summary: summaryOf(job.result, tRef.current) }));
+            if (job.result.profile_updated || job.result.avatar_files) void refreshRef.current().catch(() => undefined);
             // the kept original and its report are on disk by now: the import screen refreshes
             window.dispatchEvent(new Event("nanomuse:import-finished"));
           } else {
-            toast(t("Import failed: {error}", { error: job.error }));
+            toastRef.current(tRef.current("Import failed: {error}", { error: job.error }));
           }
         }
         return list.some((j) => ACTIVE.has(j.phase));
@@ -72,7 +80,7 @@ export function ImportProgress() {
       window.clearTimeout(timer);
       window.removeEventListener("nanomuse:import-started", kick);
     };
-  }, [toast, refreshSettings, t]);
+  }, []);
 
   const shown = jobs.filter((j) => !hidden.has(j.id) && (ACTIVE.has(j.phase) || watched.has(j.id)));
   if (!shown.length) return null;

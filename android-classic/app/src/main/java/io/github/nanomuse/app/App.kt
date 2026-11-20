@@ -61,6 +61,7 @@ class App : Application() {
         const val CH_ATTENTION = "attention"
         const val CH_UPDATES = "updates"
         const val CH_LINK = "link"
-        const val USER_AGENT_SUFFIX = " NanoMuseAndroid/" + BuildConfig.VERSION_NAME
+        val USER_AGENT_SUFFIX: String
+            get() = " NanoMuseAndroid/${BuildConfig.VERSION_NAME}"
     }
 }

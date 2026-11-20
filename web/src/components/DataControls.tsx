@@ -1,5 +1,5 @@
 import { Check, Copy, Download, Laptop, Loader2, QrCode, RefreshCw, Trash2, Unlink, Wifi } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { androidApp } from "../android";
 import { api } from "../api";
 import { useT } from "../i18n";
@@ -149,7 +149,10 @@ export function SyncControls({
   const [pairCode, setPairCode] = useState<PairCodeInfo | null>(null);
   const [target, setTarget] = useState("");
   const [code, setCode] = useState("");
+  const [selectedNearbyName, setSelectedNearbyName] = useState("");
   const [showManual, setShowManual] = useState(false);
+  const manualFormRef = useRef<HTMLFormElement>(null);
+  const codeInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [syncingNow, setSyncingNow] = useState(false);
   const [discovering, setDiscovering] = useState(false);
@@ -551,8 +554,16 @@ export function SyncControls({
                   <button
                     type="button"
                     onClick={() => {
+                      const chosenName = np.name || np.device_id;
+                      const chosenUrl = np.urls[0] ?? "";
+                      setSelectedNearbyName(chosenName);
                       setShowManual(true);
-                      setTarget(np.urls[0] ?? "");
+                      setTarget(chosenUrl);
+                      toast(t("Enter the 6-character code shown on {name}.", { name: chosenName }));
+                      window.requestAnimationFrame(() => {
+                        manualFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                        codeInputRef.current?.focus();
+                      });
                     }}
                     className="shrink-0 rounded-full bg-accent/12 px-3 py-1 text-[12px] font-medium text-accent hover:bg-accent/20"
                   >
@@ -566,24 +577,31 @@ export function SyncControls({
           {/* Manual pair / code claim form */}
           {showManual && (
             <form
-              className="rounded-2xl border border-border bg-surface-2/60 p-3 space-y-2"
+              ref={manualFormRef}
+              className="rounded-2xl border border-accent/45 bg-surface-2/70 p-3 space-y-2"
               onSubmit={(e) => {
                 e.preventDefault();
-                void claimPair(target, code);
+                void claimPair(target, code, selectedNearbyName);
               }}
             >
+              {selectedNearbyName && (
+                <div className="rounded-xl bg-accent/10 px-2.5 py-1.5 text-[12px] font-medium text-accent">
+                  {t("Pairing with {name} — enter the 6-character code shown on that device:", { name: selectedNearbyName })}
+                </div>
+              )}
               <label className="block space-y-1">
-                <span className="text-[12px] text-muted">{t("Other device address (http://IP:8787) or pasted pairing link")}</span>
+                <span className="text-[12px] text-muted">{t("Other device address (http://IP:8787 or https://….trycloudflare.com) or pasted pairing link")}</span>
                 <input
                   value={target}
                   onChange={(e) => setTarget(e.target.value)}
-                  placeholder="http://192.168.1.25:8787"
+                  placeholder="https://example.trycloudflare.com"
                   className="w-full rounded-xl bg-surface px-3 py-2 text-[13px] outline-none focus:ring-2 focus:ring-accent/40"
                 />
               </label>
               <label className="block space-y-1">
                 <span className="text-[12px] text-muted">{t("6-character pairing code (leave blank if pasted full link)")}</span>
                 <input
+                  ref={codeInputRef}
                   value={code}
                   onChange={(e) => setCode(e.target.value.toUpperCase())}
                   placeholder="ABC123"
@@ -594,7 +612,10 @@ export function SyncControls({
               <div className="flex justify-end gap-2 pt-1">
                 <button
                   type="button"
-                  onClick={() => setShowManual(false)}
+                  onClick={() => {
+                    setShowManual(false);
+                    setSelectedNearbyName("");
+                  }}
                   className="rounded-full border border-border px-3 py-1.5 text-[12.5px] text-muted"
                 >
                   {t("Cancel")}

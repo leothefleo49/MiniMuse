@@ -559,6 +559,57 @@ def test_remote_peer_url_update_fresh_resync_auto_tunnel_and_avatar_labels(tmp_p
     assert not (face_dir / "custom-victory-dance-1700000000.mp4").exists()
 
 
+def test_v1219_deep_memory_missing_fts_log_export_avatar_heal_and_trycloudflare(tmp_path: Path) -> None:
+    """v1.2.19: deep_memory handles missing memory_fts/messages_fts without crashing, log_export
+    never lies about RTX 2070, missing idle.mp4 heals from avatar-<id>-1.mp4, and bare
+    *.trycloudflare.com normalizes to https://."""
+    import sqlite3
+
+    from fastapi.testclient import TestClient
+
+    from nanomuse.server import log_export
+    from nanomuse.server.api import create_app
+    from nanomuse.sync.discovery import normalize_peer_urls
+    from nanomuse.tools.deep_memory_tools import DeepMemoryTool
+
+    # 1. Bare trycloudflare host normalizes to https:// (no :8787!)
+    assert normalize_peer_urls("humor-movie-thin-archive.trycloudflare.com") == [
+        "https://humor-movie-thin-archive.trycloudflare.com"
+    ]
+
+    # 2. deep_memory gracefully falls back when memory_fts / messages_fts do not exist
+    db_dir = tmp_path / "dm"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    mem_db = db_dir / "memory.db"
+    c = sqlite3.connect(str(mem_db))
+    c.execute("CREATE TABLE memories (id TEXT, content TEXT, category TEXT, created_at TEXT)")
+    c.execute("INSERT INTO memories VALUES ('m1', 'Tyler loves dragon ball animations', 'general', '2026-11-20')")
+    c.commit()
+    c.close()
+    tool = DeepMemoryTool(db_path=db_dir / "personal.db")
+    res = asyncio.run(tool.execute(action="search_all", query="dragon ball"))
+    assert res.error is None
+    assert "Tyler loves dragon ball animations" in (res.output or "")
+
+    # 3. log_export uses actual data_dir and never hardcodes RTX 2070 fallback
+    summary = log_export.get_error_summary(data_dir=tmp_path)
+    assert "NVIDIA GeForce RTX 2070" not in summary or "RTX 2070" in str(log_export.get_hardware_stats().get("gpu_name", ""))
+
+    # 4. Missing idle.mp4 auto-heals from avatar-<id>-1.mp4 even when no darkmode clips exist
+    svc = _make_service(tmp_path, "heal1219")
+    face_dir = svc.workspace() / "avatar" / "99887766"
+    face_dir.mkdir(parents=True, exist_ok=True)
+    (face_dir / "idle.webp").write_bytes(b"RIFFxxxxWEBPVP8 ")
+    (face_dir / "avatar-99887766-1.mp4").write_bytes(b"0" * 2048)
+    app = create_app(svc.settings, service=svc)
+    tc = TestClient(app)
+    r_lib = tc.get("/api/avatar/library")
+    assert r_lib.status_code == 200
+    assert (face_dir / "idle.mp4").is_file()
+    assert (face_dir / "idle.mp4").stat().st_size == 2048
+
+
+
 
 
 

@@ -3845,6 +3845,14 @@ const zhCN: Record<string, string> = {
   "Keep Free Cloudflare Tunnel running automatically when MiniMuse launches": "启动 MiniMuse 时自动开启免费 Cloudflare 隧道",
   "Free Cloudflare Tunnel will start automatically whenever MiniMuse launches.": "以后每次启动 MiniMuse 时将自动开启免费 Cloudflare 隧道。",
   "Auto-start tunnel turned off.": "已关闭自动启动隧道。",
+  "Enter the 6-character code shown on {name}.": "请输入 {name} 上显示的 6 位配对码。",
+  "Pairing with {name} — enter the 6-character code shown on that device:": "正在与 {name} 配对 — 请输入该设备上显示的 6 位配对码：",
+  "Other device address (http://IP:8787 or https://….trycloudflare.com) or pasted pairing link": "对方设备地址（http://IP:8787 或 https://….trycloudflare.com）或粘贴配对链接",
+  "Connect remotely to {name}": "远程连接到 {name}",
+  "Current address ({host}) only works on home Wi-Fi. Paste your computer's Personal Cloud URL (Cloudflare Tunnel https://….trycloudflare.com or Tailscale http://….ts.net:8787) to sync anywhere without unpairing.": "当前地址（{host}）仅限家庭 Wi-Fi。粘贴电脑的个人云地址（Cloudflare 隧道 https://….trycloudflare.com 或 Tailscale http://….ts.net:8787），无需取消配对即可异地同步。",
+  "Paste from clipboard": "从剪贴板粘贴",
+  "Clipboard is empty.": "剪贴板为空。",
+  "Long-press the box above to paste.": "请长按上方输入框粘贴。",
 };
 
 export default zhCN;

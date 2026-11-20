@@ -131,33 +131,88 @@ class DeepMemoryTool(BaseTool):
         finally:
             conn.close()
 
+    @staticmethod
+    def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+            ).fetchone()
+            return row is not None
+        except sqlite3.Error:
+            return False
+
     def _search_memory(self, conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        fts_q = _fts_query(query)
-        rows = conn.execute(
-            """
-            SELECT path, title, category, snippet(memory_fts, 3, '«', '»', ' … ', 40) AS snippet
-            FROM memory_fts
-            WHERE memory_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
-            """,
-            (fts_q, limit),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        if self._has_table(conn, "memory_fts"):
+            try:
+                fts_q = _fts_query(query)
+                rows = conn.execute(
+                    """
+                    SELECT path, title, category, snippet(memory_fts, 3, '«', '»', ' … ', 40) AS snippet
+                    FROM memory_fts
+                    WHERE memory_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (fts_q, limit),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            except sqlite3.Error:
+                pass
+        # Graceful fallback when memory_fts hasn't been built yet (e.g. fresh/mobile DB):
+        # search memories table in memory.db or current DB with LIKE
+        like_pat = f"%{query.strip()}%"
+        for db_conn, should_close in self._fallback_memory_conns(conn):
+            try:
+                if self._has_table(db_conn, "memories"):
+                    rows = db_conn.execute(
+                        """
+                        SELECT id AS path, category AS title, category, content AS snippet
+                        FROM memories
+                        WHERE content LIKE ? OR category LIKE ?
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                        """,
+                        (like_pat, like_pat, limit),
+                    ).fetchall()
+                    if rows:
+                        return [dict(r) for r in rows]
+            except sqlite3.Error:
+                pass
+            finally:
+                if should_close:
+                    db_conn.close()
+        return []
+
+    def _fallback_memory_conns(self, conn: sqlite3.Connection) -> list[tuple[sqlite3.Connection, bool]]:
+        out: list[tuple[sqlite3.Connection, bool]] = [(conn, False)]
+        mem_db = self.db_path.parent / "memory.db"
+        if mem_db.is_file() and mem_db.resolve() != self.db_path.resolve():
+            try:
+                c2 = sqlite3.connect(str(mem_db))
+                c2.row_factory = sqlite3.Row
+                out.append((c2, True))
+            except sqlite3.Error:
+                pass
+        return out
 
     def _search_chats(self, conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        fts_q = _fts_query(query)
-        rows = conn.execute(
-            """
-            SELECT turn_id, thread_id, role, created_at, snippet(messages_fts, 4, '«', '»', ' … ', 45) AS snippet
-            FROM messages_fts
-            WHERE messages_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
-            """,
-            (fts_q, limit),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        if not self._has_table(conn, "messages_fts"):
+            return []
+        try:
+            fts_q = _fts_query(query)
+            rows = conn.execute(
+                """
+                SELECT turn_id, thread_id, role, created_at, snippet(messages_fts, 4, '«', '»', ' … ', 45) AS snippet
+                FROM messages_fts
+                WHERE messages_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (fts_q, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.Error:
+            return []
 
     async def _semantic_search(
         self, conn: sqlite3.Connection, query: str, limit: int = 8

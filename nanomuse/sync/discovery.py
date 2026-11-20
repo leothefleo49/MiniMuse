@@ -68,6 +68,8 @@ def normalize_peer_urls(raw: str, default_port: int = 8787) -> list[str]:
         host_part = text.split("/", 1)[0].strip()
         if ":" in host_part and not host_part.startswith("["):
             candidates = [f"http://{host_part}"]
+        elif host_part.lower().endswith(".trycloudflare.com"):
+            candidates = [f"https://{host_part}"]
         else:
             candidates = [f"http://{host_part}:{default_port}"]
         return candidates

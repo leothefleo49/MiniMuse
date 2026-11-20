@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { fileUrl } from "../api";
 import { dragonClipUrl, dragonUrl, isDragon, studioClipUrl, studioUrl } from "../avatars";
+import { recordDebugEvent } from "../debugLog";
 import { useT } from "../i18n";
 import { useMood } from "../mood";
 import type { Profile, Status } from "../types";
@@ -98,6 +99,11 @@ function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean 
     (2 * dim + (dim >> 1)) * 4,
     (2 * dim + (dim - 3)) * 4,
   ];
+  // Never treat an undecoded/all-transparent video frame as a valid keyed frame
+  const centerIdx = ((dim >> 1) * dim + (dim >> 1)) * 4;
+  if (data[centerIdx + 3] < 16) {
+    return false;
+  }
   let brightWhiteCount = 0;
   let solidBlackCount = 0;
   for (const idx of topSamples) {
@@ -105,7 +111,7 @@ function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean 
     const g = data[idx + 1];
     const b = data[idx + 2];
     const a = data[idx + 3];
-    if (a < 40) return true; // already transparent PNG/WebP
+    if (a < 40) return true; // already transparent PNG/WebP with opaque center character
     const mn = Math.min(r, g, b);
     const mx = Math.max(r, g, b);
     if (mn >= 204 && mx - mn <= 28) brightWhiteCount++;
@@ -273,7 +279,24 @@ export function Avatar({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const offCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const bgImgRef = useRef<HTMLImageElement | null>(null);
+  const lastVideoTimeRef = useRef<number>(-1);
+  const videoAdvanceCountRef = useRef<number>(0);
   const [canvasReady, setCanvasReady] = useState(false);
+  const [canvasDisabled, setCanvasDisabled] = useState(false);
+
+  // Synchronously ensure muted/playsinline HTML attributes exist on mount (fixes React's missing
+  // `muted` attribute bug that can block autoplay on Android Chrome / WebView)
+  const attachVideoRef = useCallback((el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    if (el) {
+      el.defaultMuted = true;
+      el.muted = true;
+      el.playsInline = true;
+      el.setAttribute("muted", "");
+      el.setAttribute("playsinline", "");
+      el.setAttribute("webkit-playsinline", "");
+    }
+  }, []);
 
   const mood = useMood(status);
   const state = status?.state ?? "idle";
@@ -300,7 +323,7 @@ export function Avatar({
   const previewIsVideo = !!previewClipUrl && /\.(mp4|webm)(\?|$)/i.test(previewClipUrl);
   const previewIsImage = !!previewClipUrl && !previewIsVideo;
 
-  const clipCandidate = previewIsVideo
+  const primaryClipCandidate = previewIsVideo
     ? previewClipUrl
     : previewIsImage || still || !animationsEnabled || size < CLIP_MIN_PX
       ? null
@@ -309,7 +332,19 @@ export function Avatar({
         : studio
           ? studioClipUrl(studio, pose, false, updatedAt, situationClips)
           : null;
-  const clip = clipCandidate && !isClipTemporarilyMissing(clipCandidate) ? clipCandidate : null;
+  // If a custom situation clip filename isn't synced yet, fall back cleanly to canonical <pose>.mp4 before still
+  const canonicalFallbackClip =
+    !previewIsVideo && !previewIsImage && !still && animationsEnabled && size >= CLIP_MIN_PX && studio
+      ? studioClipUrl(studio, pose, false, updatedAt, undefined)
+      : null;
+  const clip =
+    primaryClipCandidate && !isClipTemporarilyMissing(primaryClipCandidate)
+      ? primaryClipCandidate
+      : canonicalFallbackClip &&
+          canonicalFallbackClip !== primaryClipCandidate &&
+          !isClipTemporarilyMissing(canonicalFallbackClip)
+        ? canonicalFallbackClip
+        : null;
 
   // Never move the circle container itself for 3D dragon/studio avatars so touching or idle
   // never shifts or clips the circle.
@@ -334,8 +369,8 @@ export function Avatar({
         ? customStillOverride || studioUrl(studio, pose, false, updatedAt)
         : "";
 
-  const shouldKeyBackdrop = (dragon || studio) && bgMode !== "default";
-  const canvasDim = Math.min(180, Math.max(76, Math.round(size * 1.8)));
+  const shouldKeyBackdrop = (dragon || studio) && bgMode !== "default" && !canvasDisabled;
+  const canvasDim = Math.min(144, Math.max(72, Math.round(size * 1.45)));
 
   // Preload custom background image when bgMode === "image"
   useEffect(() => {
@@ -382,6 +417,12 @@ export function Avatar({
         ctx.clearRect(0, 0, canvasDim, canvasDim);
         paintBackdrop(ctx, canvasDim, bgMode, bgColor, isDark, bgImgRef.current);
         ctx.drawImage(off, 0, 0);
+        if (source instanceof HTMLVideoElement) {
+          if (source.currentTime !== lastVideoTimeRef.current) {
+            lastVideoTimeRef.current = source.currentTime;
+            videoAdvanceCountRef.current += 1;
+          }
+        }
         setCanvasReady(true);
       } catch {
         /* ignore incomplete frame or security error */
@@ -391,8 +432,11 @@ export function Avatar({
   );
 
   useEffect(() => {
+    setCanvasDisabled(false);
+    lastVideoTimeRef.current = -1;
+    videoAdvanceCountRef.current = 0;
     if (!shouldKeyBackdrop) setCanvasReady(false);
-  }, [shouldKeyBackdrop, studio, dragon]);
+  }, [shouldKeyBackdrop, studio, dragon, clip, bgMode]);
 
   // Paint the keyed still immediately while the video buffers so background colors show at frame 0
   useEffect(() => {
@@ -420,9 +464,30 @@ export function Avatar({
     v.setAttribute("muted", "");
     v.setAttribute("playsinline", "");
     v.setAttribute("webkit-playsinline", "");
+    let loggedPlay = false;
     const tryPlay = () => {
       v.muted = true;
-      void v.play().catch(() => undefined);
+      const p = v.play();
+      if (p && typeof p.then === "function") {
+        p.then(() => {
+          if (!loggedPlay) {
+            loggedPlay = true;
+            recordDebugEvent("ui", `avatar video playing (${size}px)`, {
+              clip: clip.split("?")[0],
+              w: v.videoWidth,
+              h: v.videoHeight,
+              ready: v.readyState,
+              keyed: shouldKeyBackdrop,
+            });
+          }
+        }).catch((err: unknown) => {
+          recordDebugEvent("ui", `avatar video play rejected (${size}px)`, {
+            clip: clip.split("?")[0],
+            reason: err instanceof Error ? err.message : String(err),
+            ready: v.readyState,
+          });
+        });
+      }
     };
     tryPlay();
     const onGesture = () => {
@@ -432,8 +497,19 @@ export function Avatar({
       if (typeof document !== "undefined" && !document.hidden && v.paused) tryPlay();
     };
     const kick = typeof window !== "undefined" ? window.setInterval(() => {
-      if (v.readyState >= 2 && v.paused) tryPlay();
-    }, 1500) : 0;
+      if (v.readyState >= 2 && v.paused) {
+        tryPlay();
+      } else if (shouldKeyBackdrop && !v.paused && v.currentTime > 0.35 && videoAdvanceCountRef.current < 2) {
+        // Watchdog: if video IS playing but canvas readback failed to advance frames on this GPU,
+        // drop the canvas overlay automatically so native hardware <video> always animates!
+        recordDebugEvent("ui", `avatar canvas watchdog fallback to native video (${size}px)`, {
+          clip: clip.split("?")[0],
+          t: v.currentTime,
+        });
+        setCanvasDisabled(true);
+        setCanvasReady(false);
+      }
+    }, 1200) : 0;
     if (typeof document !== "undefined") {
       document.addEventListener("pointerdown", onGesture, { passive: true });
       document.addEventListener("touchstart", onGesture, { passive: true });
@@ -447,7 +523,7 @@ export function Avatar({
         document.removeEventListener("visibilitychange", onVis);
       }
     };
-  }, [clip]);
+  }, [clip, size, shouldKeyBackdrop]);
 
   useEffect(() => {
     if (!shouldKeyBackdrop || !clip) return;
@@ -571,9 +647,18 @@ export function Avatar({
         className={cx("relative block h-full w-full overflow-hidden rounded-full", motion)}
         style={discStyle}
       >
+        {shouldKeyBackdrop && (
+          <canvas
+            ref={canvasRef}
+            width={canvasDim}
+            height={canvasDim}
+            style={{ opacity: canvasReady ? 1 : 0 }}
+            className="pointer-events-none absolute inset-0 z-0 h-full w-full rounded-full"
+          />
+        )}
         {clip ? (
           <video
-            ref={videoRef}
+            ref={attachVideoRef}
             key={clip}
             src={clip}
             poster={stillUrl}
@@ -583,6 +668,13 @@ export function Avatar({
             playsInline
             preload="auto"
             disablePictureInPicture
+            disableRemotePlayback
+            // Keep <video> ABOVE the canvas at opacity 0.01 when keyed so Chromium/Android WebView's
+            // occlusion tracker ALWAYS sees the video as visible & decodes every frame at full FPS!
+            style={{
+              transform: "translateZ(0)",
+              opacity: shouldKeyBackdrop && canvasReady ? 0.01 : 1,
+            }}
             onLoadedMetadata={(e) => {
               const v = e.currentTarget;
               v.defaultMuted = true;
@@ -600,14 +692,26 @@ export function Avatar({
               paintKeyedSource(v);
               void v.play().catch(() => undefined);
             }}
-            onError={() => {
+            onTimeUpdate={(e) => {
+              if (shouldKeyBackdrop) {
+                const v = e.currentTarget;
+                if (v.readyState >= 2 && v.videoWidth > 0) paintKeyedSource(v);
+              }
+            }}
+            onError={(e) => {
+              const mediaErr = e.currentTarget.error;
+              recordDebugEvent("error", `avatar video error (${size}px)`, {
+                clip: clip.split("?")[0],
+                code: mediaErr?.code,
+                msg: mediaErr?.message,
+              });
               noClipUntil.set(clip, Date.now() + NO_CLIP_TTL_MS);
               bump((n) => n + 1);
               if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
                 window.setTimeout(() => bump((n) => n + 1), NO_CLIP_TTL_MS + 100);
               }
             }}
-            className="h-full w-full object-cover"
+            className="pointer-events-none relative z-10 h-full w-full object-cover"
           />
         ) : dragon || studio ? (
           <img
@@ -616,28 +720,18 @@ export function Avatar({
             alt=""
             draggable={false}
             onLoad={(e) => paintKeyedSource(e.currentTarget)}
-            className="h-full w-full object-cover"
+            style={{ opacity: shouldKeyBackdrop && canvasReady ? 0 : 1 }}
+            className="relative z-10 h-full w-full object-cover"
           />
         ) : (
           <span className="flex h-full w-full items-center justify-center leading-none drop-shadow-sm" style={{ fontSize: size * 0.5 }}>
             {profile?.emoji ?? "✨"}
           </span>
         )}
-        {shouldKeyBackdrop && (
-          <canvas
-            ref={canvasRef}
-            width={canvasDim}
-            height={canvasDim}
-            // Keep opacity at 0.999 (not 1.0) so Android Chromium WebView never treats the underlying
-            // <video> as opaque-occluded and throttles its frame decoding.
-            style={{ opacity: canvasReady ? 0.999 : 0 }}
-            className="pointer-events-none absolute inset-0 h-full w-full rounded-full"
-          />
-        )}
         {innerFeatherGlowStyle && (
           <span
             aria-hidden="true"
-            className="pointer-events-none absolute inset-0 rounded-full"
+            className="pointer-events-none absolute inset-0 z-20 rounded-full"
             style={innerFeatherGlowStyle}
           />
         )}

@@ -2611,8 +2611,6 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             if "call-" in low or "darkmode" in low or "-attempt-" in low:
                 with contextlib.suppress(OSError):
                     bad_sizes.add(p.stat().st_size)
-        if not bad_sizes:
-            return
         canonical_sources: dict[str, tuple[str, ...]] = {
             "idle": (f"avatar-{face_id}-1.mp4", f"avatar-{face_id}.mp4"),
             "working": (f"avatar-{face_id}-1-working.mp4",),
@@ -2624,17 +2622,21 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             if custom_sits.get(mood):
                 continue
             dst = face_dir / f"{mood}.mp4"
+            needs_fill = False
             if not dst.is_file():
-                continue
-            try:
-                dst_sz = dst.stat().st_size
-            except OSError:
-                continue
-            if dst_sz not in bad_sizes:
+                needs_fill = True
+            else:
+                try:
+                    dst_sz = dst.stat().st_size
+                    if dst_sz == 0 or dst_sz in bad_sizes:
+                        needs_fill = True
+                except OSError:
+                    needs_fill = True
+            if not needs_fill:
                 continue
             for sname in src_names:
                 src = face_dir / sname
-                if src.is_file() and src.stat().st_size not in bad_sizes:
+                if src.is_file() and src.stat().st_size > 0 and src.stat().st_size not in bad_sizes:
                     with contextlib.suppress(OSError):
                         dst.write_bytes(src.read_bytes())
                     break
@@ -5582,7 +5584,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     @app.get("/api/diagnostics/export", dependencies=dep_or_signed)
     async def export_logs() -> Response:
         """Export all server logs and error summaries as a zip archive."""
-        data = await asyncio.to_thread(log_export.build_logs_zip)
+        data = await asyncio.to_thread(log_export.build_logs_zip, data_dir=svc.data_dir)
         return Response(
             data,
             media_type="application/zip",
@@ -5596,7 +5598,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     @app.get("/api/logs/errors", dependencies=dep_or_signed)
     async def error_summary() -> PlainTextResponse:
         """Live plain-text summary of recent errors and system diagnostics."""
-        text = await asyncio.to_thread(log_export.get_error_summary)
+        text = await asyncio.to_thread(log_export.get_error_summary, data_dir=svc.data_dir)
         return PlainTextResponse(text, headers={"Cache-Control": "no-cache"})
 
     _EXPLICIT_MEDIA_TYPES: dict[str, str] = {
@@ -5707,7 +5709,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             raise HTTPException(403, str(exc)) from exc
         if target.is_file() and target.suffix.lower() == ".mp4" and len(Path(path).parts) >= 3 and Path(path).parts[0] == "avatar":
             _heal_face_canonical_clips(target.parent)
-        if not target.is_file():
+        if not target.is_file() or (target.suffix.lower() == ".mp4" and target.stat().st_size == 0):
             target = _resolve_avatar_fallback(path, target)
         if not target.is_file():
             raise HTTPException(404, "no such file")
