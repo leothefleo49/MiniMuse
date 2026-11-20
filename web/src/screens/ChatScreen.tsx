@@ -2281,6 +2281,21 @@ export function ThreadList({
 
   return (
     <div>
+      {/* Trash quick access near the top so users never have to scroll past all chats */}
+      <div className={cx("mb-1.5", compact ? "px-0.5" : "")}>
+        <button
+          type="button"
+          onClick={() => setTrashOpen(true)}
+          className="flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-[12.5px] font-medium text-muted hover:bg-surface-2/60 hover:text-fg transition"
+        >
+          <span className="flex items-center gap-2">
+            <Trash2 size={13.5} /> {t("Trash")}
+          </span>
+          {state.trashCount > 0 && (
+            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-fg/80">{state.trashCount}</span>
+          )}
+        </button>
+      </div>
       {grouped ? (
         <>
           <div className={heading}>{t("Main chat")}</div>
@@ -2351,20 +2366,6 @@ export function ThreadList({
           className={cx("flex items-center gap-1.5 bg-accent text-accent-fg font-medium disabled:opacity-50", compact ? "rounded-xl px-2.5" : "rounded-2xl px-3.5 py-2.5")}
         >
           <MessageSquarePlus size={18} /> {!compact && t("New")}
-        </button>
-      </div>
-      <div className="mt-3 pt-2 border-t border-border/60">
-        <button
-          type="button"
-          onClick={() => setTrashOpen(true)}
-          className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-[13px] font-medium text-muted hover:bg-surface-2/60 hover:text-fg transition"
-        >
-          <span className="flex items-center gap-2">
-            <Trash2 size={14} /> {t("Trash")}
-          </span>
-          {state.trashCount > 0 && (
-            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-fg/80">{state.trashCount}</span>
-          )}
         </button>
       </div>
       {sheet && (

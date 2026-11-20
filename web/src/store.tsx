@@ -10,6 +10,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { api, AuthError, connectWs, getToken } from "./api";
+import { recordDebugEvent } from "./debugLog";
 import { enqueue, dequeue, outbox } from "./offline";
 import { getLocale, t } from "./i18n";
 import { liveWorking } from "./presence";
@@ -1207,6 +1208,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       refreshSettings,
       refreshHub,
       setTab: (tab, opts) => {
+        recordDebugEvent("nav", `tab -> ${tab}`);
         // one cross-fade (and a hair of rise) between screens, on the browsers that support
         // the view transition: the switch feels connected instead of a hard cut. The Android
         // app's WebView skips it: there a transition racing a drawer or a lazy screen could

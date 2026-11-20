@@ -400,6 +400,8 @@ class Profile:
     avatar_border_mode: str = "theme"
     avatar_border_color: str = ""
     avatar_border_glow: int = 55
+    # whether live looping 3D/video avatar animations play (False = crisp stills only)
+    avatar_animated: bool = True
     # custom situation -> clip/image filename map for the active avatar face
     avatar_situation_clips: dict[str, str] = field(default_factory=dict)
     updated_at: float = 0.0
@@ -471,6 +473,7 @@ class Profile:
             "avatar_border_mode": self.avatar_border_mode,
             "avatar_border_color": self.avatar_border_color,
             "avatar_border_glow": self.avatar_border_glow,
+            "avatar_animated": self.avatar_animated,
             "avatar_situation_clips": dict(self.avatar_situation_clips or {}),
             "updated_at": self.updated_at,
             "tagline": self.tagline,
@@ -521,6 +524,10 @@ class Profile:
             p.avatar_border_glow = max(0, min(100, int(p.avatar_border_glow)))
         except (TypeError, ValueError):
             p.avatar_border_glow = 55
+        if "avatar_animated" in data:
+            p.avatar_animated = bool(data["avatar_animated"])
+        else:
+            p.avatar_animated = bool(p.avatar_animated)
         raw_sit = data.get("avatar_situation_clips")
         if isinstance(raw_sit, dict):
             p.avatar_situation_clips = {
@@ -1415,6 +1422,11 @@ class MuseService:
             self.profile.avatar_bg_mode,
             self.profile.avatar_bg_color,
             self.profile.avatar_bg_image,
+            self.profile.avatar_border_mode,
+            self.profile.avatar_border_color,
+            self.profile.avatar_border_glow,
+            self.profile.avatar_animated,
+            tuple(sorted((self.profile.avatar_situation_clips or {}).items())),
         )
         self.profile = Profile.from_dict(merged)
         self.profile.auto_factor = self.auto_proactivity.factor()
@@ -1435,9 +1447,16 @@ class MuseService:
             self.profile.avatar_bg_mode,
             self.profile.avatar_bg_color,
             self.profile.avatar_bg_image,
+            self.profile.avatar_border_mode,
+            self.profile.avatar_border_color,
+            self.profile.avatar_border_glow,
+            self.profile.avatar_animated,
+            tuple(sorted((self.profile.avatar_situation_clips or {}).items())),
         ):
-            # the account's other devices wear the same name and face
+            # the account's other devices & direct paired peers wear the same name and face
             self.hub.profile.changed()
+            if getattr(self, "sync", None) is not None and self.sync.peer_active:
+                self.sync.peer_sync_soon(delay=0.3)
         return self.profile
 
     # ------------------------------------------------------------------ first conversation (C4)

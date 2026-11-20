@@ -13,6 +13,7 @@ import {
   DatabaseZap,
   Download,
   Fingerprint,
+  Glasses,
   Hand,
   Info,
   KeyRound,
@@ -22,6 +23,7 @@ import {
   MessageSquare,
   MessageSquareWarning,
   Monitor,
+  MonitorSmartphone,
   Moon,
   Palette,
   Plug,
@@ -44,8 +46,17 @@ import {
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { androidApp, authenticateNativeBiometric, keepRunningStatus, nativeBiometricInfo, type AppUpdateView, type KeepRunningStatus } from "../android";
-import { WatchPairingCard } from "./DevicesScreen";
+import { DevicesScreen, VRHeadsetCard, WatchPairingCard } from "./DevicesScreen";
 import { UsageScreen } from "./UsageScreen";
+import {
+  clearDebugLog,
+  exportDebugLogJson,
+  exportDebugLogText,
+  setFullDebugLog,
+  useDebugLogEntries,
+  useFullDebugLog,
+  type DebugCategory,
+} from "../debugLog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DefaultAssistantCard } from "../components/DefaultAssistantCard";
 import { DevicePermissions } from "../components/DevicePermissions";
@@ -72,7 +83,7 @@ import { ImportExport } from "../components/ImportExport";
 import { getLocale, LOCALES, setLocaleSetting, useLocaleSetting, useT } from "../i18n";
 import { has, regionOf, unavailableLine, useProviders } from "../providers";
 import { isMainland, ownKeyWay } from "../region";
-import { BG_PRESETS, bgNow, setBg, setPwaFullscreen, setUiScale, uiScaleNow, useBg, usePwaFullscreen, useTheme, useUiScale } from "../theme";
+import { BG_PRESETS, bgNow, setBg, setUiScale, uiScaleNow, useBg, useTheme, useUiScale } from "../theme";
 import { ACCENTS, BUBBLE_PRESETS, accentNow, bubbleNow, setAccent, setBubble, useAccent, useBubble } from "../accent";
 import { pushUi } from "../ui-sync";
 import { disablePush, enablePush, pushState, type PushState } from "../push";
@@ -196,8 +207,10 @@ export function SettingsScreen() {
 
       { id: "model", title: t("Model"), group: t("Models & Devices"), icon: <TerminalSquare size={15} /> },
       { id: "cloud", title: t("nanoMuse Cloud"), group: t("Models & Devices"), icon: <Cloud size={15} /> },
+      { id: "devices", title: t("Devices"), group: t("Models & Devices"), icon: <MonitorSmartphone size={15} /> },
       { id: "notifications", title: t("Notifications"), group: t("Models & Devices"), icon: <Bell size={15} /> },
       { id: "watch", title: t("Smartwatch (Wear OS)"), group: t("Models & Devices"), icon: <Watch size={15} /> },
+      { id: "vr", title: t("VR Headset (Meta Quest)"), group: t("Models & Devices"), icon: <Glasses size={15} /> },
       { id: "assistant", title: t("Default assistant"), group: t("Models & Devices"), icon: <Sparkles size={15} /> },
       ...(keepRunningStatus() ? [{ id: "keep-running" as const, title: t("Keep it running"), group: t("Models & Devices"), icon: <BatteryFull size={15} /> }] : []),
       ...(isDesktopApp() ? [{ id: "desktop" as const, title: t("Desktop app"), group: t("Models & Devices"), icon: <Monitor size={15} /> }] : []),
@@ -234,9 +247,11 @@ export function SettingsScreen() {
       { id: "sentinel-more", sectionId: "sentinel", sectionTitle: t("Safety · Sentinel"), label: t("Emergency stop, quiet hours and limits"), description: t("Stop everything now, jump to quiet hours, or set spending and usage limits."), keywords: ["emergency", "stop", "panic", "quiet", "limit", "spending", "budget"] },
       { id: "assistant-main", sectionId: "assistant", sectionTitle: t("Default assistant"), label: t("Make MiniMuse your default assistant"), description: t("Choose MiniMuse as the assistant a phone or watch opens from its home, power or side button or assist gesture."), keywords: ["assistant", "default", "digital assistant", "home button", "power button", "side button", "gesture", "voice", "gemini", "google assistant"] },
       { id: "watch-main", sectionId: "watch", sectionTitle: t("Smartwatch (Wear OS)"), label: t("Watch APK install & wireless ADB pairing"), description: t("Discover Wear OS watches over Wi-Fi, install MiniMuse-wear.apk, and generate 6-digit pairing codes."), keywords: ["wear", "watch", "apk", "adb", "pair", "sideload"] },
+      { id: "vr-main", sectionId: "vr", sectionTitle: t("VR Headset (Meta Quest)"), label: t("Meta Quest / VR APK install & AI headset control"), description: t("Install MiniMuse onto Meta Quest 2/3/3S/Pro, Pico, or Android XR as a floating spatial window with AI control."), keywords: ["vr", "quest", "meta", "oculus", "pico", "horizon", "xr", "headset", "sidequest", "apk"] },
       { id: "notifications-main", sectionId: "notifications", sectionTitle: t("Notifications"), label: t("Push & background notifications"), description: t("Enable alerts for approvals, questions, and finished background tasks."), keywords: ["push", "alerts", "test notification"] },
       ...(keepRunningStatus() ? [{ id: "keep-running-main", sectionId: "keep-running" as const, sectionTitle: t("Keep it running"), label: t("Battery optimization, overlay & boot start"), description: t("Keep Android background services alive, configure exact alarms, and export crash logs."), keywords: ["battery", "alarms", "boot", "logs"] }] : []),
       { id: "cloud-main", sectionId: "cloud", sectionTitle: t("nanoMuse Cloud"), label: t("Local / Hybrid / Cloud routing"), description: t("Switch between strictly local mode, custom slot routing, or nanoMuse Cloud."), keywords: ["relay", "local", "hybrid", "sync"] },
+      { id: "devices-main", sectionId: "devices", sectionTitle: t("Devices"), label: t("Paired devices, PC/phone sync & remote hands"), description: t("Manage paired computers, phones, direct Wi-Fi/Personal Cloud sync, and watch setup."), keywords: ["devices", "phone", "pc", "pair", "sync", "hands", "qr"] },
       { id: "model-main", sectionId: "model", sectionTitle: t("Model"), label: t("Provider, active model & API keys"), description: t("Inspect your active LLM, configure OpenRouter/DeepSeek/Gemini/Ollama, and manage keys."), keywords: ["llm", "api key", "provider", "ollama", "openrouter"] },
       { id: "appearance-bg", sectionId: "appearance", sectionTitle: t("Appearance"), label: t("Background & theme"), description: t("Choose white, dark, or custom canvas colors."), keywords: ["theme", "dark mode", "white", "background"] },
       { id: "appearance-scale", sectionId: "appearance", sectionTitle: t("Appearance"), label: t("UI scale"), description: t("Resize interface text, icons, and spacing cleanly on this device."), keywords: ["zoom", "font size", "scale"] },
@@ -246,7 +261,7 @@ export function SettingsScreen() {
       ...(isDesktopApp() ? [{ id: "desktop-main", sectionId: "desktop" as const, sectionTitle: t("Desktop app"), label: t("Startup login item & global shortcuts"), description: t("Start at computer login, inspect tray behavior, and view keyboard shortcuts."), keywords: ["tray", "shortcuts", "electron", "startup"] }] : []),
       { id: "data-main", sectionId: "data", sectionTitle: t("Data controls"), label: t("Device sync, backup & cloud data controls"), description: t("Pair devices over P2P sync, download full agent zip backup, or manage cloud training settings."), keywords: ["sync", "backup", "privacy", "pair"] },
       { id: "import-main", sectionId: "import", sectionTitle: t("Import & export"), label: t("Import from Muse & export archive"), description: t("Copy the single versatile Muse migration prompt and upload or download .zip archives."), keywords: ["muse", "transcripts", "migrate", "zip", "prompt", "export"] },
-      { id: "developer-main", sectionId: "developer", sectionTitle: t("Developer"), label: t("Developer tools, PWA fullscreen & diagnostics"), description: t("Toggle coding agent tools, edge-to-edge PWA display, cache reset, and runtime health."), keywords: ["pwa", "caches", "service worker", "coding", "health", "ping"] },
+      { id: "developer-main", sectionId: "developer", sectionTitle: t("Developer"), label: t("Developer tools, full activity logger & diagnostics"), description: t("Toggle coding agent tools, record every interaction/API/AI event, export diagnostics, and check runtime health."), keywords: ["logs", "debug", "export", "trace", "coding", "health", "ping", "diagnostics"] },
       { id: "about-main", sectionId: "about", sectionTitle: t("About"), label: t("Version, updates & sign out"), description: t("Check latest MiniMuse release, inspect data/workspace directories, or disconnect this device."), keywords: ["version", "update", "workspace", "disconnect", "logout"] },
     ],
     [name, t],
@@ -829,11 +844,29 @@ export function SettingsScreen() {
         </Section>
         )}
 
+        {/* Devices (available directly in Settings on both Desktop and Mobile) */}
+        {show("devices") && (
+        <Section title={t("Devices")} id="devices" plain={!wide}>
+          <SettingBlock id="devices-main" highlightedId={highlightedId}>
+            <DevicesScreen embedded />
+          </SettingBlock>
+        </Section>
+        )}
+
         {/* Smartwatch (Wear OS) */}
         {show("watch") && (
         <Section title={t("Smartwatch (Wear OS)")} id="watch" plain={!wide}>
           <SettingBlock id="watch-main" highlightedId={highlightedId}>
             <WatchPairingCard />
+          </SettingBlock>
+        </Section>
+        )}
+
+        {/* VR Headset (Meta Quest / Horizon OS / XR) */}
+        {show("vr") && (
+        <Section title={t("VR Headset (Meta Quest)")} id="vr" plain={!wide}>
+          <SettingBlock id="vr-main" highlightedId={highlightedId}>
+            <VRHeadsetCard />
           </SettingBlock>
         </Section>
         )}
@@ -1114,13 +1147,13 @@ export function SettingsScreen() {
           <SettingBlock id="developer-main" highlightedId={highlightedId}>
             <Toggle
               label={t("Developer tools")}
-              hint={t("The Coding screen (Cursor, Codex and the other coding agents on this computer) in the sidebar, diagnostics, PWA controls, and the runtime address below.")}
+              hint={t("The Coding screen (Cursor, Codex and the other coding agents on this computer) in the sidebar, full diagnostic event logging, and runtime health below.")}
               checked={developer}
               onChange={setDeveloperTools}
               collapsibleHint
               forceHintOpen={highlightedId === "developer-main"}
             />
-            {developer && <DeveloperToolsSection forceOpen={highlightedId === "developer-main"} />}
+            <DeveloperToolsSection forceOpen={highlightedId === "developer-main"} />
           </SettingBlock>
         </Section>
         )}
@@ -1194,8 +1227,8 @@ export function SettingsScreen() {
   );
 }
 
-type SectionId = "who" | "usage" | "sentinel" | "app-lock" | "passwords" | "proactivity" | "behavior" | "permissions" | "watch" | "assistant" | "notifications" | "keep-running" | "cloud" | "model" | "appearance" | "desktop" | "data" | "import" | "developer" | "about";
-const SECTION_IDS: SectionId[] = ["who", "usage", "sentinel", "app-lock", "passwords", "proactivity", "behavior", "permissions", "watch", "assistant", "notifications", "keep-running", "cloud", "model", "appearance", "desktop", "data", "import", "developer", "about"];
+type SectionId = "who" | "usage" | "sentinel" | "app-lock" | "passwords" | "proactivity" | "behavior" | "permissions" | "devices" | "watch" | "vr" | "assistant" | "notifications" | "keep-running" | "cloud" | "model" | "appearance" | "desktop" | "data" | "import" | "developer" | "about";
+const SECTION_IDS: SectionId[] = ["who", "usage", "sentinel", "app-lock", "passwords", "proactivity", "behavior", "permissions", "devices", "watch", "vr", "assistant", "notifications", "keep-running", "cloud", "model", "appearance", "desktop", "data", "import", "developer", "about"];
 
 function CloudModeSelector({
   cloudMode,
@@ -1337,7 +1370,11 @@ function CloudModeSelector({
 function DeveloperToolsSection({ forceOpen = false }: { forceOpen?: boolean } = {}) {
   const t = useT();
   const { toast } = useStore();
-  const fullscreen = usePwaFullscreen();
+  const fullLogOn = useFullDebugLog();
+  const logEntries = useDebugLogEntries();
+  const [logFilter, setLogFilter] = useState<"all" | DebugCategory>("all");
+  const [logQuery, setLogQuery] = useState("");
+  const [exportingLog, setExportingLog] = useState(false);
   const [pingMs, setPingMs] = useState<number | null>(null);
   const [pingBusy, setPingBusy] = useState(false);
   const [cacheCleared, setCacheCleared] = useState(false);
@@ -1375,7 +1412,81 @@ function DeveloperToolsSection({ forceOpen = false }: { forceOpen?: boolean } = 
     }
   };
 
-  const isStandalone = typeof window !== "undefined" && window.matchMedia?.("(display-mode: standalone)").matches;
+  const downloadFile = (filename: string, content: string, mime: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportLog = async (format: "json" | "txt") => {
+    setExportingLog(true);
+    try {
+      let backend = "";
+      try {
+        backend = await api.logsSummary();
+      } catch {
+        /* offline or summary unavailable */
+      }
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      if (format === "json") {
+        downloadFile(`minimuse-diagnostics-${stamp}.json`, exportDebugLogJson(backend), "application/json");
+      } else {
+        downloadFile(`minimuse-diagnostics-${stamp}.txt`, exportDebugLogText(backend), "text/plain;charset=utf-8");
+      }
+      toast(t("Diagnostic log exported."));
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setExportingLog(false);
+    }
+  };
+
+  const copyLog = async () => {
+    try {
+      let backend = "";
+      try {
+        backend = await api.logsSummary();
+      } catch {
+        /* ignore */
+      }
+      await navigator.clipboard.writeText(exportDebugLogText(backend));
+      toast(t("Diagnostic log copied."));
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  };
+
+  const filteredLogs = logEntries
+    .filter((entry) => {
+      if (logFilter !== "all" && entry.cat !== logFilter) return false;
+      const q = logQuery.trim().toLowerCase();
+      if (!q) return true;
+      const det = typeof entry.detail === "string" ? entry.detail : entry.detail ? JSON.stringify(entry.detail) : "";
+      return `${entry.cat} ${entry.summary} ${det}`.toLowerCase().includes(q);
+    })
+    .slice(-200)
+    .reverse();
+
+  const catBadgeCls = (cat: DebugCategory) => {
+    switch (cat) {
+      case "error":
+        return "bg-rose-500/15 text-rose-600 dark:text-rose-400";
+      case "api":
+        return "bg-sky-500/15 text-sky-600 dark:text-sky-400";
+      case "ai":
+        return "bg-violet-500/15 text-violet-600 dark:text-violet-400";
+      case "ws":
+        return "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400";
+      case "nav":
+        return "bg-amber-500/15 text-amber-700 dark:text-amber-300";
+      default:
+        return "bg-surface-2 text-muted";
+    }
+  };
 
   return (
     <div className="space-y-4 pt-2">
@@ -1388,36 +1499,141 @@ function DeveloperToolsSection({ forceOpen = false }: { forceOpen?: boolean } = 
         </div>
       </div>
 
-      <div className="rounded-2xl border border-border bg-surface-2/40 p-3.5 space-y-3">
-        <div className="text-[12.5px] font-medium uppercase tracking-wide text-muted">
-          {t("PWA & Display Tools")}
+      {/* Full "Log Everything" Diagnostic Mode — works on Desktop, Mobile, and Web */}
+      <div className="rounded-2xl border border-border bg-surface-2/40 p-3.5 space-y-3" data-testid="full-diagnostic-logger">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[12.5px] font-medium uppercase tracking-wide text-muted">
+            {t("Full Activity & Diagnostic Logger")}
+          </div>
+          <span className="rounded-full bg-surface px-2.5 py-0.5 text-[11px] font-semibold text-muted border border-border/60">
+            {t("{n} events", { n: logEntries.length })}
+          </span>
         </div>
         <Toggle
-          label={t("Full-bleed PWA mode (hide system bottom bar)")}
-          hint={t("Automatically immerses the Android navigation bar so --om-bg fills 100% of the display edge-to-edge.")}
-          checked={fullscreen}
-          onChange={setPwaFullscreen}
+          label={t("Log everything (full diagnostic mode)")}
+          hint={t("Records every button click, switch toggle, screen change, API call, AI task, tool run, WebSocket event, and error on this device so you can inspect or export the full trace.")}
+          checked={fullLogOn}
+          onChange={setFullDebugLog}
           collapsibleHint
           forceHintOpen={forceOpen}
         />
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-border/40">
-          <div>
-            <div className="text-[13.5px] font-medium">{t("PWA Caches & Service Worker")}</div>
-            <div className="text-[12px] text-muted">{t("Wipe CacheStorage and unregister service workers.")}</div>
-          </div>
+
+        <div className="flex flex-wrap gap-2 pt-1">
           <button
             type="button"
-            onClick={() => void clearCacheAndReload()}
-            className="rounded-xl border border-border bg-surface px-3 py-1.5 text-[12.5px] font-medium text-fg shadow-sm hover:bg-surface-2 transition active:scale-[0.98]"
+            disabled={exportingLog}
+            onClick={() => void exportLog("json")}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-3 py-1.5 text-[12px] font-medium text-accent-fg shadow-sm disabled:opacity-60"
           >
-            {cacheCleared ? t("Cleared!") : t("Clear & Reload")}
+            {exportingLog ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+            {t("Export JSON")}
           </button>
+          <button
+            type="button"
+            disabled={exportingLog}
+            onClick={() => void exportLog("txt")}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-surface px-3 py-1.5 text-[12px] font-medium text-fg hover:bg-surface-2 disabled:opacity-60"
+          >
+            <Download size={13} />
+            {t("Export TXT")}
+          </button>
+          <button
+            type="button"
+            onClick={() => void copyLog()}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-surface px-3 py-1.5 text-[12px] font-medium text-fg hover:bg-surface-2"
+          >
+            <Copy size={13} />
+            {t("Copy")}
+          </button>
+          <a
+            href={api.logsExportUrl()}
+            download
+            className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-surface px-3 py-1.5 text-[12px] font-medium text-fg hover:bg-surface-2"
+          >
+            <Download size={13} />
+            {t("Server logs (.zip)")}
+          </a>
+          {logEntries.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                clearDebugLog();
+                toast(t("Diagnostic log cleared."));
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-surface px-3 py-1.5 text-[12px] font-medium text-rose-600 dark:text-rose-400 hover:bg-surface-2"
+            >
+              <Trash2 size={13} />
+              {t("Clear")}
+            </button>
+          )}
         </div>
+
+        {(fullLogOn || logEntries.length > 0) && (
+          <div className="space-y-2 border-t border-border/50 pt-2.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(
+                [
+                  { id: "all", label: t("All") },
+                  { id: "ui", label: t("UI") },
+                  { id: "api", label: t("API") },
+                  { id: "ai", label: t("AI / Tools") },
+                  { id: "ws", label: t("Socket") },
+                  { id: "nav", label: t("Nav") },
+                  { id: "error", label: t("Errors") },
+                ] as const
+              ).map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setLogFilter(f.id)}
+                  className={cx(
+                    "rounded-full border px-2.5 py-0.5 text-[11.5px] transition-colors",
+                    logFilter === f.id ? "border-accent bg-accent/10 text-accent font-medium" : "border-border text-muted",
+                  )}
+                >
+                  {f.label}
+                </button>
+              ))}
+              <input
+                type="text"
+                value={logQuery}
+                onChange={(e) => setLogQuery(e.target.value)}
+                placeholder={t("Filter events…")}
+                className="min-w-[120px] flex-1 rounded-xl border border-border bg-surface px-2.5 py-1 text-[12px] outline-none focus:ring-1 focus:ring-accent/40"
+              />
+            </div>
+
+            <div className="max-h-64 overflow-y-auto rounded-xl border border-border/60 bg-bg p-2 font-mono text-[11px] leading-relaxed space-y-1">
+              {filteredLogs.length === 0 ? (
+                <div className="py-4 text-center text-muted">
+                  {fullLogOn ? t("Interact with the app — every click, API call, AI task, and error appears here live.") : t("No matching log entries.")}
+                </div>
+              ) : (
+                filteredLogs.map((item) => (
+                  <div key={item.id} className="flex items-start gap-1.5 break-all border-b border-border/30 pb-1 last:border-b-0">
+                    <span className="shrink-0 text-[10px] text-muted">{item.ts.slice(11, 23)}</span>
+                    <span className={cx("shrink-0 rounded px-1.5 py-px text-[9.5px] font-semibold uppercase", catBadgeCls(item.cat))}>
+                      {item.cat}
+                    </span>
+                    <span className="text-fg">
+                      {item.summary}
+                      {item.detail ? (
+                        <span className="ml-1 text-muted">
+                          {typeof item.detail === "string" ? item.detail : JSON.stringify(item.detail)}
+                        </span>
+                      ) : null}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="rounded-2xl border border-border bg-surface-2/40 p-3.5 space-y-3">
         <div className="text-[12.5px] font-medium uppercase tracking-wide text-muted">
-          {t("Live Diagnostics & Latency")}
+          {t("Live Diagnostics & Cache")}
         </div>
         <div className="flex items-center justify-between gap-2">
           <div>
@@ -1436,6 +1652,20 @@ function DeveloperToolsSection({ forceOpen = false }: { forceOpen?: boolean } = 
           </button>
         </div>
 
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/40">
+          <div>
+            <div className="text-[13.5px] font-medium">{t("Reset WebView Cache")}</div>
+            <div className="text-[12px] text-muted">{t("Clear cached UI assets and reload the app cleanly.")}</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void clearCacheAndReload()}
+            className="rounded-xl border border-border bg-surface px-3 py-1.5 text-[12.5px] font-medium text-fg shadow-sm hover:bg-surface-2 transition active:scale-[0.98]"
+          >
+            {cacheCleared ? t("Cleared!") : t("Clear & Reload")}
+          </button>
+        </div>
+
         <div className="pt-2 border-t border-border/40">
           <button
             type="button"
@@ -1448,7 +1678,6 @@ function DeveloperToolsSection({ forceOpen = false }: { forceOpen?: boolean } = 
             <div className="mt-2 rounded-xl bg-surface p-3 font-mono text-[11.5px] leading-relaxed text-muted space-y-1 select-all">
               <div>viewport: {typeof window !== "undefined" ? `${window.innerWidth} x ${window.innerHeight}` : "n/a"}</div>
               <div>pixelRatio: {typeof window !== "undefined" ? window.devicePixelRatio : 1}</div>
-              <div>displayMode: {isStandalone ? "standalone" : "browser"}</div>
               <div>fullscreenElement: {typeof document !== "undefined" && document.fullscreenElement ? "active" : "none"}</div>
               <div>theme: {typeof document !== "undefined" ? document.documentElement.dataset.theme : "light"}</div>
               <div>bgColor: {typeof document !== "undefined" ? getComputedStyle(document.documentElement).getPropertyValue("--om-bg").trim() : "n/a"}</div>

@@ -824,7 +824,8 @@ class WatchApproveBody(BaseModel):
 def create_app(settings: Settings, service: MuseService | None = None) -> FastAPI:
     svc = service or MuseService(settings)
     update_check = UpdateCheck(svc.settings.server.update_check, repo=svc.settings.server.update_repo)
-    personal_cloud = PersonalCloudManager(port=svc.settings.server.port)
+    personal_cloud = PersonalCloudManager(port=svc.settings.server.port, data_dir=svc.data_dir)
+    svc.sync.set_personal_cloud_urls_provider(lambda: personal_cloud.all_urls())
     watch_codes: dict[str, float] = {}
     # what the background watch finder last saw (shown in the Devices screen)
     watch_auto: dict[str, Any] = {"last_check": 0.0, "last_result": "not checked yet", "watch_online": False}
@@ -3700,12 +3701,27 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         return await asyncio.to_thread(personal_cloud.status, probe_tailscale=True)
 
     @app.post("/api/personal-cloud/start", dependencies=dep)
-    async def personal_cloud_start() -> dict[str, Any]:
-        return await personal_cloud.start_tunnel()
+    async def personal_cloud_start(request: Request) -> dict[str, Any]:
+        auto_install = False
+        try:
+            raw = await request.body()
+            if raw:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    auto_install = bool(parsed.get("auto_install", False))
+        except Exception:
+            auto_install = False
+        st = await personal_cloud.start_tunnel(auto_install=auto_install)
+        if st.get("tunnel", {}).get("url") and svc.sync.peer_active:
+            svc.sync.peer_sync_soon(delay=0.2)
+        return st
 
     @app.post("/api/personal-cloud/stop", dependencies=dep)
     async def personal_cloud_stop() -> dict[str, Any]:
-        return await personal_cloud.stop_tunnel()
+        st = await personal_cloud.stop_tunnel()
+        if svc.sync.peer_active:
+            svc.sync.peer_sync_soon(delay=0.2)
+        return st
 
     # ------------------------------------------------------------------ Live Call & Watch pairing
     @app.get("/api/call/capabilities", dependencies=dep)
@@ -4280,7 +4296,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         apk = _find_watch_apk()
         adb = _find_adb()
         devices = _list_adb_devices(adb, probe_watch=True) if adb else []
-        mdns = _browse_mdns_watch_adb(adb, timeout_s=1.0)
+        mdns = _browse_mdns_watch_adb(adb, timeout_s=0.6)
         return {
             "adb_available": True,
             "adb_installed": bool(adb),
@@ -4677,6 +4693,249 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             media_type="application/vnd.android.package-archive",
         )
 
+    # ------------------------------------------------------------------ Meta Quest & VR Headsets
+    def _find_vr_apk() -> Path | None:
+        from nanomuse import __version__
+
+        names = [
+            f"MiniMuse-{__version__}-quest-vr.apk",
+            f"MiniMuse-v{__version__}-quest-vr.apk",
+            f"MiniMuse-{__version__}-arm64.apk",
+            f"MiniMuse-v{__version__}-android.apk",
+            "MiniMuse-quest-vr.apk",
+            "app-release.apk",
+        ]
+        search_dirs = [
+            svc.data_dir / "updates",
+            svc.data_dir / "apk",
+            Path(__file__).resolve().parents[2] / "android-classic" / "app" / "build" / "outputs" / "apk" / "release",
+            Path(__file__).resolve().parents[3] / f"release-{__version__}",
+        ]
+        for d in search_dirs:
+            if not d.is_dir():
+                continue
+            for n in names:
+                cand = d / n
+                if cand.is_file() and cand.stat().st_size > 1_000_000:
+                    return cand
+            for cand in sorted(d.glob("*quest*.apk"), reverse=True):
+                if cand.is_file() and cand.stat().st_size > 1_000_000:
+                    return cand
+        return None
+
+    async def _ensure_vr_apk() -> Path | None:
+        existing = _find_vr_apk()
+        if existing is not None:
+            return existing
+        import httpx
+
+        from nanomuse import __version__
+
+        dest_dir = svc.data_dir / "updates"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"MiniMuse-{__version__}-quest-vr.apk"
+        repo = svc.settings.server.update_repo or "leothefleo49/MiniMuse"
+        candidate_urls = [
+            f"https://github.com/{repo}/releases/download/v{__version__}/MiniMuse-{__version__}-quest-vr.apk",
+            f"https://github.com/{repo}/releases/download/v{__version__}/MiniMuse-{__version__}-arm64.apk",
+            f"https://github.com/{repo}/releases/download/v{__version__}/MiniMuse-v{__version__}-quest-vr.apk",
+        ]
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=180.0) as hc:
+                for u in candidate_urls:
+                    async with hc.stream("GET", u) as resp:
+                        if resp.status_code != 200:
+                            continue
+                        tmp = dest.with_suffix(".apk.part")
+                        with tmp.open("wb") as fh:
+                            async for chunk in resp.aiter_bytes(131072):
+                                fh.write(chunk)
+                        if tmp.stat().st_size > 1_000_000:
+                            tmp.replace(dest)
+                            return dest
+                        with contextlib.suppress(OSError):
+                            tmp.unlink()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("ensure_vr_apk download failed: {}", exc)
+        return None
+
+    @app.get("/api/vr/devices", dependencies=dep)
+    async def vr_devices() -> dict[str, Any]:
+        from nanomuse.tools.vr_quest import list_vr_adb_devices
+
+        def _scan() -> dict[str, Any]:
+            adb = _find_adb()
+            devs = list_vr_adb_devices(adb) if adb else []
+            vr_list = [d for d in devs if d.get("is_vr")]
+            saved: dict[str, Any] = {}
+            with contextlib.suppress(OSError, ValueError):
+                p = svc.data_dir / "vr_target.json"
+                if p.is_file():
+                    saved = json.loads(p.read_text(encoding="utf-8"))
+            return {
+                "adb_installed": bool(adb),
+                "headsets": vr_list,
+                "devices": devs,
+                "saved": saved,
+                "apk_cached": _find_vr_apk() is not None,
+                "download_url": "/api/vr/apk",
+                "release_download_url": f"https://github.com/{svc.settings.server.update_repo or 'leothefleo49/MiniMuse'}/releases/latest",
+            }
+
+        return await asyncio.to_thread(_scan)
+
+    @app.post("/api/vr/install", dependencies=dep)
+    async def vr_install(request: Request) -> dict[str, Any]:
+        import subprocess
+        import time as _time
+
+        from nanomuse.tools.vr_quest import list_vr_adb_devices
+        from nanomuse.win_proc import hidden_subprocess_kwargs
+
+        body: dict[str, Any] = {}
+        with contextlib.suppress(Exception):
+            raw = await request.body()
+            if raw:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    body = parsed
+        adb = await _ensure_adb()
+        if not adb:
+            return {"ok": False, "error": "Could not locate or auto-install ADB on this computer."}
+        apk = await _ensure_vr_apk()
+        if apk is None or not apk.is_file():
+            return {"ok": False, "error": "Could not find or download the Meta Quest / VR APK."}
+
+        st = await asyncio.to_thread(personal_cloud.status, probe_tailscale=True)
+        best_url = str(st.get("best_url") or "")
+        req_target = str(body.get("target") or "").strip()
+        connect_hp = str(body.get("connect_host_port") or "").strip()
+        enable_a11y = bool(body.get("enable_accessibility", True))
+        enable_wifi = bool(body.get("enable_wifi", False))
+        auto_pair = bool(body.get("auto_pair", True))
+
+        def _do_install() -> dict[str, Any]:
+            def run_adb(*args: str, timeout: int = 30) -> tuple[int, str]:
+                try:
+                    p = subprocess.run(
+                        [adb, *args],
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                        check=False,
+                        **hidden_subprocess_kwargs(),
+                    )
+                    return p.returncode, (p.stdout or p.stderr or "").strip()
+                except (OSError, subprocess.SubprocessError) as exc:
+                    return 1, str(exc)
+
+            if connect_hp:
+                hp = connect_hp if ":" in connect_hp else f"{connect_hp}:5555"
+                run_adb("connect", hp, timeout=15)
+
+            devs = list_vr_adb_devices(adb)
+            ready = [d for d in devs if d.get("state") == "device"]
+            target = req_target
+            if not target:
+                vr_ready = [d for d in ready if d.get("is_vr")]
+                if vr_ready:
+                    target = vr_ready[0]["id"]
+            if not target:
+                unauth = [d for d in devs if d.get("state") == "unauthorized"]
+                if unauth:
+                    return {
+                        "ok": False,
+                        "error": "Your Quest headset is connected but waiting for permission. Put on the headset and tap 'Always allow from this computer'.",
+                    }
+                return {
+                    "ok": False,
+                    "error": "No Meta Quest or VR headset detected. Enable Developer Mode in the Meta Horizon phone app, plug your Quest in with USB (or enter its Wi-Fi IP:5555), and allow USB Debugging inside the headset.",
+                }
+
+            rc, out = run_adb("-s", target, "install", "-r", "-g", str(apk), timeout=240)
+            if rc != 0:
+                rc, out = run_adb("-s", target, "install", "-r", str(apk), timeout=240)
+            if rc != 0:
+                return {"ok": False, "error": f"Install failed on {target}: {out}"}
+
+            # Grant mic, notifications, and app install permissions automatically
+            for perm in (
+                "android.permission.RECORD_AUDIO",
+                "android.permission.POST_NOTIFICATIONS",
+            ):
+                run_adb("-s", target, "shell", "pm", "grant", "io.github.nanomuse.app", perm, timeout=10)
+
+            # Enable on-device Accessibility Service on the Quest so MiniMuse can control Quest UI directly!
+            a11y_enabled = False
+            if enable_a11y:
+                svc_name = "io.github.nanomuse.app/io.github.nanomuse.app.gui.MuseAccessibilityService"
+                _, existing = run_adb("-s", target, "shell", "settings", "get", "secure", "enabled_accessibility_services", timeout=8)
+                parts = [p for p in existing.strip().split(":") if p and p not in ("null", "None")]
+                if svc_name not in parts:
+                    parts.append(svc_name)
+                r1, _ = run_adb("-s", target, "shell", "settings", "put", "secure", "enabled_accessibility_services", ":".join(parts), timeout=8)
+                r2, _ = run_adb("-s", target, "shell", "settings", "put", "secure", "accessibility_enabled", "1", timeout=8)
+                a11y_enabled = r1 == 0 and r2 == 0
+
+            # Optional: turn on Wireless ADB (tcpip 5555) so you can unplug USB and control Quest wirelessly
+            wifi_target = ""
+            if enable_wifi and ":" not in target:
+                _, ip_out = run_adb("-s", target, "shell", "ip", "route", timeout=6)
+                ip_m = re.search(r"src\s+(\d+\.\d+\.\d+\.\d+)", ip_out)
+                run_adb("-s", target, "tcpip", "5555", timeout=10)
+                if ip_m:
+                    wifi_target = f"{ip_m.group(1)}:5555"
+                    run_adb("connect", wifi_target, timeout=10)
+
+            matched = next((d for d in ready if d["id"] == target), {})
+            with contextlib.suppress(OSError):
+                (svc.data_dir / "vr_target.json").write_text(
+                    json.dumps(
+                        {
+                            "target": wifi_target or target,
+                            "serial": matched.get("serial") or "",
+                            "name": matched.get("name") or target,
+                            "saved_at": _time.time(),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            # Launch MiniMuse on the Quest, auto-paired to this PC / Personal Cloud
+            auto_paired = False
+            if auto_pair:
+                launch = ["-s", target, "shell", "am", "start", "-n", "io.github.nanomuse.app/.ConnectActivity"]
+                if best_url:
+                    launch.extend(["--es", "server_url", best_url])
+                if svc.token:
+                    launch.extend(["--es", "token", svc.token])
+                lr, _ = run_adb(*launch, timeout=12)
+                auto_paired = lr == 0 and bool(best_url)
+
+            return {
+                "ok": True,
+                "target": target,
+                "name": matched.get("name") or target,
+                "apk": apk.name,
+                "accessibility_enabled": a11y_enabled,
+                "wifi_target": wifi_target,
+                "auto_paired": auto_paired,
+                "best_url": best_url,
+            }
+
+        return await asyncio.to_thread(_do_install)
+
+    @app.get("/api/vr/apk", dependencies=dep_or_signed)
+    async def download_vr_apk() -> FileResponse:
+        apk = await _ensure_vr_apk()
+        if apk is None or not apk.is_file():
+            raise HTTPException(404, "Meta Quest / VR APK could not be found or downloaded")
+        return FileResponse(
+            apk,
+            filename=apk.name,
+            media_type="application/vnd.android.package-archive",
+        )
+
     def _parse_ver_tuple(raw: str) -> tuple[int, ...]:
         parts: list[int] = []
         for seg in raw.strip().lstrip("vV").split("-")[0].split("."):
@@ -4686,8 +4945,15 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
 
     def _load_saved_watch() -> dict[str, Any]:
         with contextlib.suppress(OSError, ValueError):
-            data = json.loads((svc.data_dir / "watch_target.json").read_text(encoding="utf-8"))
+            p = svc.data_dir / "watch_target.json"
+            data = json.loads(p.read_text(encoding="utf-8"))
             if isinstance(data, dict) and data.get("target"):
+                if not data.get("serial"):
+                    inferred = watch_discovery.service_serial(str(data["target"])) or ""
+                    if inferred:
+                        data["serial"] = inferred
+                        with contextlib.suppress(OSError):
+                            p.write_text(json.dumps(data), encoding="utf-8")
                 return data
         return {}
 
@@ -5578,6 +5844,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             "kind": "phone" if (is_android or svc.app.device is not None) else "computer",
             "version": svc.settings_view()["version"],
             "pair_ready": svc.sync.pairing.pair_ready,
+            "urls": svc.sync._my_reachable_urls(),
         }
 
     @app.post("/v1/sync/pair/claim")

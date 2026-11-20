@@ -25,10 +25,10 @@ export function PhoneControlGuide() {
 
   if (!app || state === null) return null;
   const steps = [
-    t("Tap Open Accessibility settings below."),
-    t("Find MiniMuse in the list and turn it on."),
-    t("If the switch is greyed out as a restricted setting, tap App settings, then the three dots, then Allow restricted settings, and go back."),
-    t("Come back here: this page says Ready when it worked."),
+    t("First, allow restricted settings: tap 1. Allow restricted settings (App Info) below, tap the three dots (⋮) at the top-right, and tap Allow restricted settings."),
+    t("Next, come back and tap 2. Open Accessibility settings below."),
+    t("Find MiniMuse (under Installed apps) and turn it on."),
+    t("Come back here: this page says Ready when phone control is active."),
   ];
   return (
     <div className="space-y-2.5 rounded-2xl border border-border/70 bg-surface px-3.5 py-3" data-testid="phone-control-guide">
@@ -46,7 +46,7 @@ export function PhoneControlGuide() {
         </span>
       </div>
       <p className="text-[12.5px] leading-[17px] text-muted">
-        {t("MiniMuse operates your phone through Android's accessibility service: it reads the screen and taps for you, only while a task is running, with a Stop button on screen.")}
+        {t("Android blocks phone control for downloaded apps until you allow restricted settings in App Info first. Once allowed, turn on MiniMuse in Accessibility so it can read the screen and tap for you (always with a Stop button on screen).")}
       </p>
       {state === "unsupported" ? (
         <p className="text-[12.5px] leading-[17px] text-muted">{t("Operating the screen needs Android 11 or newer; this phone can still be used for everything else.")}</p>
@@ -65,17 +65,17 @@ export function PhoneControlGuide() {
           <div className="flex flex-wrap gap-2 pt-0.5">
             <button
               type="button"
-              onClick={() => app.openAccessibilitySettings?.()}
+              onClick={() => app.openAppSettings?.()}
               className="rounded-full bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-accent-fg"
             >
-              {t("Open Accessibility settings")}
+              {t("1. Allow restricted settings (App Info)")}
             </button>
             <button
               type="button"
-              onClick={() => app.openAppSettings?.()}
+              onClick={() => app.openAccessibilitySettings?.()}
               className="rounded-full border border-border px-3.5 py-1.5 text-[12.5px] font-medium text-fg hover:bg-surface-2"
             >
-              {t("App settings")}
+              {t("2. Open Accessibility settings")}
             </button>
           </div>
         </>

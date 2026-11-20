@@ -628,16 +628,16 @@ def _pair_url(url: str) -> str:
     return url.strip().rstrip("/")
 
 
-def load_pairs(data_dir: str | Path) -> list[dict[str, str]]:
+def load_pairs(data_dir: str | Path) -> list[dict[str, Any]]:
     path = Path(data_dir) / PAIRS_FILE
     try:
         data = json.loads(path.read_text("utf-8"))
     except (OSError, ValueError):
         return []
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     for p in data if isinstance(data, list) else []:
         if isinstance(p, dict) and p.get("url") and p.get("key"):
-            entry = {
+            entry: dict[str, Any] = {
                 "name": str(p.get("name") or ""),
                 "url": str(p.get("url") or ""),
                 "key": str(p.get("key") or ""),
@@ -646,11 +646,20 @@ def load_pairs(data_dir: str | Path) -> list[dict[str, str]]:
                 entry["id"] = str(p["id"])
             if p.get("kind"):
                 entry["kind"] = str(p["kind"])
+            raw_urls = p.get("urls")
+            if isinstance(raw_urls, list):
+                clean_urls = [
+                    str(u).strip().rstrip("/")
+                    for u in raw_urls
+                    if isinstance(u, str) and str(u).strip().startswith(("http://", "https://"))
+                ]
+                if clean_urls:
+                    entry["urls"] = list(dict.fromkeys(clean_urls))
             out.append(entry)
     return out
 
 
-def save_pairs(data_dir: str | Path, pairs: list[dict[str, str]]) -> None:
+def save_pairs(data_dir: str | Path, pairs: list[dict[str, Any]]) -> None:
     from nanomuse.private import keep_private
 
     data_dir = Path(data_dir)
@@ -672,7 +681,8 @@ def add_pair(
     name: str = "",
     device_id: str = "",
     kind: str = "",
-) -> dict[str, str]:
+    urls: list[str] | None = None,
+) -> dict[str, Any]:
     """Record a peer: its token into the vault, its address and name into ``pairs.json``.
 
     Run the same command (or claim a pairing code) between two runtimes and they sync
@@ -691,16 +701,33 @@ def add_pair(
     slot = _pair_slot(did or name)
     vault = CredentialVault(Path(data_dir) / "vault.enc", Path(data_dir) / "vault.key")
     vault.set(slot, token.strip())
+    existing_pairs = load_pairs(data_dir)
+    merged_urls: list[str] = [url]
+    for u in urls or []:
+        cu = str(u or "").strip().rstrip("/")
+        if cu.startswith(("http://", "https://")) and cu not in merged_urls:
+            merged_urls.append(cu)
+    for old in existing_pairs:
+        if (did and old.get("id") == did) or old["name"] == name or old["url"] == url:
+            for u in [old.get("url"), *(old.get("urls") or [])]:
+                cu = str(u or "").strip().rstrip("/")
+                if cu.startswith(("http://", "https://")) and cu not in merged_urls:
+                    merged_urls.append(cu)
     pairs = [
         p
-        for p in load_pairs(data_dir)
+        for p in existing_pairs
         if not (
             (did and p.get("id") == did)
             or p["name"] == name
             or p["url"] == url
         )
     ]
-    entry: dict[str, str] = {"name": name, "url": url, "key": f"{{{{vault:{slot}}}}}"}
+    entry: dict[str, Any] = {
+        "name": name,
+        "url": url,
+        "key": f"{{{{vault:{slot}}}}}",
+        "urls": merged_urls[:8],
+    }
     if did:
         entry["id"] = did
     if kind:

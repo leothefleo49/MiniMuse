@@ -61,6 +61,16 @@ class ConnectActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
         runtime = LocalRuntime(this)
+        // Auto-pair launched from MiniMuse PC (e.g. One-Click Meta Quest / VR headset setup over ADB)
+        val autoUrl = intent?.getStringExtra("server_url")?.trim().orEmpty()
+        val autoToken = intent?.getStringExtra("token")?.trim().orEmpty()
+        if (autoUrl.startsWith("http://") || autoUrl.startsWith("https://")) {
+            prefs.serverUrl = autoUrl.trimEnd('/')
+            if (autoToken.isNotEmpty()) prefs.token = autoToken
+            prefs.mode = Prefs.MODE_REMOTE
+            openMain()
+            return
+        }
         if (prefs.connected && (!prefs.isLocal || runtime.installed)) {
             openMain()
             return

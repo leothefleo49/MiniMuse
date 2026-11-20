@@ -72,6 +72,8 @@ import type {
   UpdateView,
   UsageLimitRow,
   UsageSummary,
+  VrDevicesInfo,
+  VrInstallResult,
   WatchCodeInfo,
   WatchDevicesInfo,
   WatchInstallOptions,
@@ -83,6 +85,7 @@ import type {
   PasswordsView,
   PasswordImportResult,
 } from "./types";
+import { recordDebugEvent } from "./debugLog";
 import { signedParams } from "./ticket";
 import { readStorage, writeStorage } from "./util";
 
@@ -273,14 +276,22 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
   if (init.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+  const method = (init.method || "GET").toUpperCase();
+  const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
   let res: Response;
   try {
     res = await fetch(path, { ...init, headers });
   } catch {
+    const ms = Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - t0);
+    recordDebugEvent("error", `API ${method} ${path} network failure (${ms}ms)`);
     // the browser's "Failed to fetch": the runtime is down or the network is
     throw new Error("Cannot reach your MiniMuse right now.");
   }
-  if (res.status === 401) throw new AuthError();
+  const ms = Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - t0);
+  if (res.status === 401) {
+    recordDebugEvent("error", `API ${method} ${path} -> 401 Unauthorized (${ms}ms)`);
+    throw new AuthError();
+  }
   if (!res.ok) {
     let data: unknown;
     try {
@@ -288,8 +299,11 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     } catch {
       /* not JSON: the sentence below stands for it */
     }
-    throw new Error(failureDetail(res.status, data));
+    const detail = failureDetail(res.status, data);
+    recordDebugEvent("error", `API ${method} ${path} -> ${res.status} (${ms}ms)`, { detail });
+    throw new Error(detail);
   }
+  recordDebugEvent("api", `${method} ${path} -> ${res.status} (${ms}ms)`);
   return (await res.json()) as T;
 }
 
@@ -679,8 +693,35 @@ export const api = {
   rollbackUpdate: () => request<{ ok: boolean; to?: string; error?: string }>("/api/update/rollback", { method: "POST" }),
   dismissWhatsNew: () => request<{ ok: boolean; seen: string }>("/api/update/whats-new/dismiss", { method: "POST" }),
   personalCloudStatus: () => request<PersonalCloudStatus>("/api/personal-cloud/status"),
-  personalCloudStart: () => request<PersonalCloudStatus>("/api/personal-cloud/start", { method: "POST" }),
+  personalCloudStart: (autoInstall = false) =>
+    request<PersonalCloudStatus>("/api/personal-cloud/start", json({ auto_install: autoInstall })),
   personalCloudStop: () => request<PersonalCloudStatus>("/api/personal-cloud/stop", { method: "POST" }),
+  logsSummary: async (): Promise<string> => {
+    const headers: Record<string, string> = {};
+    const token = getToken();
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch("/api/logs/summary", { headers });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+  },
+  logsExportUrl: (): string => {
+    const token = getToken();
+    const q = token ? `?${signedParams(token, "/api/logs/export")}` : "";
+    return `/api/logs/export${q}`;
+  },
+  vrDevices: () => request<VrDevicesInfo>("/api/vr/devices"),
+  vrInstall: (body: {
+    target?: string;
+    connect_host_port?: string;
+    enable_accessibility?: boolean;
+    enable_wifi?: boolean;
+    auto_pair?: boolean;
+  } = {}) => request<VrInstallResult>("/api/vr/install", json(body)),
+  vrApkUrl: (): string => {
+    const token = getToken();
+    const q = token ? `?${signedParams(token, "/api/vr/apk")}` : "";
+    return `/api/vr/apk${q}`;
+  },
   chromeStatus: () => request<ChromeBridgeStatus>("/api/chrome/status"),
   chromeDetach: () => request<ChromeBridgeStatus>("/api/chrome/detach", { method: "POST" }),
   computerWindows: () =>
@@ -1081,7 +1122,23 @@ export function connectWs(handlers: {
     };
     ws.onmessage = (ev) => {
       try {
-        handlers.onMessage(JSON.parse(ev.data) as WsMessage);
+        const msg = JSON.parse(ev.data) as WsMessage;
+        const kind = (msg as { kind?: string }).kind || "unknown";
+        if (kind !== "stream") {
+          const isAi = kind === "event" || kind === "status" || kind === "approval" || kind === "question" || kind === "setup_prompt";
+          const extra =
+            kind === "event"
+              ? {
+                  thread: (msg as { thread?: string }).thread,
+                  type: (msg as { event?: { type?: string; tool?: string; status?: string } }).event?.type,
+                  tool: (msg as { event?: { tool?: string } }).event?.tool,
+                }
+              : kind === "status"
+                ? (msg as { status?: Record<string, unknown> }).status
+                : undefined;
+          recordDebugEvent(isAi ? "ai" : "ws", `WS <- ${kind}`, extra);
+        }
+        handlers.onMessage(msg);
       } catch {
         /* ignore malformed frames */
       }

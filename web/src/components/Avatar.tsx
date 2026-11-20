@@ -33,16 +33,18 @@ function isClipTemporarilyMissing(url: string): boolean {
 }
 
 function useIsDarkTheme(): boolean {
-  const [dark, setDark] = useState<boolean>(() =>
-    typeof document !== "undefined" ? document.documentElement.classList.contains("dark") : false,
-  );
+  const read = () =>
+    typeof document !== "undefined"
+      ? document.documentElement.dataset.theme === "dark" || document.documentElement.classList.contains("dark")
+      : false;
+  const [dark, setDark] = useState<boolean>(read);
   useEffect(() => {
     if (typeof document === "undefined" || typeof MutationObserver === "undefined") return;
     const root = document.documentElement;
-    const update = () => setDark(root.classList.contains("dark"));
+    const update = () => setDark(read());
     update();
     const obs = new MutationObserver(update);
-    obs.observe(root, { attributes: true, attributeFilter: ["class", "style"] });
+    obs.observe(root, { attributes: true, attributeFilter: ["class", "style", "data-theme"] });
     return () => obs.disconnect();
   }, []);
   return dark;
@@ -74,15 +76,15 @@ function drawObjectCover(
 }
 
 /**
- * Smooth, flicker-free studio-white border-connected keyer.
+ * Smooth, flicker-free studio backdrop keyer (supports BOTH bright white AND solid black studio backdrops).
  * - Checks ONLY the top studio backdrop points (top-left, top-center, top-right) so the moving
  *   character/aura near the bottom/sides never disturbs backdrop detection.
- * - Only keys if at least 2 of 3 top points are genuine bright studio white (min > 210, chroma < 26).
- *   Dark-background or custom-colored clips are untouched (returns false so the raw video shows).
+ * - Detects either bright studio white (min >= 204, chroma <= 28) OR solid studio black
+ *   (max <= 34, chroma <= 24, e.g. darkmode Muse clips on mobile).
  * - Uses a continuous smooth alpha ramp over lightness & chroma (no binary threshold cliff) so
  *   H.264 MP4 compression noise never flickers grainy black/white pixels.
  */
-function keyWhiteStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean {
+function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean {
   let imgData: ImageData;
   try {
     imgData = ctx.getImageData(0, 0, dim, dim);
@@ -97,6 +99,7 @@ function keyWhiteStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boo
     (2 * dim + (dim - 3)) * 4,
   ];
   let brightWhiteCount = 0;
+  let solidBlackCount = 0;
   for (const idx of topSamples) {
     const r = data[idx];
     const g = data[idx + 1];
@@ -105,10 +108,13 @@ function keyWhiteStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boo
     if (a < 40) return true; // already transparent PNG/WebP
     const mn = Math.min(r, g, b);
     const mx = Math.max(r, g, b);
-    if (mn >= 208 && mx - mn <= 26) brightWhiteCount++;
+    if (mn >= 204 && mx - mn <= 28) brightWhiteCount++;
+    else if (mx <= 34 && mx - mn <= 24) solidBlackCount++;
   }
-  if (brightWhiteCount < 2) {
-    // Not a bright white studio backdrop (e.g. dark or custom-scene clip) — do not key
+  const mode: "white" | "black" | null =
+    brightWhiteCount >= 2 ? "white" : solidBlackCount >= 2 ? "black" : null;
+  if (!mode) {
+    // Rich scenic backdrop — do not key
     return false;
   }
 
@@ -124,9 +130,11 @@ function keyWhiteStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boo
     const g = data[i + 1];
     const b = data[i + 2];
     const lum = (r + g + b) * 0.333333;
-    if (lum < 190) return false;
     const chroma = Math.max(r, g, b) - Math.min(r, g, b);
-    return chroma <= 42;
+    if (mode === "white") {
+      return lum >= 190 && chroma <= 42;
+    }
+    return lum <= 46 && chroma <= 32;
   };
 
   const tryEnqueue = (p: number) => {
@@ -139,7 +147,7 @@ function keyWhiteStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boo
     }
   };
 
-  // Seed top edge, plus upper/full left & right edges (avoiding bottom edge where body/desk sits)
+  // Seed top edge, plus left & right edges (avoiding bottom edge where body/desk sits)
   for (let x = 0; x < dim; x++) {
     tryEnqueue(x);
   }
@@ -157,13 +165,17 @@ function keyWhiteStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boo
     const lum = (r + g + b) * 0.333333;
     const chroma = Math.max(r, g, b) - Math.min(r, g, b);
 
-    // Smooth continuous alpha ramp: pure studio white (lum >= 234, chroma <= 16) -> 0,
-    // transitioning smoothly through anti-aliased edge pixels down to lum=190 / chroma=42.
-    const lumT = Math.max(0, Math.min(1, (234 - lum) / 44));
-    const chT = Math.max(0, Math.min(1, (chroma - 16) / 26));
-    const keep = Math.max(lumT, chT);
-    const alpha = Math.round(keep * keep * 255);
-    data[i + 3] = alpha;
+    let keep: number;
+    if (mode === "white") {
+      const lumT = Math.max(0, Math.min(1, (234 - lum) / 44));
+      const chT = Math.max(0, Math.min(1, (chroma - 16) / 26));
+      keep = Math.max(lumT, chT);
+    } else {
+      const lumT = Math.max(0, Math.min(1, (lum - 14) / 32));
+      const chT = Math.max(0, Math.min(1, (chroma - 10) / 22));
+      keep = Math.max(lumT, chT);
+    }
+    data[i + 3] = Math.round(keep * keep * 255);
 
     const x = p % dim;
     const y = (p - x) / dim;
@@ -182,8 +194,11 @@ function keyWhiteStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boo
       const b = data[i + 2];
       const lum = (r + g + b) * 0.333333;
       const chroma = Math.max(r, g, b) - Math.min(r, g, b);
-      if (lum > 170 && chroma < 54) {
+      if (mode === "white" && lum > 170 && chroma < 54) {
         const factor = Math.max(0.35, Math.min(1, (225 - lum) / 55));
+        data[i + 3] = Math.round(data[i + 3] * factor);
+      } else if (mode === "black" && lum < 64 && chroma < 42) {
+        const factor = Math.max(0.35, Math.min(1, (lum - 12) / 52));
         data[i + 3] = Math.round(data[i + 3] * factor);
       }
     }
@@ -277,9 +292,10 @@ export function Avatar({
   const pose = still ? "idle" : mood;
   const updatedAt = profile?.updated_at;
   const situationClips = profile?.avatar_situation_clips;
+  const animationsEnabled = profile?.avatar_animated !== false;
 
   const clipCandidate =
-    still || size < CLIP_MIN_PX
+    still || !animationsEnabled || size < CLIP_MIN_PX
       ? null
       : dragon
         ? dragonClipUrl(pose)
@@ -347,9 +363,9 @@ export function Avatar({
       try {
         offCtx.clearRect(0, 0, canvasDim, canvasDim);
         if (!drawObjectCover(offCtx, source, canvasDim)) return;
-        const keyed = keyWhiteStudioBackdrop(offCtx, canvasDim);
+        const keyed = keyStudioBackdrop(offCtx, canvasDim);
         if (!keyed) {
-          // Non-white/dark custom video: let raw object-cover video show directly without flicker
+          // Scenic non-studio video/image: show original directly without flicker
           setCanvasReady(false);
           return;
         }
@@ -369,6 +385,52 @@ export function Avatar({
     if (!shouldKeyBackdrop) setCanvasReady(false);
   }, [shouldKeyBackdrop, studio, dragon]);
 
+  // Paint the keyed still immediately while the video buffers so background colors show on mobile at frame 0
+  useEffect(() => {
+    if (!shouldKeyBackdrop || !clip || !stillUrl || typeof Image === "undefined") return;
+    let alive = true;
+    const pre = new Image();
+    pre.onload = () => {
+      if (!alive) return;
+      const v = videoRef.current;
+      if (!v || v.readyState < 2) paintKeyedSource(pre);
+    };
+    pre.src = stillUrl;
+    return () => {
+      alive = false;
+    };
+  }, [shouldKeyBackdrop, clip, stillUrl, paintKeyedSource]);
+
+  // Ensure Android WebView & mobile browsers ALWAYS autoplay muted inline avatar clips reliably
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !clip) return;
+    v.defaultMuted = true;
+    v.muted = true;
+    v.playsInline = true;
+    v.setAttribute("muted", "");
+    v.setAttribute("playsinline", "");
+    v.setAttribute("webkit-playsinline", "");
+    const tryPlay = () => {
+      v.muted = true;
+      void v.play().catch(() => undefined);
+    };
+    tryPlay();
+    const onGesture = () => {
+      if (v.paused) tryPlay();
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("pointerdown", onGesture, { passive: true, once: true });
+      document.addEventListener("touchstart", onGesture, { passive: true, once: true });
+    }
+    return () => {
+      if (typeof document !== "undefined") {
+        document.removeEventListener("pointerdown", onGesture);
+        document.removeEventListener("touchstart", onGesture);
+      }
+    };
+  }, [clip]);
+
   useEffect(() => {
     if (!shouldKeyBackdrop || !clip) return;
     if (
@@ -382,7 +444,7 @@ export function Avatar({
     let lastDraw = 0;
     const tick = (now: number) => {
       const v = videoRef.current;
-      if (v && v.readyState >= 2 && now - lastDraw >= 33) {
+      if (v && v.readyState >= 2 && v.videoWidth > 0 && now - lastDraw >= 33) {
         lastDraw = now;
         paintKeyedSource(v);
       }
@@ -471,7 +533,19 @@ export function Avatar({
             loop
             muted
             playsInline
+            preload="auto"
             disablePictureInPicture
+            onLoadedMetadata={(e) => {
+              const v = e.currentTarget;
+              v.defaultMuted = true;
+              v.muted = true;
+              void v.play().catch(() => undefined);
+            }}
+            onCanPlay={(e) => {
+              const v = e.currentTarget;
+              v.muted = true;
+              if (v.paused) void v.play().catch(() => undefined);
+            }}
             onLoadedData={(e) => {
               const v = e.currentTarget;
               v.muted = true;

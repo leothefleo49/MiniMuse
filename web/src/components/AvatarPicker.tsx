@@ -19,6 +19,7 @@ export interface AvatarChoice {
   avatar_border_mode?: string;
   avatar_border_color?: string;
   avatar_border_glow?: number;
+  avatar_animated?: boolean;
   avatar_situation_clips?: Record<string, string>;
 }
 
@@ -50,10 +51,13 @@ const SITUATION_ROWS: { id: string; label: string }[] = [
 export function AvatarPicker({
   value,
   onChange,
+  onGlowPreview,
   onStudio,
 }: {
   value: AvatarChoice;
   onChange: (v: AvatarChoice) => void;
+  /** Optional 60fps local preview callback while dragging the glow slider so no network call fires mid-drag */
+  onGlowPreview?: (glow: number | null) => void;
   /** the "draw a new one" tile: opens the avatar studio screen */
   onStudio?: () => void;
 }) {
@@ -64,6 +68,47 @@ export function AvatarPicker({
   const [library, setLibrary] = useState<AvatarLibraryView | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const assetFileRef = useRef<HTMLInputElement>(null);
+
+  const serverGlow = typeof value.avatar_border_glow === "number" ? value.avatar_border_glow : 55;
+  const [draftGlow, setDraftGlow] = useState<number>(serverGlow);
+  const draggingGlowRef = useRef(false);
+  const glowCommitTimer = useRef<number | null>(null);
+  const latestValueRef = useRef(value);
+  useEffect(() => {
+    latestValueRef.current = value;
+  }, [value]);
+
+  useEffect(() => {
+    if (!draggingGlowRef.current) setDraftGlow(serverGlow);
+  }, [serverGlow]);
+
+  useEffect(() => {
+    return () => {
+      if (glowCommitTimer.current !== null) window.clearTimeout(glowCommitTimer.current);
+    };
+  }, []);
+
+  const commitGlow = (nextGlow: number) => {
+    if (glowCommitTimer.current !== null) {
+      window.clearTimeout(glowCommitTimer.current);
+      glowCommitTimer.current = null;
+    }
+    draggingGlowRef.current = false;
+    onGlowPreview?.(null);
+    if (nextGlow !== (typeof latestValueRef.current.avatar_border_glow === "number" ? latestValueRef.current.avatar_border_glow : 55)) {
+      onChange({ ...latestValueRef.current, avatar_border_glow: nextGlow });
+    }
+  };
+
+  const handleGlowInput = (nextGlow: number) => {
+    draggingGlowRef.current = true;
+    setDraftGlow(nextGlow);
+    onGlowPreview?.(nextGlow);
+    if (glowCommitTimer.current !== null) window.clearTimeout(glowCommitTimer.current);
+    glowCommitTimer.current = window.setTimeout(() => {
+      commitGlow(nextGlow);
+    }, 320);
+  };
 
   const loadLibrary = useCallback(async () => {
     try {
@@ -85,7 +130,8 @@ export function AvatarPicker({
   const bgColor = value.avatar_bg_color || value.color || "#0064d4";
   const borderMode = value.avatar_border_mode || "theme";
   const borderColor = value.avatar_border_color || value.color || "#0064d4";
-  const borderGlow = typeof value.avatar_border_glow === "number" ? value.avatar_border_glow : 55;
+  const borderGlow = draftGlow;
+  const animationsOn = value.avatar_animated !== false;
   const ring = "ring-[2.5px] ring-accent ring-offset-2 ring-offset-bg";
   const tile = "relative h-[72px] w-[72px] shrink-0 overflow-hidden rounded-full transition cursor-pointer";
 
@@ -274,14 +320,14 @@ export function AvatarPicker({
         </div>
       )}
 
-      {/* Avatar Background Mode: Match theme, Classic disc, Custom color, or Custom image */}
+      {/* Avatar Background Mode: Original (unedited), Match theme, Custom color, or Custom image */}
       <div className="space-y-2 pt-1">
         <div className="text-[12px] text-muted">{t("Avatar background")}</div>
         <div className="flex flex-wrap gap-1.5">
           {(
             [
+              { id: "default", label: t("Original (unedited)") },
               { id: "theme", label: t("Match theme") },
-              { id: "default", label: t("Classic disc") },
               { id: "color", label: t("Custom color") },
               { id: "image", label: t("Custom image") },
             ] as const
@@ -460,28 +506,58 @@ export function AvatarPicker({
         )}
 
         {borderMode !== "none" && (
-          <div className="flex items-center gap-3 pt-0.5">
+          <div className="flex items-center gap-3 pt-0.5 touch-none">
             <input
               type="range"
               min={0}
               max={100}
-              step={5}
+              step={1}
               value={borderGlow}
-              onChange={(e) =>
-                onChange({
-                  ...value,
-                  avatar_border_glow: Number(e.target.value),
-                })
-              }
+              onChange={(e) => handleGlowInput(Number(e.target.value))}
+              onPointerUp={(e) => commitGlow(Number((e.currentTarget as HTMLInputElement).value))}
+              onTouchEnd={(e) => commitGlow(Number((e.currentTarget as HTMLInputElement).value))}
+              onKeyUp={(e) => commitGlow(Number((e.currentTarget as HTMLInputElement).value))}
               aria-label={t("Border color & glow")}
-              className="h-1.5 flex-1 cursor-pointer accent-accent"
+              className="h-2 flex-1 cursor-pointer accent-accent touch-pan-x"
             />
           </div>
         )}
       </div>
 
+      {/* Live Animations Switch */}
+      {!emojiMode && (
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-border/70 bg-surface-2/40 px-3.5 py-2.5">
+          <div className="min-w-0">
+            <div className="text-[13px] font-medium text-fg">{t("Live avatar animations")}</div>
+            <div className="text-[11.5px] leading-snug text-muted">
+              {animationsOn
+                ? t("Plays looping 3D/video animations for each mood and situation.")
+                : t("Animations paused — showing crisp still avatar images.")}
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={animationsOn}
+            aria-label={t("Live avatar animations")}
+            onClick={() => onChange({ ...value, avatar_animated: !animationsOn })}
+            className={cx(
+              "relative h-[24px] w-[42px] shrink-0 rounded-full transition-colors",
+              animationsOn ? "bg-accent" : "bg-border",
+            )}
+          >
+            <span
+              className={cx(
+                "absolute top-[3px] h-[18px] w-[18px] rounded-full bg-white shadow transition-all",
+                animationsOn ? "left-[21px]" : "left-[3px]",
+              )}
+            />
+          </button>
+        </div>
+      )}
+
       {/* Animations by Situation & Custom 3D Models / Clips */}
-      <details className="rounded-2xl border border-border/70 bg-surface-2/40 px-3.5 py-2.5 text-[12.5px]">
+      <details open={!emojiMode && activeFaceAssets.length > 0} className="rounded-2xl border border-border/70 bg-surface-2/40 px-3.5 py-2.5 text-[12.5px]">
         <summary className="cursor-pointer font-medium text-fg flex items-center gap-2">
           <Film size={14} className="text-accent shrink-0" />
           <span>{t("Customize animations by situation & import 3D models")}</span>

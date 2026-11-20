@@ -931,6 +931,8 @@ export interface Profile {
   avatar_border_color?: string;
   /** 0..100 border glow intensity (default 55) */
   avatar_border_glow?: number;
+  /** Whether live looping 3D/video avatar animations play (default true) */
+  avatar_animated?: boolean;
   /** Custom situation -> animation/image filename mapping */
   avatar_situation_clips?: Record<string, string>;
   updated_at?: number;
@@ -1108,6 +1110,7 @@ export interface PersonalCloudStatus {
   host: string;
   port: number;
   lan_urls: string[];
+  all_urls?: string[];
   tailscale: {
     installed: boolean;
     running: boolean;
@@ -1119,10 +1122,46 @@ export interface PersonalCloudStatus {
   tunnel: {
     running: boolean;
     starting: boolean;
+    installing?: boolean;
+    needs_install?: boolean;
     url: string;
     error: string;
   };
   best_url: string;
+}
+
+export interface VrHeadsetDevice {
+  id: string;
+  state: string;
+  is_vr: boolean;
+  name?: string;
+  manufacturer?: string;
+  model?: string;
+  device?: string;
+  android_version?: string;
+  serial?: string;
+}
+
+export interface VrDevicesInfo {
+  adb_installed: boolean;
+  headsets: VrHeadsetDevice[];
+  devices: VrHeadsetDevice[];
+  saved?: { target?: string; serial?: string; name?: string; saved_at?: number };
+  apk_cached: boolean;
+  download_url: string;
+  release_download_url: string;
+}
+
+export interface VrInstallResult {
+  ok: boolean;
+  target?: string;
+  name?: string;
+  apk?: string;
+  accessibility_enabled?: boolean;
+  wifi_target?: string;
+  auto_paired?: boolean;
+  best_url?: string;
+  error?: string;
 }
 
 export interface ChromeBridgeStatus {

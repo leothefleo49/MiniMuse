@@ -205,6 +205,7 @@ class PairingManager:
         self._code_expires_at: float = 0.0
         self._failures: dict[str, list[float]] = {}
         self._tokens: list[dict[str, str]] = []
+        self._tokens_mtime: float = -1.0
         self._load_tokens()
 
     @staticmethod
@@ -213,9 +214,12 @@ class PairingManager:
 
     def _load_tokens(self) -> None:
         try:
+            st = self.tokens_path.stat()
+            self._tokens_mtime = st.st_mtime
             data = json.loads(self.tokens_path.read_text("utf-8"))
         except (OSError, ValueError):
             self._tokens = []
+            self._tokens_mtime = -1.0
             return
         self._tokens = [
             {
@@ -228,6 +232,14 @@ class PairingManager:
             if isinstance(item, dict) and item.get("hash")
         ]
 
+    def _reload_if_changed(self) -> None:
+        try:
+            mtime = self.tokens_path.stat().st_mtime
+        except OSError:
+            return
+        if mtime != self._tokens_mtime:
+            self._load_tokens()
+
     def _save_tokens(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.tokens_path.with_name(self.tokens_path.name + ".tmp")
@@ -237,6 +249,10 @@ class PairingManager:
         except OSError:
             pass
         tmp.replace(self.tokens_path)
+        try:
+            self._tokens_mtime = self.tokens_path.stat().st_mtime
+        except OSError:
+            pass
 
     @property
     def pair_ready(self) -> bool:
@@ -291,14 +307,19 @@ class PairingManager:
         return True, ""
 
     def mint_inbound_token(self, device_id: str = "", name: str = "") -> str:
-        """Issue a scoped sync token accepted only on /v1/sync/*."""
+        """Issue a scoped sync token accepted only on /v1/sync/*.
+
+        Keeps up to the 5 most recent tokens for the same device_id so a failed or
+        interrupted re-pair attempt never invalidates a peer's existing working token."""
+        self._reload_if_changed()
         token = "nmpeer_" + secrets.token_urlsafe(32)
         h = self._hash_token(token)
         did = str(device_id or "").strip()[:80]
         clean_name = str(name or "").strip()[:60]
-        # Replace older inbound token for the same device_id if present
         if did:
-            self._tokens = [t for t in self._tokens if t.get("device_id") != did]
+            same = [t for t in self._tokens if t.get("device_id") == did]
+            others = [t for t in self._tokens if t.get("device_id") != did]
+            self._tokens = others + same[-4:]
         self._tokens.append(
             {
                 "hash": h,
@@ -313,6 +334,7 @@ class PairingManager:
     def verify_inbound_token(self, token: str) -> bool:
         if not token or not token.startswith("nmpeer_"):
             return False
+        self._reload_if_changed()
         candidate = self._hash_token(token).encode("utf-8")
         for row in self._tokens:
             stored = str(row.get("hash") or "").encode("utf-8")

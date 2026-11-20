@@ -25,6 +25,7 @@ from nanomuse.tools.shell import PythonExecute, Shell
 from nanomuse.tools.skills_tool import Skills
 from nanomuse.tools.terminate import AskUser, Terminate
 from nanomuse.tools.trigger_tools import Triggers
+from nanomuse.tools.vr_quest import QuestVRTool
 from nanomuse.tools.web import WebFetch, WebSearch
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "PasswordsTool",
     "PhoneBridgeTool",
     "PythonExecute",
+    "QuestVRTool",
     "React",
     "ReadEmails",
     "Recall",

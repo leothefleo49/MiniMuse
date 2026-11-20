@@ -171,6 +171,27 @@ export function DevicePermissions({ compact = false }: { compact?: boolean }) {
               <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/12 px-2.5 py-1 text-[12px] font-semibold text-emerald-600 dark:text-emerald-400">
                 <Check size={13} strokeWidth={3} /> {t("Allowed")}
               </span>
+            ) : row.action.kind === "accessibility" && androidApp() ? (
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => androidApp()?.openAppSettings?.()}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-fg hover:opacity-95 disabled:opacity-60"
+                  title={t("App Info → ⋮ (three dots) → Allow restricted settings")}
+                >
+                  {t("1. Unrestricted")}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => void run(row)}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-3 py-1.5 text-[12px] font-semibold text-fg hover:bg-surface-2 disabled:opacity-60"
+                >
+                  {busy === row.id && <Loader2 size={13} className="animate-spin" />}
+                  {t("2. Accessibility")}
+                </button>
+              </div>
             ) : (
               <button
                 type="button"

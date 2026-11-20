@@ -48,9 +48,12 @@ export function MuseHeader({
   scrim?: boolean;
 }) {
   return (
-    <header className={cx("safe-top relative shrink-0 pt-4 pb-1 bg-transparent overflow-visible", scrim && "header-scrim", className)}>
+    <header
+      className={cx("relative z-20 shrink-0 pb-1 bg-transparent overflow-visible", scrim && "header-scrim", className)}
+      style={{ paddingTop: "calc(var(--nm-safe-top, 0px) + 18px)" }}
+    >
       <div className="flex flex-col items-center px-16 overflow-visible">
-        <button type="button" onClick={onAvatar} aria-label={name} className="relative rounded-full p-1.5 overflow-visible">
+        <button type="button" onClick={onAvatar} aria-label={name} className="relative z-20 rounded-full p-1.5 overflow-visible">
           <Avatar profile={profile} status={status} size={size} />
           {badge !== undefined && badge > 0 && (
             <span className="pointer-events-none absolute -right-0.5 top-0 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-bg bg-rose-500 px-1 text-[10.5px] font-bold text-white">
@@ -59,14 +62,14 @@ export function MuseHeader({
           )}
         </button>
         {/* the tag sits just under the face (never over it): the face has room to breathe and move */}
-        <div className="relative z-10 mt-0 flex min-h-[44px] flex-col items-center">
+        <div className="relative z-20 mt-0 flex min-h-[44px] flex-col items-center">
           <MuseNamePill name={name} statusLine={statusLine} statusTone={statusTone} spinning={spinning} onClick={onName ?? onAvatar} />
           {under && <div className="mt-1.5 flex max-w-full items-center">{under}</div>}
         </div>
       </div>
-      {leading && <div className="absolute left-4" style={{ top: "calc(var(--nm-safe-top) + 6px)" }}>{leading}</div>}
+      {leading && <div className="absolute left-4 z-20" style={{ top: "calc(var(--nm-safe-top, 0px) + 10px)" }}>{leading}</div>}
       {trailing && (
-        <div className="absolute right-4 flex items-center gap-2" style={{ top: "calc(var(--nm-safe-top) + 6px)" }}>
+        <div className="absolute right-4 z-20 flex items-center gap-2" style={{ top: "calc(var(--nm-safe-top, 0px) + 10px)" }}>
           {trailing}
         </div>
       )}

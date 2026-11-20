@@ -45,21 +45,35 @@ export function Sheet({
         role="dialog"
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}
-        className="sheet-in relative w-full sm:max-w-lg max-h-[92%] flex flex-col bg-surface rounded-t-3xl sm:rounded-3xl shadow-2xl border border-border"
+        className="sheet-in relative w-full sm:max-w-lg max-h-[92%] flex flex-col bg-surface rounded-t-3xl sm:rounded-3xl shadow-2xl border border-border overflow-visible"
       >
-        <div className="flex items-center gap-3 px-5 pt-4 pb-2">
-          <div className="sm:hidden absolute left-1/2 -translate-x-1/2 top-2 h-1 w-10 rounded-full bg-border" />
-          <div id={titleId} className="flex-1 font-semibold text-[17px] mt-1">{title}</div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={t("Close")}
-            className="p-2 -mr-2 rounded-full text-muted hover:bg-surface-2"
-          >
-            <X size={20} />
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto px-5 pb-4">{children}</div>
+        {title ? (
+          <div className="flex items-center gap-3 px-5 pt-4 pb-2">
+            <div className="sm:hidden absolute left-1/2 -translate-x-1/2 top-2 h-1 w-10 rounded-full bg-border" />
+            <div id={titleId} className="flex-1 font-semibold text-[17px] mt-1">{title}</div>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label={t("Close")}
+              className="p-2 -mr-2 rounded-full text-muted hover:bg-surface-2"
+            >
+              <X size={20} />
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="sm:hidden pointer-events-none absolute left-1/2 -translate-x-1/2 top-2 z-30 h-1 w-10 rounded-full bg-border" />
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label={t("Close")}
+              className="absolute right-3.5 top-3.5 z-30 p-2 rounded-full text-muted hover:bg-surface-2"
+            >
+              <X size={20} />
+            </button>
+          </>
+        )}
+        <div className={title ? "flex-1 overflow-y-auto px-5 pb-4" : "flex-1 overflow-y-auto px-5 pt-7 pb-4"}>{children}</div>
         {footer && <div className="px-5 pt-2 pb-4 safe-bottom border-t border-border">{footer}</div>}
       </div>
     </div>

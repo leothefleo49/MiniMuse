@@ -202,7 +202,6 @@ body {
   }
 }
 html.android-shell {
-  --nm-safe-top: 0px;
   --nm-safe-bottom: 0px;
 }
 .safe-top {

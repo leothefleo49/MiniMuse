@@ -34,6 +34,12 @@
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.vr.headtracking" android:required="false" />
 
     <!-- which other apps this one may see: the clock (alarms and timers) and, for the GUI
          operator's `open_app`, whatever has a launcher icon -->
@@ -62,11 +68,23 @@
         android:theme="@style/Theme.nanoMuse"
         tools:targetApi="34">
 
+        <!-- Meta Quest / Horizon OS & Standalone VR Headset 2D Spatial Multitasking Panel support -->
+        <meta-data android:name="com.oculus.supportedDevices" android:value="all" />
+        <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
+        <meta-data android:name="com.oculus.ossplash" android:value="true" />
+
         <activity
             android:name=".ConnectActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|layoutDirection|locale"
+            android:resizeableActivity="true"
             android:exported="true"
             android:theme="@style/Theme.nanoMuse"
             android:windowSoftInputMode="adjustResize">
+            <layout
+                android:defaultWidth="1080dp"
+                android:defaultHeight="720dp"
+                android:minWidth="420dp"
+                android:minHeight="480dp" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -80,6 +98,11 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
+            <layout
+                android:defaultWidth="1080dp"
+                android:defaultHeight="720dp"
+                android:minWidth="420dp"
+                android:minHeight="480dp" />
             <!-- "Share to nanoMuse": text, links, files → a new conversation with them attached -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

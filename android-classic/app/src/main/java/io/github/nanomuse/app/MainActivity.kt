@@ -35,6 +35,7 @@ import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
@@ -155,6 +156,32 @@ class MainActivity : AppCompatActivity() {
 
     /** A home-screen shortcut's workspace file, waiting for the web app to be ready. */
     private var pendingShortcutPath: String? = null
+    /** Status-bar inset in CSS dp, injected into `--nm-safe-top` so the avatar glow can shine into the top bar. */
+    private var topInsetDp: Int = 0
+
+    internal fun isVrHeadset(): Boolean {
+        val hay = listOf(Build.MANUFACTURER, Build.MODEL, Build.BRAND, Build.DEVICE, Build.PRODUCT)
+            .joinToString(" ")
+            .lowercase()
+        return listOf(
+            "oculus", "meta", "quest", "monterey", "hollywood", "eureka", "panther", "seacliff",
+            "pico", "bytedance", "vive", "lynx", "magic leap", "xr",
+        ).any { it in hay }
+    }
+
+    private fun applyTopInsetToWebView() {
+        if (!::ui.isInitialized) return
+        val dp = topInsetDp
+        val vrJs = if (isVrHeadset()) {
+            "document.documentElement.classList.add('vr-shell','desktop');"
+        } else ""
+        ui.web.post {
+            ui.web.evaluateJavascript(
+                "document.documentElement.style.setProperty('--nm-safe-top','${dp}px');$vrJs",
+                null,
+            )
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -163,11 +190,18 @@ class MainActivity : AppCompatActivity() {
             goConnect()
             return
         }
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        @Suppress("DEPRECATION")
+        window.statusBarColor = AndroidColor.TRANSPARENT
         ui = ActivityMainBinding.inflate(layoutInflater)
         setContentView(ui.root)
         ViewCompat.setOnApplyWindowInsetsListener(ui.root) { v, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
-            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            val density = resources.displayMetrics.density.coerceAtLeast(1f)
+            topInsetDp = kotlin.math.ceil(bars.top / density).toInt()
+            // Draw edge-to-edge under the transparent status bar so avatar glow shines cleanly past the top bar
+            v.setPadding(bars.left, 0, bars.right, bars.bottom)
+            applyTopInsetToWebView()
             WindowInsetsCompat.CONSUMED
         }
         setupWebView()
@@ -258,6 +292,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 ui.offline.visibility = View.GONE
+                applyTopInsetToWebView()
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {

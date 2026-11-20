@@ -52,6 +52,7 @@ from nanomuse.tools import (
     PCControl,
     PhoneBridgeTool,
     PythonExecute,
+    QuestVRTool,
     React,
     Remember,
     Reminders,
@@ -633,6 +634,8 @@ class NanoMuseApp:
             DeepMemoryTool(db_path=s.data_dir / "personal.db"),
 
             PhoneBridgeTool(db_path=s.data_dir / "personal.db", workspace=ws),
+
+            QuestVRTool(data_dir=s.data_dir, workspace=ws),
 
             ExternalConnectorsTool(db_path=s.data_dir / "personal.db", workspace=ws, data_dir=s.data_dir, vault=self.vault),
 

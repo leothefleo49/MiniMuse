@@ -15,12 +15,20 @@ import asyncio
 import contextlib
 import json
 import os
+import platform
 import re
 import shutil
 import socket
+import stat
 import subprocess
+import sys
+import tarfile
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+import httpx
 
 from nanomuse.logger import logger
 from nanomuse.sync.discovery import local_ipv4_addrs
@@ -33,27 +41,98 @@ _TRYCF_RE = re.compile(r"https://[A-Za-z0-9.-]+\.trycloudflare\.com\b")
 
 
 def _find_bin(name: str, extra_paths: tuple[str, ...] = ()) -> str | None:
-    found = shutil.which(name)
-    if found:
-        return found
     for cand in extra_paths:
         if cand and os.path.isfile(cand):
             return cand
+    found = shutil.which(name)
+    if found:
+        return found
     return None
 
 
-def cloudflared_bin() -> str | None:
-    """Locate ``cloudflared`` if installed on Windows, macOS, or Linux."""
-    return _find_bin(
-        "cloudflared",
-        (
+def _local_cloudflared_path(data_dir: Path | None) -> Path | None:
+    if data_dir is None:
+        return None
+    exe_name = "cloudflared.exe" if os.name == "nt" else "cloudflared"
+    return Path(data_dir) / "bin" / exe_name
+
+
+def cloudflared_bin(data_dir: Path | None = None) -> str | None:
+    """Locate ``cloudflared`` in MiniMuse's local bin folder or on Windows, macOS, or Linux."""
+    local_bin = _local_cloudflared_path(data_dir)
+    extra: list[str] = []
+    if local_bin is not None:
+        extra.append(str(local_bin))
+    extra.extend(
+        [
             r"C:\Program Files (x86)\cloudflared\cloudflared.exe",
             r"C:\Program Files\cloudflared\cloudflared.exe",
             "/opt/homebrew/bin/cloudflared",
             "/usr/local/bin/cloudflared",
             "/usr/bin/cloudflared",
-        ),
+        ]
     )
+    return _find_bin("cloudflared", tuple(extra))
+
+
+def _cloudflared_download_asset() -> tuple[str, bool]:
+    """Return ``(download_url, is_tgz)`` for the current OS & CPU architecture."""
+    base = "https://github.com/cloudflare/cloudflared/releases/latest/download"
+    mach = platform.machine().lower()
+    is_arm64 = any(k in mach for k in ("arm64", "aarch64"))
+    is_arm32 = mach.startswith("arm") and not is_arm64
+    if os.name == "nt":
+        if is_arm64:
+            return f"{base}/cloudflared-windows-arm64.exe", False
+        if "64" in mach or sys.maxsize > 2**32:
+            return f"{base}/cloudflared-windows-amd64.exe", False
+        return f"{base}/cloudflared-windows-386.exe", False
+    if sys.platform == "darwin":
+        arch = "arm64" if is_arm64 else "amd64"
+        return f"{base}/cloudflared-darwin-{arch}.tgz", True
+    # Linux / Android proot
+    if is_arm64:
+        return f"{base}/cloudflared-linux-arm64", False
+    if is_arm32:
+        return f"{base}/cloudflared-linux-arm", False
+    return f"{base}/cloudflared-linux-amd64", False
+
+
+async def install_cloudflared(data_dir: Path) -> str:
+    """Automatically download the official Cloudflare Quick Tunnel binary into ``<data_dir>/bin``."""
+    dest = _local_cloudflared_path(data_dir)
+    assert dest is not None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    url, is_tgz = _cloudflared_download_asset()
+    logger.info("Downloading cloudflared from {} to {}", url, dest)
+    tmp_path = dest.with_name(dest.name + ".part")
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as hc:
+            async with hc.stream("GET", url) as resp:
+                resp.raise_for_status()
+                with tmp_path.open("wb") as fh:
+                    async for chunk in resp.aiter_bytes(131072):
+                        fh.write(chunk)
+        if is_tgz:
+            with tempfile.TemporaryDirectory() as td:
+                with tarfile.open(tmp_path, "r:gz") as tf:
+                    tf.extractall(td)
+                extracted = Path(td) / "cloudflared"
+                if not extracted.is_file():
+                    raise RuntimeError("cloudflared binary not found in downloaded archive")
+                shutil.move(str(extracted), str(dest))
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+        else:
+            os.replace(tmp_path, dest)
+        if os.name != "nt":
+            st = dest.stat()
+            dest.chmod(st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        return str(dest)
+    except Exception:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
 
 
 def tailscale_info(port: int) -> dict[str, Any]:
@@ -127,24 +206,37 @@ class PersonalCloudManager:
     """Manages free Personal MiniMuse Cloud connectivity (LAN + Tailscale + Cloudflare Quick Tunnel)."""
 
     port: int = 8787
+    data_dir: Path | None = None
     _proc: asyncio.subprocess.Process | None = None
     _reader_task: asyncio.Task[None] | None = None
     _tunnel_url: str = ""
     _tunnel_error: str = ""
     _tunnel_starting: bool = False
+    _installing: bool = False
     _ready_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     def lan_urls(self) -> list[str]:
         return [f"http://{ip}:{self.port}" for ip in local_ipv4_addrs()]
 
-    def best_url(self, ts: dict[str, Any] | None = None) -> str:
+    def all_urls(self, ts: dict[str, Any] | None = None) -> list[str]:
+        """All reachable URLs ordered from best remote (Tunnel -> Tailscale) to Home Wi-Fi LAN."""
+        out: list[str] = []
         if self._tunnel_url:
-            return self._tunnel_url
+            out.append(self._tunnel_url.rstrip("/"))
         tail = ts if ts is not None else tailscale_info(self.port)
         if tail.get("url"):
-            return str(tail["url"])
-        lans = self.lan_urls()
-        return lans[0] if lans else f"http://127.0.0.1:{self.port}"
+            u = str(tail["url"]).rstrip("/")
+            if u and u not in out:
+                out.append(u)
+        for u in self.lan_urls():
+            cu = u.rstrip("/")
+            if cu and cu not in out:
+                out.append(cu)
+        return out
+
+    def best_url(self, ts: dict[str, Any] | None = None) -> str:
+        urls = self.all_urls(ts)
+        return urls[0] if urls else f"http://127.0.0.1:{self.port}"
 
     def status(self, *, probe_tailscale: bool = True) -> dict[str, Any]:
         ts = (
@@ -159,32 +251,45 @@ class PersonalCloudManager:
             }
         )
         running = self._proc is not None and self._proc.returncode is None
+        installed = cloudflared_bin(self.data_dir) is not None
         return {
             "host": socket.gethostname(),
             "port": self.port,
             "lan_urls": self.lan_urls(),
+            "all_urls": self.all_urls(ts),
             "tailscale": ts,
-            "cloudflared_installed": cloudflared_bin() is not None,
+            "cloudflared_installed": installed,
             "tunnel": {
                 "running": running,
                 "starting": bool(self._tunnel_starting and running),
+                "installing": bool(self._installing),
+                "needs_install": not installed,
                 "url": self._tunnel_url if running else "",
                 "error": self._tunnel_error,
             },
             "best_url": self.best_url(ts),
         }
 
-    async def start_tunnel(self, timeout_s: float = 18.0) -> dict[str, Any]:
+    async def start_tunnel(self, timeout_s: float = 20.0, *, auto_install: bool = False) -> dict[str, Any]:
         if self._proc is not None and self._proc.returncode is None and self._tunnel_url:
             return self.status(probe_tailscale=True)
-        binary = cloudflared_bin()
+        binary = cloudflared_bin(self.data_dir)
         if not binary:
-            self._tunnel_error = (
-                "cloudflared is not installed. Install free cloudflared from Cloudflare Downloads "
-                "(winget install Cloudflare.cloudflared on Windows, brew install cloudflared on macOS) "
-                "or use Tailscale / Direct P2P Sync below."
-            )
-            return self.status(probe_tailscale=True)
+            if not auto_install:
+                self._tunnel_error = ""
+                return self.status(probe_tailscale=True)
+            if self.data_dir is None:
+                self._tunnel_error = "No data directory configured to install cloudflared."
+                return self.status(probe_tailscale=True)
+            self._installing = True
+            self._tunnel_error = ""
+            try:
+                binary = await install_cloudflared(self.data_dir)
+            except Exception as exc:  # noqa: BLE001
+                self._tunnel_error = f"Could not automatically install cloudflared: {exc}"
+                return self.status(probe_tailscale=True)
+            finally:
+                self._installing = False
 
         await self.stop_tunnel()
         self._tunnel_error = ""
@@ -265,4 +370,4 @@ class PersonalCloudManager:
         return self.status(probe_tailscale=True)
 
 
-__all__ = ["PersonalCloudManager", "cloudflared_bin", "tailscale_info"]
+__all__ = ["PersonalCloudManager", "cloudflared_bin", "install_cloudflared", "tailscale_info"]

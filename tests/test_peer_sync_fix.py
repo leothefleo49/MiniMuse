@@ -415,4 +415,71 @@ def test_avatar_library_situations_border_glow_and_ip_healing(tmp_path: Path) ->
     assert r_wc.json()["token"]
 
 
+def test_sync_token_retention_multi_url_healing_avatar_animated_and_vr(tmp_path: Path) -> None:
+    from nanomuse.sync.discovery import PairingManager
+    from nanomuse.sync.peer import add_pair, load_pairs
+    from nanomuse.tools.vr_quest import QuestVRTool, is_vr_headset_text
+
+    # 1. PairingManager keeps prior working tokens for the same device_id so retries never trigger 401
+    pm = PairingManager(tmp_path / "pm")
+    tok1 = pm.mint_inbound_token("phone-zflip7", "Galaxy Z Flip 7")
+    tok2 = pm.mint_inbound_token("phone-zflip7", "Galaxy Z Flip 7")
+    assert pm.verify_inbound_token(tok1) is True
+    assert pm.verify_inbound_token(tok2) is True
+
+    # 2. Multi-URL Personal Cloud exchange + return_token auto-heals vault key in pairs.json
+    pc = _make_service(tmp_path, "pc_heal")
+    phone = _make_service(tmp_path, "phone_heal")
+    pc.sync.set_personal_cloud_urls_provider(
+        lambda: ["https://my-free-tunnel.trycloudflare.com", "http://100.88.1.2:8787", "http://192.168.1.10:8787"]
+    )
+    add_pair(phone.data_dir, "http://192.168.1.10:8787", "stale-bad-token", name="PC", device_id=pc.hub.device_id, kind="computer")
+    phone.sync.reload_peers()
+
+    fresh_tok = pc.sync._get_or_mint_return_token(phone.hub.device_id, "Phone")
+    assert fresh_tok.startswith("nmpeer_")
+    assert pc.sync.pairing.verify_inbound_token(fresh_tok) is True
+
+    payload = pc.sync.export_muse_data()
+    payload["peer_sync_info"] = {
+        "device_id": pc.hub.device_id,
+        "name": pc.hub.device_name,
+        "kind": "computer",
+        "urls": pc.sync._my_reachable_urls(),
+        "return_token": fresh_tok,
+    }
+    phone.sync.apply_muse_data(payload)
+    healed_pairs = load_pairs(phone.data_dir)
+    assert any("https://my-free-tunnel.trycloudflare.com" in (p.get("urls") or []) for p in healed_pairs)
+    phone.sync.reload_peers()
+    assert phone.sync.peers[0]["token"] == fresh_tok
+
+    # 3. Profile.avatar_animated toggle persists and round-trips
+    pc.update_profile({"avatar_animated": False, "avatar_bg_mode": "default"})
+    assert pc.profile.avatar_animated is False
+    assert pc.profile.avatar_bg_mode == "default"
+    pc.update_profile({"avatar_animated": True})
+    assert pc.profile.avatar_animated is True
+
+    # 4. Meta Quest / VR headset detection & tool registration + watch_target serial inference
+    assert is_vr_headset_text("Oculus Quest 3 eureka") is True
+    assert is_vr_headset_text("PICO 4 Ultra") is True
+    assert is_vr_headset_text("Samsung SM-F741U") is False
+    assert any(t.name == "quest_control" for t in pc.app.tools.tools)
+    assert QuestVRTool(pc.data_dir, pc.workspace()).name == "quest_control"
+
+    (pc.data_dir / "watch_target.json").write_text(
+        json.dumps({"target": "adb-R5GL43AHMVF-Pb01xS._adb-tls-connect._tcp"}), encoding="utf-8"
+    )
+    app = create_app(pc.settings, service=pc)
+    tc = TestClient(app)
+    r_w = tc.get("/api/watch/devices")
+    assert r_w.status_code == 200
+    assert r_w.json()["auto"]["saved"]["serial"] == "R5GL43AHMVF"
+    r_vr = tc.get("/api/vr/devices")
+    assert r_vr.status_code == 200
+    assert "headsets" in r_vr.json()
+
+
+
 

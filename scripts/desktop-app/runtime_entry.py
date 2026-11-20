@@ -254,13 +254,278 @@ def _open_standalone_browser_window(url: str) -> bool:
     return False
 
 
+def _boot_splash_html(port: int) -> str:
+    """Instant-open native splash shown while the local FastAPI server finishes booting."""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>MiniMuse</title>
+<style>
+  :root {{
+    color-scheme: dark light;
+    --bg: #111215;
+    --card: #1a1c22;
+    --fg: #f4f4f6;
+    --muted: #9a9ca8;
+    --accent: #3b82f6;
+  }}
+  @media (prefers-color-scheme: light) {{
+    :root {{
+      --bg: #f6f6f8;
+      --card: #ffffff;
+      --fg: #141518;
+      --muted: #686a75;
+      --accent: #0064d4;
+    }}
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  html, body {{
+    width: 100%; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }}
+  .wrap {{
+    display: flex; flex-direction: column; align-items: center; gap: 18px;
+    padding: 32px; text-align: center; max-width: 380px;
+  }}
+  .logo {{
+    width: 68px; height: 68px; border-radius: 22px;
+    background: linear-gradient(135deg, #0064d4, #6366f1);
+    color: #fff; font-weight: 800; font-size: 26px; letter-spacing: -0.04em;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 12px 36px rgba(0, 100, 212, 0.32);
+    animation: pulse 1.8s ease-in-out infinite;
+  }}
+  @keyframes pulse {{
+    0%, 100% {{ transform: scale(1); box-shadow: 0 12px 36px rgba(0, 100, 212, 0.30); }}
+    50% {{ transform: scale(1.04); box-shadow: 0 16px 44px rgba(99, 102, 241, 0.45); }}
+  }}
+  .title {{ font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }}
+  .status {{
+    display: inline-flex; align-items: center; gap: 10px;
+    font-size: 13.5px; color: var(--muted);
+  }}
+  .spinner {{
+    width: 15px; height: 15px; border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+    border-top-color: var(--accent);
+    animation: spin 0.75s linear infinite;
+  }}
+  @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+  .err {{
+    margin-top: 8px; padding: 12px 14px; border-radius: 14px;
+    background: rgba(239, 68, 68, 0.12); color: #ef4444;
+    font-size: 12.5px; line-height: 1.45; display: none; word-break: break-word;
+  }}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="logo">MM</div>
+    <div class="title">MiniMuse</div>
+    <div class="status" id="st"><span class="spinner"></span><span id="msg">Starting MiniMuse runtime…</span></div>
+    <div class="err" id="err"></div>
+  </div>
+  <script>
+    (function() {{
+      const port = {int(port)};
+      const start = Date.now();
+      const msgEl = document.getElementById("msg");
+      const errEl = document.getElementById("err");
+      let done = false;
+
+      async function poll() {{
+        if (done) return;
+        const elapsed = (Date.now() - start) / 1000;
+        if (elapsed > 2.5 && msgEl) msgEl.textContent = "Loading workspace & local runtime…";
+        try {{
+          if (window.pywebview && window.pywebview.api && window.pywebview.api.get_boot_status) {{
+            const info = await window.pywebview.api.get_boot_status();
+            if (info && info.error) {{
+              done = true;
+              if (errEl) {{ errEl.style.display = "block"; errEl.textContent = info.error; }}
+              if (msgEl) msgEl.textContent = "Startup failed";
+              return;
+            }}
+            if (info && info.ready && info.url) {{
+              done = true;
+              if (msgEl) msgEl.textContent = "Opening MiniMuse…";
+              window.location.replace(info.url);
+              return;
+            }}
+          }} else {{
+            const r = await fetch("http://127.0.0.1:" + port + "/api/health", {{ cache: "no-store" }});
+            if (r.ok) {{
+              done = true;
+              window.location.replace("http://127.0.0.1:" + port + "/?shell=desktop");
+              return;
+            }}
+          }}
+        }} catch (_) {{}}
+        setTimeout(poll, 120);
+      }}
+      window.addEventListener("pywebviewready", poll);
+      setTimeout(poll, 40);
+    }})();
+  </script>
+</body>
+</html>"""
+
+
+def _apply_win32_fullscreen(win: object, enabled: bool, saved: dict[str, object]) -> bool:
+    """True edge-to-edge borderless fullscreen on Windows WinForms / WebView2 with zero
+    frame/taskbar margin gaps on any DPI or monitor."""
+    if sys.platform != "win32":
+        return False
+    form = getattr(win, "native", None)
+    if form is None:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        import clr  # type: ignore[import-not-found]
+        clr.AddReference("System.Windows.Forms")
+        clr.AddReference("System.Drawing")
+        import System  # type: ignore[import-not-found]
+        import System.Windows.Forms as WinForms  # type: ignore[import-not-found]
+
+        class _RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", ctypes.c_long),
+                ("top", ctypes.c_long),
+                ("right", ctypes.c_long),
+                ("bottom", ctypes.c_long),
+            ]
+
+        class _MONITORINFO(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("rcMonitor", _RECT),
+                ("rcWork", _RECT),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        user32 = ctypes.windll.user32
+        GWL_STYLE = -16
+        GWL_EXSTYLE = -20
+        WS_CAPTION = 0x00C00000
+        WS_THICKFRAME = 0x00040000
+        WS_MINIMIZEBOX = 0x00020000
+        WS_MAXIMIZEBOX = 0x00010000
+        WS_SYSMENU = 0x00080000
+        WS_EX_DLGMODALFRAME = 0x00000001
+        WS_EX_WINDOWEDGE = 0x00000100
+        WS_EX_CLIENTEDGE = 0x00000200
+        WS_EX_STATICEDGE = 0x00020000
+        SWP_NOOWNERZORDER = 0x0200
+        SWP_FRAMECHANGED = 0x0020
+        SWP_SHOWWINDOW = 0x0040
+        MONITOR_DEFAULTTONEAREST = 2
+        HWND_TOP = 0
+
+        def _do() -> None:
+            hwnd = int(form.Handle.ToInt64())
+            if enabled:
+                if "style" not in saved:
+                    saved["style"] = user32.GetWindowLongW(hwnd, GWL_STYLE)
+                    saved["exstyle"] = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                    saved["win_state"] = form.WindowState
+                    saved["border_style"] = form.FormBorderStyle
+                    saved["bounds"] = form.Bounds
+                mon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+                mi = _MONITORINFO()
+                mi.cbSize = ctypes.sizeof(_MONITORINFO)
+                got_mi = bool(user32.GetMonitorInfoW(mon, ctypes.byref(mi)))
+                screen_bounds = WinForms.Screen.FromControl(form).Bounds
+                form.SuspendLayout()
+                form.WindowState = WinForms.FormWindowState.Normal
+                form.FormBorderStyle = getattr(WinForms.FormBorderStyle, "None")
+                style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+                exstyle = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                user32.SetWindowLongW(
+                    hwnd,
+                    GWL_STYLE,
+                    style & ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU),
+                )
+                user32.SetWindowLongW(
+                    hwnd,
+                    GWL_EXSTYLE,
+                    exstyle & ~(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE),
+                )
+                form.Bounds = screen_bounds
+                form.ResumeLayout(True)
+                if got_mi:
+                    rc = mi.rcMonitor
+                    user32.SetWindowPos(
+                        hwnd,
+                        HWND_TOP,
+                        rc.left,
+                        rc.top,
+                        rc.right - rc.left,
+                        rc.bottom - rc.top,
+                        SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+                    )
+                else:
+                    user32.SetWindowPos(
+                        hwnd,
+                        HWND_TOP,
+                        int(screen_bounds.Left),
+                        int(screen_bounds.Top),
+                        int(screen_bounds.Width),
+                        int(screen_bounds.Height),
+                        SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+                    )
+            else:
+                form.SuspendLayout()
+                if "style" in saved:
+                    user32.SetWindowLongW(hwnd, GWL_STYLE, int(saved["style"]))  # type: ignore[arg-type]
+                if "exstyle" in saved:
+                    user32.SetWindowLongW(hwnd, GWL_EXSTYLE, int(saved["exstyle"]))  # type: ignore[arg-type]
+                form.FormBorderStyle = saved.get("border_style", WinForms.FormBorderStyle.Sizable)
+                if "bounds" in saved:
+                    form.Bounds = saved["bounds"]
+                form.WindowState = saved.get("win_state", WinForms.FormWindowState.Maximized)
+                form.ResumeLayout(True)
+                user32.SetWindowPos(
+                    hwnd,
+                    HWND_TOP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0x0001 | 0x0002 | 0x0004 | SWP_NOOWNERZORDER | SWP_FRAMECHANGED,
+                )
+                saved.clear()
+
+        if getattr(form, "InvokeRequired", False):
+            form.Invoke(System.Action(_do))
+        else:
+            _do()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        _log(f"win32 edge-to-edge fullscreen fallback: {exc}")
+        return False
+
+
 def _run_native_window(
     url: str,
     *,
     storage_dir: object | None = None,
     on_close: object | None = None,
+    boot_port: int | None = None,
+    data_dir: object | None = None,
+    server_err: list[BaseException] | None = None,
 ) -> bool:
-    """Open the MiniMuse UI in a dedicated native desktop window (never a browser tab)."""
+    """Open the MiniMuse UI in a dedicated native desktop window (never a browser tab).
+
+    When ``boot_port`` is provided, opens the window INSTANTLY with a booting indicator while
+    the local server starts in the background, then navigates directly to the app URL the
+    millisecond ``/api/health`` responds.
+    """
     if os.environ.get("MINIMUSE_NO_BROWSER") or os.environ.get("BROWSER"):
         return False
     if os.environ.get("NANOMUSE_OPEN_BROWSER", "").strip().lower() in ("1", "true", "yes"):
@@ -277,13 +542,14 @@ def _run_native_window(
     start_fullscreen = False
     if state_file is not None and state_file.is_file():
         try:
-            saved = json.loads(state_file.read_text(encoding="utf-8"))
-            if isinstance(saved, dict):
-                start_fullscreen = bool(saved.get("fullscreen", False))
+            saved_json = json.loads(state_file.read_text(encoding="utf-8"))
+            if isinstance(saved_json, dict):
+                start_fullscreen = bool(saved_json.get("fullscreen", False))
         except Exception:  # noqa: BLE001
             pass
 
     fs_state = {"fullscreen": start_fullscreen}
+    win32_saved: dict[str, object] = {}
     win_holder: dict[str, object] = {}
 
     def _save_window_state() -> None:
@@ -298,6 +564,15 @@ def _run_native_window(
             pass
 
     class _DesktopWindowApi:
+        def get_boot_status(self) -> dict[str, object]:
+            if server_err:
+                return {"ready": False, "url": "", "error": f"MiniMuse server failed to start: {server_err[0]}"}
+            if boot_port is None:
+                return {"ready": True, "url": url, "error": ""}
+            if _health_info("127.0.0.1", boot_port, timeout=0.35) is not None:
+                return {"ready": True, "url": _app_url(boot_port, data_dir=data_dir), "error": ""}
+            return {"ready": False, "url": "", "error": ""}
+
         def is_fullscreen(self) -> bool:
             return bool(fs_state["fullscreen"])
 
@@ -306,35 +581,47 @@ def _run_native_window(
             w = win_holder.get("win")
             if w is not None and want != bool(fs_state["fullscreen"]):
                 try:
-                    w.toggle_fullscreen()
+                    if not _apply_win32_fullscreen(w, want, win32_saved):
+                        w.toggle_fullscreen()
                     fs_state["fullscreen"] = want
                     _save_window_state()
                 except Exception as exc:  # noqa: BLE001
-                    _log(f"toggle_fullscreen failed: {exc}")
+                    _log(f"set_fullscreen failed: {exc}")
             return bool(fs_state["fullscreen"])
 
         def toggle_fullscreen(self) -> bool:
             return self.set_fullscreen(not bool(fs_state["fullscreen"]))
 
+    use_splash = boot_port is not None and _health_info("127.0.0.1", boot_port, timeout=0.2) is None
+    win_kwargs: dict[str, object] = {
+        "width": 1220,
+        "height": 840,
+        "min_size": (420, 620),
+        "maximized": not start_fullscreen,
+        "fullscreen": False if sys.platform == "win32" else start_fullscreen,
+        "text_select": True,
+        "confirm_close": False,
+        "js_api": _DesktopWindowApi(),
+    }
+    if use_splash and boot_port is not None:
+        win_kwargs["html"] = _boot_splash_html(boot_port)
+    else:
+        win_kwargs["url"] = _app_url(boot_port, data_dir=data_dir) if boot_port is not None else url
+
     try:
-        win = webview.create_window(
-            "MiniMuse",
-            url,
-            width=1220,
-            height=840,
-            min_size=(420, 620),
-            maximized=not start_fullscreen,
-            fullscreen=start_fullscreen,
-            text_select=True,
-            confirm_close=False,
-            js_api=_DesktopWindowApi(),
-        )
+        win = webview.create_window("MiniMuse", **win_kwargs)  # type: ignore[arg-type]
     except Exception as exc:  # noqa: BLE001
         _log(f"webview.create_window failed: {exc}")
         return False
     if win is None:
         return False
     win_holder["win"] = win
+
+    if sys.platform == "win32" and start_fullscreen:
+        def _apply_initial_fs() -> None:
+            _apply_win32_fullscreen(win, True, win32_saved)
+
+        win.events.shown += _apply_initial_fs
 
     def _destroy_win() -> None:
         try:
@@ -997,20 +1284,28 @@ def _app_mode() -> None:
     srv_thread = threading.Thread(target=_serve_bg, name="minimuse-server", daemon=True)
     srv_thread.start()
 
-    if not _wait_for_health(port, wait=60.0):
-        if server_err:
-            _fatal(f"MiniMuse server failed to start: {server_err[0]}")
-            raise SystemExit(1)
-
     url = _app_url(port, data_dir=settings.data_dir)
 
     def _stop_server() -> None:
         for srv in server_ref:
             srv.should_exit = True  # type: ignore[attr-defined]
 
-    if _run_native_window(url, storage_dir=storage_dir, on_close=_stop_server):
+    # Open the native desktop window IMMEDIATELY with a booting splash instead of blocking ~5s
+    if _run_native_window(
+        url,
+        storage_dir=storage_dir,
+        on_close=_stop_server,
+        boot_port=port,
+        data_dir=settings.data_dir,
+        server_err=server_err,
+    ):
         srv_thread.join(timeout=3.0)
         return
+
+    if not _wait_for_health(port, wait=60.0):
+        if server_err:
+            _fatal(f"MiniMuse server failed to start: {server_err[0]}")
+            raise SystemExit(1)
 
     # Fallback (headless / no GUI webview engine): open chromeless app window or browser
     # and keep serving until interrupted.

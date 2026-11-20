@@ -260,20 +260,27 @@ export function SetupPromptModal({ prompt, onClose, onCompleted }: SetupPromptMo
         )}
 
         <div className="row" style={{ gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          {app && prompt.kind === "phone_control" && (
+            <button
+              type="button"
+              className="primary small"
+              onClick={() => {
+                app.openAppSettings?.();
+                setStatusMsg(t("In App Info, tap the three dots (⋮) at top-right → Allow restricted settings, then come back and tap Step 2 below."));
+              }}
+            >
+              {t("1. Allow Restricted Settings (App Info)")}
+            </button>
+          )}
           {showPermissionBtn && (
             <button type="button" className="secondary small" onClick={() => void handleGrantNativePermission()}>
               {prompt.kind === "wireless_debugging"
                 ? t("Open Developer Options")
                 : prompt.kind === "phone_control"
-                  ? t("Open Accessibility Settings")
+                  ? t("2. Open Accessibility Settings")
                   : prompt.kind === "live_notifications"
                     ? t("Enable Live Notifications")
                     : t("Grant Permission")}
-            </button>
-          )}
-          {app && prompt.kind === "phone_control" && (
-            <button type="button" className="ghost small" onClick={() => app.openAppSettings?.()}>
-              {t("Open App Info (Restricted Settings)")}
             </button>
           )}
           {showGoogleBtn && (

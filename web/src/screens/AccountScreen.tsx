@@ -4,6 +4,7 @@ import { api } from "../api";
 import { passwordMinLength } from "../cloud-config";
 import { AllowanceWays } from "../components/AllowanceWays";
 import { PageBar } from "../components/BackBar";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { inputCls, primaryBtn, secondaryBtn } from "../components/Form";
 import { SignIn } from "../components/SignIn";
 import { StarNudgeOnce, useCloudConfig } from "../components/StarNudge";
@@ -92,6 +93,8 @@ function PersonalCloudSection() {
   const t = useT();
   const [status, setStatus] = useState<PersonalCloudStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [installingCf, setInstallingCf] = useState(false);
+  const [confirmInstallCf, setConfirmInstallCf] = useState(false);
   const [copied, setCopied] = useState(false);
   const [customCloudUrl, setCustomCloudUrl] = useState<string>(() => {
     try {
@@ -132,20 +135,40 @@ function PersonalCloudSection() {
     void loadStatus();
   }, []);
 
-  const toggleTunnel = async () => {
+  const startTunnelWithInstall = async (autoInstall: boolean) => {
     setBusy(true);
+    if (autoInstall) setInstallingCf(true);
     try {
-      const next = status?.tunnel.running
-        ? await api.personalCloudStop()
-        : await api.personalCloudStart();
+      const next = await api.personalCloudStart(autoInstall);
       setStatus(next);
-      if (next.tunnel.url) toast(t("Free Personal Cloud HTTPS URL ready."));
+      if (next.tunnel.url) toast(t("Free Personal Cloud HTTPS URL ready and shared with paired devices."));
       else if (next.tunnel.error) toast(next.tunnel.error);
     } catch (e) {
       toast((e as Error).message);
     } finally {
       setBusy(false);
+      setInstallingCf(false);
     }
+  };
+
+  const toggleTunnel = async () => {
+    if (status?.tunnel.running) {
+      setBusy(true);
+      try {
+        const next = await api.personalCloudStop();
+        setStatus(next);
+      } catch (e) {
+        toast((e as Error).message);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    if (status && !status.cloudflared_installed) {
+      setConfirmInstallCf(true);
+      return;
+    }
+    await startTunnelWithInstall(false);
   };
 
   const copyUrl = (u: string) => {
@@ -169,11 +192,18 @@ function PersonalCloudSection() {
                 <span>{t("Best Personal Cloud Address")}</span>
               </div>
               <div className="truncate font-mono text-[12px] text-muted mt-0.5">{status.best_url}</div>
+              <div className="text-[11.5px] text-muted mt-1 leading-snug">
+                {status.tunnel.url
+                  ? t("Active via Free Cloudflare HTTPS Tunnel — automatically shared with your paired devices so they sync anywhere.")
+                  : status.tailscale.running && status.tailscale.url
+                    ? t("Active via Tailscale private mesh — automatically shared with your paired devices anywhere.")
+                    : t("Currently your home Wi-Fi address by default. Start Free Tunnel below (or install Tailscale) to sync away from home — paired devices receive the new address automatically.")}
+              </div>
             </div>
             <button
               type="button"
               onClick={() => copyUrl(status.best_url)}
-              className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-3 py-1.5 text-[12px] font-medium hover:bg-surface-2/80"
+              className="shrink-0 inline-flex items-center gap-1 rounded-full bg-surface-2 px-3 py-1.5 text-[12px] font-medium hover:bg-surface-2/80"
             >
               {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? t("Copied") : t("Copy")}
             </button>
@@ -205,13 +235,15 @@ function PersonalCloudSection() {
                 <span>{t("Free Remote HTTPS Tunnel (Cloudflare Quick Tunnel)")}</span>
               </div>
               <div className="text-[12px] text-muted truncate mt-0.5">
-                {status.tunnel.url
-                  ? status.tunnel.url
-                  : status.tunnel.error
-                    ? status.tunnel.error
-                    : status.cloudflared_installed
-                      ? t("Ready — 1 click creates a temporary free HTTPS URL with zero account")
-                      : t("Install free cloudflared CLI (`winget install Cloudflare.cloudflared` or `brew install cloudflared`)")}
+                {installingCf
+                  ? t("Downloading & setting up Cloudflare Quick Tunnel automatically…")
+                  : status.tunnel.url
+                    ? status.tunnel.url
+                    : status.tunnel.error
+                      ? status.tunnel.error
+                      : status.cloudflared_installed
+                        ? t("Ready — 1 click creates a temporary free HTTPS URL with zero account")
+                        : t("Click Start Free Tunnel — MiniMuse will ask permission to download & set up cloudflared automatically.")}
               </div>
             </div>
             <button
@@ -221,9 +253,24 @@ function PersonalCloudSection() {
               className={status.tunnel.running ? secondaryBtn : primaryBtn}
             >
               {busy ? <Loader2 size={14} className="animate-spin" /> : <Power size={14} />}
-              {status.tunnel.running ? t("Stop Tunnel") : t("Start Free Tunnel")}
+              {installingCf
+                ? t("Installing…")
+                : status.tunnel.running
+                  ? t("Stop Tunnel")
+                  : t("Start Free Tunnel")}
             </button>
           </div>
+          <ConfirmDialog
+            open={confirmInstallCf}
+            title={t("Install Cloudflare Tunnel automatically?")}
+            body={t("Cloudflare Quick Tunnel (cloudflared) is not installed on this device yet. MiniMuse will download the official free tool into your MiniMuse folder and start your private HTTPS tunnel automatically. Is that okay?")}
+            confirmLabel={t("Yes, install & start")}
+            onCancel={() => setConfirmInstallCf(false)}
+            onConfirm={() => {
+              setConfirmInstallCf(false);
+              void startTunnelWithInstall(true);
+            }}
+          />
 
           <div className="rounded-2xl border border-border/60 bg-bg px-3.5 py-2.5 space-y-2">
             <div className="text-[12px] font-medium text-fg">{t("Sync to your own cloud / self-hosted server (optional)")}</div>

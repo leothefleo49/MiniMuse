@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronUp, Download, Globe, Hand, Laptop, Loader2, MessageSquare, MoreHorizontal, Pencil, QrCode, RefreshCw, Smartphone, Square, Watch, Wifi, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Download, Glasses, Globe, Hand, Laptop, Loader2, MessageSquare, MoreHorizontal, Pencil, QrCode, RefreshCw, Smartphone, Square, Watch, Wifi, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { androidApp, discoverWatchAdbFromPhone, type WatchAdbDiscoveryResult } from "../android";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -14,7 +14,7 @@ import { useMenuKeys } from "../components/useMenuKeys";
 import { useT, type t as T } from "../i18n";
 import { kindTitle, kindWord } from "../device";
 import { useStore } from "../store";
-import type { ChromeBridgeStatus, ComputerWindowInfo, HandsStatus, HubDevice, HubView, LocalDevice, WatchCodeInfo, WatchDevicesInfo } from "../types";
+import type { ChromeBridgeStatus, ComputerWindowInfo, HandsStatus, HubDevice, HubView, LocalDevice, VrDevicesInfo, WatchCodeInfo, WatchDevicesInfo } from "../types";
 import { cx, relativeTime } from "../util";
 import { cleanPairCode, isCompletePairCode, watchFailureNotice, watchPhase, type WatchNotice } from "../watchInstall";
 
@@ -39,7 +39,7 @@ export function onlyUnlistedPhones<P extends { name?: string | null }>(phones: P
   return phones.filter((p) => !listed.some((d) => sameDeviceName(d.name, p.name)));
 }
 
-export function DevicesScreen() {
+export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {}) {
   const { state, dispatch, openThread, setTab, toast } = useStore();
   const t = useT();
   const hub = state.hub;
@@ -142,55 +142,64 @@ export function DevicesScreen() {
   };
 
   return (
-    <div className="flex h-full flex-col">
-      <PageBar
-        title={t("Devices")}
-        actions={
-          <button type="button" onClick={() => void refresh()} aria-label={t("Refresh")} title={t("Refresh")} className="flex h-9 w-9 items-center justify-center rounded-full text-muted hover:bg-surface-2 hover:text-fg">
-            <RefreshCw size={17} className={cx(refreshing && "animate-spin")} />
-          </button>
-        }
-      />
-      <div className="@container flex-1 overflow-y-auto pb-8">
+    <div className={embedded ? "flex flex-col" : "flex h-full flex-col"}>
+      {!embedded && (
+        <PageBar
+          title={t("Devices")}
+          actions={
+            <button type="button" onClick={() => void refresh()} aria-label={t("Refresh")} title={t("Refresh")} className="flex h-9 w-9 items-center justify-center rounded-full text-muted hover:bg-surface-2 hover:text-fg">
+              <RefreshCw size={17} className={cx(refreshing && "animate-spin")} />
+            </button>
+          }
+        />
+      )}
+      <div className={embedded ? "@container pb-4" : "@container flex-1 overflow-y-auto pb-8"}>
         {/* the header: what devices are for, and how many there are */}
-        <div className="px-5 pb-4 pt-1">
-          <p className="text-[14px] leading-[20px] text-muted">{t("Every device signed in to your account is a Muse of its own, on the same conversations. Type @ and a device's name in the chat to hand it work; a computer lends its hands.")}</p>
-          {total > 0 && (
-            <p className="mt-1.5 text-[12.5px] font-medium uppercase tracking-wide text-muted">
-              {total === 1 ? t("1 device") : t("{n} devices", { n: total })} · {t("{n} online", { n: online })}
-            </p>
+        <div className={embedded ? "flex items-start justify-between gap-2 pb-4 pt-1" : "px-5 pb-4 pt-1"}>
+          <div>
+            <p className="text-[14px] leading-[20px] text-muted">{t("Every device signed in to your account is a Muse of its own, on the same conversations. Type @ and a device's name in the chat to hand it work; a computer lends its hands.")}</p>
+            {total > 0 && (
+              <p className="mt-1.5 text-[12.5px] font-medium uppercase tracking-wide text-muted">
+                {total === 1 ? t("1 device") : t("{n} devices", { n: total })} · {t("{n} online", { n: online })}
+              </p>
+            )}
+          </div>
+          {embedded && (
+            <button type="button" onClick={() => void refresh()} aria-label={t("Refresh")} title={t("Refresh")} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted hover:bg-surface-2 hover:text-fg">
+              <RefreshCw size={17} className={cx(refreshing && "animate-spin")} />
+            </button>
           )}
         </div>
 
         {(signedIn || state.settings?.cloud_mode === "cloud" || state.settings?.cloud_prompts) && (
-          <div className="px-4 pb-3">
+          <div className={embedded ? "pb-3" : "px-4 pb-3"}>
             <CloudCard account={hub?.account ?? null} onChange={() => void reload()} />
           </div>
         )}
 
         {androidApp() && (
-          <div className="px-4 pb-3">
-            <DeviceShell className="flex flex-wrap items-center justify-between gap-3">
+          <div className={embedded ? "pb-3" : "px-4 pb-3"}>
+            <DeviceShell className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0 flex-1">
-                <p className="text-[14.5px] font-semibold leading-tight">{t("Pair with your computer")}</p>
-                <p className="mt-0.5 text-[12.5px] leading-snug text-muted">
+                <p className="text-[15px] font-semibold leading-snug">{t("Pair with your computer")}</p>
+                <p className="mt-1 text-[13px] leading-relaxed text-muted">
                   {androidApp()?.mode?.() === "local"
                     ? t("Currently running locally on this phone. Scan your PC's QR code anytime to pair with it or switch.")
                     : t("Connected to a computer server. Scan a new QR code or switch back to local.")}
                 </p>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => androidApp()?.scanToPair?.()}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-full bg-accent px-3.5 text-[13px] font-medium text-accent-fg active:scale-[0.98]"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-full bg-accent px-4 text-[13px] font-medium text-accent-fg active:scale-[0.98]"
                 >
                   <QrCode size={15} /> {t("Scan QR code")}
                 </button>
                 <button
                   type="button"
                   onClick={() => setSwitchOpen(true)}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-full border border-border px-3.5 text-[13px] font-medium hover:bg-surface-2"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-full border border-border px-4 text-[13px] font-medium hover:bg-surface-2"
                 >
                   {t("Switch mode")}
                 </button>
@@ -302,9 +311,10 @@ export function DevicesScreen() {
         </div>
 
         <div className="px-4 pt-4 space-y-3">
-          <SectionLabel>{t("Chrome Side Panel & Smartwatch")}</SectionLabel>
+          <SectionLabel>{t("Chrome Side Panel, Smartwatch & VR Headsets")}</SectionLabel>
           <ChromeCompanionCard />
           <WatchPairingCard />
+          <VRHeadsetCard />
         </div>
 
         {hands && !hands.reason?.includes("phone") && local?.computer?.kind !== "phone" && (
@@ -949,7 +959,10 @@ export function WatchPairingCard() {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [notice, setNotice] = useState<WatchNotice | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [pairingSticky, setPairingSticky] = useState(false);
   const installingRef = useRef(false);
+  const codeFocusedRef = useRef(false);
+  const pairCodeRef = useRef("");
   const autoTried = useRef<Set<string>>(new Set());
   const codeRef = useRef<HTMLInputElement>(null);
 
@@ -986,7 +999,7 @@ export function WatchPairingCard() {
     setInstalling(true);
     setStatusMsg(t("Installing on your watch…"));
     try {
-      const code = cleanPairCode(opts.code ?? pairCode);
+      const code = cleanPairCode(opts.code ?? pairCodeRef.current);
       const res = await api.watchInstall({
         target: target || watchIpPort.trim() || undefined,
         connect_host_port: watchIpPort.trim() || undefined,
@@ -1002,17 +1015,27 @@ export function WatchPairingCard() {
         setStatusMsg(msg);
         setNotice(null);
         setPairCode("");
+        pairCodeRef.current = "";
+        setPairingSticky(false);
         toast(msg);
       } else {
         setStatusMsg(res.error || t("Could not install watch APK"));
-        setNotice(watchFailureNotice(res, t));
-        if (res.code === "pair_failed") setPairCode("");
+        // Never interrupt the user with a popup while they are actively typing a pairing code
+        if (!codeFocusedRef.current) {
+          setNotice(watchFailureNotice(res, t));
+        }
+        if (res.code === "pair_failed") {
+          setPairCode("");
+          pairCodeRef.current = "";
+        }
       }
       void scanAdb();
     } catch (e) {
       const err = (e as Error).message;
       setStatusMsg(err);
-      setNotice({ tone: "error", title: t("The install did not finish"), body: err, steps: [], action: "retry" });
+      if (!codeFocusedRef.current) {
+        setNotice({ tone: "error", title: t("The install did not finish"), body: err, steps: [], action: "retry" });
+      }
     } finally {
       installingRef.current = false;
       setInstalling(false);
@@ -1024,34 +1047,53 @@ export function WatchPairingCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // keep looking while the card is on screen, so a watch is noticed the moment it appears
+  // Poll gently while idle, and PAUSE completely while the user is typing or focused on the 6-digit code
   useEffect(() => {
     const id = window.setInterval(() => {
-      if (document.hidden || installingRef.current) return;
+      if (document.hidden || installingRef.current || codeFocusedRef.current || pairCodeRef.current.length > 0) return;
       void api.watchDevices().then(setAdbInfo).catch(() => undefined);
-    }, 5000);
+    }, 6000);
     return () => window.clearInterval(id);
   }, []);
 
   const phase = watchPhase(adbInfo);
+  const savedWatch = adbInfo?.auto?.saved;
+  const hasSavedWatch = Boolean(savedWatch?.target || savedWatch?.serial);
 
-  // a watch is connected and nothing was ever installed on it: do it now, no tap needed
+  useEffect(() => {
+    if (phase.phase === "pairing") setPairingSticky(true);
+    else if (phase.phase === "ready") setPairingSticky(false);
+  }, [phase.phase]);
+
+  // Only auto-install when a brand-new watch appears (never previously paired) and the user is NOT typing a code
   useEffect(() => {
     if (phase.phase !== "ready" || !phase.watchId) return;
+    if (codeFocusedRef.current || pairCodeRef.current.length > 0) return;
     const dev = adbInfo?.devices.find((d) => d.id === phase.watchId);
-    const known = !!dev?.serial && dev.serial === adbInfo?.auto?.saved?.serial;
-    if (known || autoTried.current.has(phase.watchId)) return;
+    const savedTarget = String(savedWatch?.target || "");
+    const savedSerial = String(savedWatch?.serial || "");
+    const known =
+      hasSavedWatch &&
+      (dev?.id === savedTarget ||
+        (!!dev?.serial && (dev.serial === savedSerial || savedTarget.includes(dev.serial))));
+    if (known || hasSavedWatch || autoTried.current.has(phase.watchId)) return;
     autoTried.current.add(phase.watchId);
     void pushToWatch(phase.watchId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase.phase, phase.watchId]);
+  }, [phase.phase, phase.watchId, hasSavedWatch]);
 
   const onCodeChange = (raw: string) => {
     const code = cleanPairCode(raw);
+    pairCodeRef.current = code;
     setPairCode(code);
     // six digits typed: pair, connect and install straight away
-    if (code.length === 6 && phase.phase === "pairing") void pushToWatch(undefined, { code });
+    if (code.length === 6 && (phase.phase === "pairing" || pairingSticky)) {
+      codeFocusedRef.current = false;
+      void pushToWatch(undefined, { code });
+    }
   };
+
+  const showCodeBox = phase.phase === "pairing" || pairingSticky || pairCode.length > 0;
 
   const phaseText = (() => {
     switch (phase.phase) {
@@ -1134,20 +1176,49 @@ export function WatchPairingCard() {
           <span>{installing ? t("Installing on your watch…") : phaseText}</span>
         </p>
 
-        {phase.phase === "pairing" && (
-          <input
-            ref={codeRef}
-            type="text"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            maxLength={7}
-            value={pairCode}
-            onChange={(e) => onCodeChange(e.target.value)}
-            disabled={installing}
-            placeholder={t("6-digit code from the watch")}
-            aria-label={t("6-digit code from the watch")}
-            className="w-full rounded-xl border border-accent/60 bg-bg px-3 py-2.5 text-center font-mono text-[20px] tracking-[0.35em] outline-none focus:border-accent disabled:opacity-60"
-          />
+        {hasSavedWatch && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/8 px-3 py-1.5 text-[12px] text-emerald-700 dark:text-emerald-300">
+            <span>
+              {t("Previously paired watch saved: {dev}", {
+                dev: savedWatch?.model || savedWatch?.serial || savedWatch?.target || "Watch",
+              })}
+            </span>
+            <span className="text-[11px] opacity-80">{t("No need to re-pair — tap Install to update anytime")}</span>
+          </div>
+        )}
+
+        {showCodeBox && (
+          <div className="flex items-center gap-2">
+            <input
+              ref={codeRef}
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={7}
+              value={pairCode}
+              onFocus={() => {
+                codeFocusedRef.current = true;
+              }}
+              onBlur={() => {
+                codeFocusedRef.current = false;
+              }}
+              onChange={(e) => onCodeChange(e.target.value)}
+              disabled={installing}
+              placeholder={t("6-digit code from the watch")}
+              aria-label={t("6-digit code from the watch")}
+              className="min-w-0 flex-1 rounded-xl border border-accent/60 bg-bg px-3 py-2.5 text-center font-mono text-[20px] tracking-[0.35em] outline-none focus:border-accent disabled:opacity-60"
+            />
+            {pairCode.length === 6 && (
+              <button
+                type="button"
+                disabled={installing}
+                onClick={() => void pushToWatch(undefined, { code: pairCode })}
+                className="shrink-0 rounded-xl bg-accent px-3.5 py-2.5 text-[13px] font-semibold text-accent-fg disabled:opacity-60"
+              >
+                {t("Pair")}
+              </button>
+            )}
+          </div>
         )}
 
         <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -1333,6 +1404,201 @@ export function WatchPairingCard() {
           )}
         </div>
       )}
+    </DeviceShell>
+  );
+}
+
+/**
+ * Meta Quest (Quest 2 / Quest 3 / Quest 3S / Quest Pro · Horizon OS), Pico, HTC Vive XR,
+ * and Android XR companion installer & AI controller setup card.
+ */
+export function VRHeadsetCard() {
+  const t = useT();
+  const { toast } = useStore();
+  const [vrInfo, setVrInfo] = useState<VrDevicesInfo | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [connectIp, setConnectIp] = useState("");
+  const [enableA11y, setEnableA11y] = useState(true);
+  const [enableWifi, setEnableWifi] = useState(true);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  const scanVr = async () => {
+    setScanning(true);
+    try {
+      setVrInfo(await api.vrDevices());
+    } catch {
+      /* offline */
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  useEffect(() => {
+    void scanVr();
+  }, []);
+
+  const installOnVr = async (target?: string) => {
+    setInstalling(true);
+    setStatusMsg(t("Installing MiniMuse Quest VR Edition onto your headset…"));
+    try {
+      const res = await api.vrInstall({
+        target: target || undefined,
+        connect_host_port: connectIp.trim() || undefined,
+        enable_accessibility: enableA11y,
+        enable_wifi: enableWifi,
+        auto_pair: true,
+      });
+      if (res.ok) {
+        const extras = [
+          res.accessibility_enabled ? t("Quest AI screen control enabled") : "",
+          res.wifi_target ? t("Wi-Fi ADB ready at {ip}", { ip: res.wifi_target }) : "",
+          res.auto_paired ? t("Auto-paired with {url}", { url: res.best_url || "MiniMuse" }) : "",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        const msg = t("Installed MiniMuse onto {dev}!", { dev: res.name || res.target || "VR Headset" }) + (extras ? ` ${extras}` : "");
+        setStatusMsg(msg);
+        toast(msg);
+        void scanVr();
+      } else {
+        setStatusMsg(res.error || t("Could not install onto VR headset."));
+        toast(res.error || t("Could not install onto VR headset."));
+      }
+    } catch (e) {
+      const msg = (e as Error).message;
+      setStatusMsg(msg);
+      toast(msg);
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const headsets = vrInfo?.headsets ?? [];
+  const readyHeadset = headsets.find((h) => h.state === "device");
+  const isRunningOnVr = Boolean(androidApp()?.isVrHeadset?.());
+
+  return (
+    <DeviceShell className="space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded-2xl bg-surface-2 p-2.5 text-fg">
+            <Glasses size={19} />
+          </div>
+          <div>
+            <div className="text-[15px] font-semibold">{t("Meta Quest & VR Headsets (Horizon OS / XR)")}</div>
+            <p className="text-[12.5px] text-muted leading-snug mt-0.5">
+              {t("Run MiniMuse as a resizable floating spatial window in Passthrough or VR on Meta Quest 2/3/3S/Pro, Pico, and Android XR — with full AI models (better than Meta AI), voice calls, app launching, APK/file downloads, and Quest control.")}
+            </p>
+          </div>
+        </div>
+        {isRunningOnVr && (
+          <span className="shrink-0 rounded-full bg-emerald-500/15 px-2.5 py-1 text-[11.5px] font-semibold text-emerald-600 dark:text-emerald-400">
+            {t("Running in VR")}
+          </span>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-accent/30 bg-accent/5 p-3.5 space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-[13px] font-semibold text-fg">{t("One-Click Meta Quest / VR Install & AI Control Setup")}</div>
+          {readyHeadset ? (
+            <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+              {t("Detected: {dev}", { dev: readyHeadset.name || readyHeadset.id })}
+            </span>
+          ) : vrInfo?.saved?.name ? (
+            <span className="rounded-full bg-surface-2 px-2.5 py-0.5 text-[11px] font-medium text-muted">
+              {t("Last headset: {dev}", { dev: vrInfo.saved.name })}
+            </span>
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap gap-3 text-[12px] text-muted">
+          <label className="inline-flex cursor-pointer items-center gap-1.5">
+            <input
+              type="checkbox"
+              checked={enableA11y}
+              onChange={(e) => setEnableA11y(e.target.checked)}
+              className="accent-accent"
+            />
+            <span>{t("Enable Quest AI screen control (Accessibility)")}</span>
+          </label>
+          <label className="inline-flex cursor-pointer items-center gap-1.5">
+            <input
+              type="checkbox"
+              checked={enableWifi}
+              onChange={(e) => setEnableWifi(e.target.checked)}
+              className="accent-accent"
+            />
+            <span>{t("Turn on Wi-Fi ADB (control wirelessly after unplugging)")}</span>
+          </label>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 pt-0.5">
+          <button
+            type="button"
+            disabled={installing}
+            onClick={() => void installOnVr(readyHeadset?.id)}
+            className="inline-flex items-center gap-1.5 rounded-full bg-accent px-4 py-2 text-[13px] font-semibold text-accent-fg shadow-sm hover:opacity-95 disabled:opacity-60"
+          >
+            {installing ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+            {installing ? t("Installing on VR Headset…") : t("Install & Set Up on Meta Quest / VR")}
+          </button>
+
+          <a
+            href={api.vrApkUrl()}
+            download
+            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3.5 py-1.5 text-[12.5px] font-medium text-fg hover:bg-surface-2"
+          >
+            <Download size={13} />
+            {t("Download Quest / VR APK")}
+          </a>
+
+          <button
+            type="button"
+            disabled={scanning}
+            onClick={() => void scanVr()}
+            className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-3 py-1.5 text-[12px] text-muted hover:text-fg"
+          >
+            {scanning ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            {t("Detect Headset")}
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <input
+            type="text"
+            value={connectIp}
+            onChange={(e) => setConnectIp(e.target.value)}
+            placeholder={t("Optional Quest Wi-Fi IP:5555 (if not on USB)")}
+            className="min-w-[200px] flex-1 rounded-xl border border-border bg-surface px-3 py-1.5 text-[12.5px] outline-none focus:ring-1 focus:ring-accent/40"
+          />
+        </div>
+
+        {statusMsg && (
+          <div className="rounded-xl bg-surface px-3 py-2 text-[12px] leading-snug text-fg border border-border/60">
+            {statusMsg}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setGuideOpen((v) => !v)}
+          className="inline-flex items-center gap-1 text-[12px] font-medium text-accent hover:underline"
+        >
+          {guideOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          {t("How to install on Meta Quest, SideQuest, or Pico")}
+        </button>
+
+        {guideOpen && (
+          <div className="rounded-xl border border-border/60 bg-surface p-3 text-[12px] leading-relaxed text-muted space-y-1.5">
+            <div><strong className="text-fg">{t("Option 1 — Direct USB / Wi-Fi from MiniMuse (easiest):")}</strong> {t("Enable Developer Mode in the Meta Horizon mobile app, plug your Quest into this PC via USB-C, tap 'Always allow from this computer' inside the headset, then click 'Install & Set Up on Meta Quest / VR' above.")}</div>
+            <div><strong className="text-fg">{t("Option 2 — SideQuest or Quest Browser:")}</strong> {t("Click 'Download Quest / VR APK' (or open GitHub Releases inside Meta Quest Browser) and sideload MiniMuse-quest-vr.apk via SideQuest or a Quest file manager. Launch it from Unknown Sources as a resizable floating spatial window!")}</div>
+            <div><strong className="text-fg">{t("AI Quest Control:")}</strong> {t("Once connected (USB or Wi-Fi ADB), just ask MiniMuse in chat to check Quest battery/storage, launch VR games, open WebXR links, download APKs/mods onto your Quest, or take VR screenshots!")}</div>
+          </div>
+        )}
+      </div>
     </DeviceShell>
   );
 }

@@ -14,6 +14,17 @@ class Bridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun version(): String = BuildConfig.VERSION_NAME
 
+    /** True when running on a standalone VR/XR headset (Meta Quest, Pico, Vive XR, Android XR). */
+    @JavascriptInterface
+    fun isVrHeadset(): Boolean = activity.isVrHeadset()
+
+    /** Friendly hardware model name for VR/XR headsets and phones. */
+    @JavascriptInterface
+    fun vrDeviceName(): String = listOf(android.os.Build.MANUFACTURER, android.os.Build.MODEL)
+        .filter { it.isNotBlank() }
+        .joinToString(" ")
+        .trim()
+
     @JavascriptInterface
     fun serverUrl(): String = prefs.serverUrl
 

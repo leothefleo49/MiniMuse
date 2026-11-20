@@ -8,6 +8,10 @@ export interface AndroidBridge {
   serverUrl(): string;
   /** "local" when the server runs on this phone, "remote" when it is the user's computer. */
   mode?(): string;
+  /** True when running on a standalone VR/XR headset (Meta Quest, Pico, Vive XR, Android XR). */
+  isVrHeadset?(): boolean;
+  /** Friendly hardware model name for VR/XR headsets and phones. */
+  vrDeviceName?(): string;
   notificationsEnabled(): boolean;
   setNotificationsEnabled(on: boolean): void;
   disconnect(): void;

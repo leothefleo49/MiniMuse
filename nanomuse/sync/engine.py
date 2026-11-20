@@ -283,6 +283,51 @@ class ConversationSync:
         self.last_pull_at: str | None = None
         self.last_push_at: str | None = None
         self.last_error = ""
+        self._personal_cloud_urls_fn: Any = None
+
+    def set_personal_cloud_urls_provider(self, fn: Any) -> None:
+        """Hook from the API server returning [tunnel_url, tailscale_url, *lan_urls]."""
+        self._personal_cloud_urls_fn = fn
+
+    def _my_reachable_urls(self) -> list[str]:
+        """All URLs other devices can use to reach this MiniMuse (Tunnel -> Tailscale -> LAN)."""
+        port = int(getattr(self.svc.settings.server, "port", 8787) or 8787)
+        host = str(getattr(self.svc.settings.server, "host", "127.0.0.1") or "127.0.0.1")
+        out: list[str] = []
+        if callable(self._personal_cloud_urls_fn):
+            try:
+                for u in self._personal_cloud_urls_fn() or []:
+                    cu = str(u or "").strip().rstrip("/")
+                    if cu.startswith(("http://", "https://")) and cu not in out:
+                        out.append(cu)
+            except Exception:
+                pass
+        for u in candidate_urls(port, host):
+            cu = str(u or "").strip().rstrip("/")
+            if cu.startswith(("http://", "https://")) and cu not in out:
+                out.append(cu)
+        return out
+
+    def _get_or_mint_return_token(self, peer_id: str, peer_name: str = "") -> str:
+        """Return a stable, valid inbound nmpeer_ token for a known paired peer so we can
+        auto-heal stale or missing tokens over an already-authenticated reverse sync link."""
+        from nanomuse.sync.peer import _pair_slot
+        from nanomuse.vault.vault import CredentialVault
+
+        clean_id = str(peer_id or "").strip()
+        if not clean_id:
+            return ""
+        slot = "RET_" + _pair_slot(clean_id)
+        try:
+            vault = CredentialVault(self.svc.data_dir / "vault.enc", self.svc.data_dir / "vault.key")
+            existing = str(vault.get(slot) or "").strip()
+            if existing and self.pairing.verify_inbound_token(existing):
+                return existing
+            tok = self.pairing.mint_inbound_token(clean_id, peer_name)
+            vault.set(slot, tok)
+            return tok
+        except Exception:
+            return self.pairing.mint_inbound_token(clean_id, peer_name)
 
     # ------------------------------------------------------------------ what this device keeps
     def _migrate_side_chats(self) -> None:
@@ -1891,35 +1936,46 @@ class ConversationSync:
             self.svc.bus.publish({"kind": "sync", "sync": self.view()})
         return {"applied": total_applied, "pushed": total_pushed, "peers": self.peers_view()}
 
-    async def _refresh_peer_identity(self, peer: dict[str, str]) -> None:
-        """Ask the peer's /v1/sync/hello for its real name, kind, and device_id so stale
-        'localhost' names or previously collided IDs heal automatically, and scan the
-        current Wi-Fi /24 if the peer moved to a new IP address."""
+    async def _refresh_peer_identity(self, peer: dict[str, Any]) -> None:
+        """Ask the peer's /v1/sync/hello for its real name, kind, device_id, and latest
+        Personal Cloud / Tailscale / Tunnel / LAN URLs so stale names, IPs, or away-from-home
+        addresses heal automatically across any Wi-Fi or cellular network."""
         import httpx
-        from nanomuse.sync.discovery import candidate_urls
 
         base = str(peer.get("url") or "").strip().rstrip("/")
-        if not base:
+        candidates: list[str] = []
+        for u in [base, *(peer.get("urls") or [])]:
+            cu = str(u or "").strip().rstrip("/")
+            if cu.startswith(("http://", "https://")) and cu not in candidates:
+                candidates.append(cu)
+        if not candidates:
             return
         my_port = int(getattr(self.svc.settings.server, "port", 8787) or 8787)
-        my_kind = "phone" if self.svc.app.device is not None else "computer"
+        my_kind = self._local_kind()
+        my_urls = self._my_reachable_urls()
         headers = {
             "X-Nanomuse-Device-Id": self.svc.hub.device_id,
             "X-Nanomuse-Device-Name": self.svc.hub.device_name,
             "X-Nanomuse-Device-Kind": my_kind,
             "X-Nanomuse-Device-Port": str(my_port),
-            "X-Nanomuse-Device-Urls": ",".join(candidate_urls(my_port)[:3]),
+            "X-Nanomuse-Device-Urls": ",".join(my_urls[:6]),
         }
         info: dict[str, Any] | None = None
-        try:
-            async with httpx.AsyncClient(timeout=2.5) as hc:
-                r = await hc.get(base + "/v1/sync/hello", headers=headers)
-                if r.status_code == 200:
-                    info = r.json()
-        except Exception:
-            info = None
+        working_url = ""
+        async with httpx.AsyncClient(timeout=3.0) as hc:
+            for cand in candidates:
+                try:
+                    r = await hc.get(cand + "/v1/sync/hello", headers=headers)
+                    if r.status_code == 200:
+                        data = r.json()
+                        if isinstance(data, dict):
+                            info = data
+                            working_url = cand
+                            break
+                except Exception:
+                    continue
         if info is None:
-            # Peer unreachable at stored URL: scan current Wi-Fi / hotspot subnet in case its IP changed
+            # Peer unreachable at all stored URLs: scan current Wi-Fi / hotspot subnet
             await self.discovery.active_wifi_scan(port=my_port)
             if self._refresh_peer_urls():
                 pid = str(peer.get("id") or "")
@@ -1929,10 +1985,13 @@ class ConversationSync:
                         base = str(peer["url"]).rstrip("/")
                         break
                 try:
-                    async with httpx.AsyncClient(timeout=2.5) as hc:
+                    async with httpx.AsyncClient(timeout=3.0) as hc:
                         r = await hc.get(base + "/v1/sync/hello", headers=headers)
                         if r.status_code == 200:
-                            info = r.json()
+                            data = r.json()
+                            if isinstance(data, dict):
+                                info = data
+                                working_url = base
                 except Exception:
                     info = None
         if not isinstance(info, dict):
@@ -1940,7 +1999,16 @@ class ConversationSync:
         remote_name = str(info.get("name") or "").strip()
         remote_kind = str(info.get("kind") or "").strip().lower()
         remote_id = str(info.get("id") or "").strip()
+        remote_urls = [
+            str(u).strip().rstrip("/")
+            for u in (info.get("urls") or [])
+            if isinstance(u, str) and str(u).strip().startswith(("http://", "https://"))
+        ]
         changed = False
+        if working_url and working_url != base:
+            peer["url"] = working_url
+            base = working_url
+            changed = True
         if remote_name and remote_name.lower() != "localhost" and peer.get("name") != remote_name:
             peer["name"] = remote_name[:60]
             changed = True
@@ -1950,12 +2018,26 @@ class ConversationSync:
         if remote_id and remote_id != self.svc.hub.device_id and peer.get("id") != remote_id:
             peer["id"] = remote_id
             changed = True
+        merged_urls: list[str] = []
+        for u in [working_url or base, *remote_urls, *(peer.get("urls") or [])]:
+            cu = str(u or "").strip().rstrip("/")
+            if cu.startswith(("http://", "https://")) and cu not in merged_urls:
+                merged_urls.append(cu)
+        merged_urls = merged_urls[:8]
+        if merged_urls and merged_urls != (peer.get("urls") or []):
+            peer["urls"] = merged_urls
+            changed = True
         if changed:
             from nanomuse.sync.peer import save_pairs
 
             stored = load_pairs(self.svc.data_dir)
+            pid = str(peer.get("id") or "")
             for item in stored:
-                if item.get("url", "").rstrip("/") == base:
+                if (pid and item.get("id") == pid) or item.get("url", "").rstrip("/") in candidates:
+                    if peer.get("url"):
+                        item["url"] = peer["url"]
+                    if peer.get("urls"):
+                        item["urls"] = list(peer["urls"])
                     if peer.get("name"):
                         item["name"] = peer["name"]
                     if peer.get("kind"):
@@ -2261,6 +2343,9 @@ class ConversationSync:
 
         return {
             "device_id": self.svc.hub.device_id,
+            "device_name": self.svc.hub.device_name,
+            "device_kind": self._local_kind(),
+            "reachable_urls": self._my_reachable_urls(),
             "profile": self.svc.profile.to_dict(),
             "avatar_manifest": self.list_avatar_files(),
             "memories": memories,
@@ -2273,12 +2358,123 @@ class ConversationSync:
             "workspace_apps": workspace_apps,
         }
 
+    def _apply_peer_sync_info(self, payload: dict[str, Any]) -> bool:
+        """Auto-heal a paired peer's Personal Cloud / Tunnel / Tailscale / LAN URLs and
+        return token received over an already-authenticated sync exchange."""
+        info = payload.get("peer_sync_info")
+        if not isinstance(info, dict):
+            # Still pick up reachable_urls if provided directly on muse-data
+            did_top = str(payload.get("device_id") or "").strip()
+            urls_top = payload.get("reachable_urls")
+            if not did_top or not isinstance(urls_top, list):
+                return False
+            info = {
+                "device_id": did_top,
+                "name": str(payload.get("device_name") or ""),
+                "kind": str(payload.get("device_kind") or ""),
+                "urls": urls_top,
+                "return_token": "",
+            }
+        remote_id = str(info.get("device_id") or "").strip()
+        if not remote_id or remote_id == self.svc.hub.device_id:
+            return False
+        raw_urls = [
+            str(u).strip().rstrip("/")
+            for u in (info.get("urls") or [])
+            if isinstance(u, str) and str(u).strip().startswith(("http://", "https://"))
+        ]
+        return_tok = str(info.get("return_token") or "").strip()
+        remote_name = str(info.get("name") or "").strip()
+        remote_kind = str(info.get("kind") or "").strip().lower()
+        from nanomuse.sync.peer import _pair_slot, save_pairs
+        from nanomuse.vault.vault import CredentialVault
+
+        stored = load_pairs(self.svc.data_dir)
+        matched = None
+        for item in stored:
+            if item.get("id") == remote_id:
+                matched = item
+                break
+        if matched is None and remote_name and remote_name.lower() != "localhost":
+            for item in stored:
+                if str(item.get("name") or "").strip().lower() == remote_name.lower():
+                    matched = item
+                    break
+        if matched is None and len(stored) == 1 and remote_kind and stored[0].get("kind") == remote_kind:
+            matched = stored[0]
+        changed = False
+        if matched is not None:
+            if matched.get("id") != remote_id:
+                matched["id"] = remote_id
+                changed = True
+            if remote_name and remote_name.lower() != "localhost" and matched.get("name") != remote_name:
+                matched["name"] = remote_name[:60]
+                changed = True
+            if remote_kind in ("phone", "computer", "tablet", "watch") and matched.get("kind") != remote_kind:
+                matched["kind"] = remote_kind
+                changed = True
+            merged_urls: list[str] = []
+            for u in [*raw_urls, matched.get("url"), *(matched.get("urls") or [])]:
+                cu = str(u or "").strip().rstrip("/")
+                if cu.startswith(("http://", "https://")) and cu not in merged_urls:
+                    merged_urls.append(cu)
+            merged_urls = merged_urls[:8]
+            if merged_urls and merged_urls != (matched.get("urls") or []):
+                matched["urls"] = merged_urls
+                changed = True
+            if return_tok and return_tok.startswith("nmpeer_"):
+                # Auto-heal stored peer token so 401 "invalid or missing token" never sticks!
+                key_ref = str(matched.get("key") or "")
+                slot = ""
+                if key_ref.startswith("{{vault:") and key_ref.endswith("}}"):
+                    slot = key_ref[8:-2]
+                if not slot:
+                    slot = _pair_slot(remote_id or str(matched.get("name") or "peer"))
+                    matched["key"] = f"{{{{vault:{slot}}}}}"
+                    changed = True
+                try:
+                    vault = CredentialVault(self.svc.data_dir / "vault.enc", self.svc.data_dir / "vault.key")
+                    if str(vault.get(slot) or "").strip() != return_tok:
+                        vault.set(slot, return_tok)
+                        changed = True
+                except Exception:
+                    pass
+            if changed:
+                save_pairs(self.svc.data_dir, stored)
+                self.reload_peers()
+                # Clear stale auth error if we just healed the token
+                if return_tok:
+                    pkey = self._peer_key_of(matched)
+                    prev = self._peer_status.get(pkey)
+                    if prev and "token" in str(prev.get("last_error") or "").lower():
+                        prev["last_error"] = ""
+        elif raw_urls and return_tok and return_tok.startswith("nmpeer_"):
+            try:
+                add_pair(
+                    self.svc.data_dir,
+                    raw_urls[0],
+                    return_tok,
+                    name=remote_name,
+                    device_id=remote_id,
+                    kind=remote_kind,
+                    urls=raw_urls,
+                )
+                self.reload_peers()
+                changed = True
+            except ValueError:
+                pass
+        return changed
+
     def apply_muse_data(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Idempotently merge Muse data (profile, memories, goals, reminders, apps, USER.md)
         from a paired peer without overwriting device-local settings."""
         if not isinstance(payload, dict):
             return {"applied": False}
         counts = {"memories": 0, "goals": 0, "reminders": 0, "apps": 0, "profile": False}
+        try:
+            self._apply_peer_sync_info(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("apply_muse_data peer_sync_info: {}", exc)
         overrides = dict(
             self.state.get("device_overrides")
             or {
@@ -2313,6 +2509,7 @@ class ConversationSync:
                 "avatar_border_mode",
                 "avatar_border_color",
                 "avatar_border_glow",
+                "avatar_animated",
                 "avatar_situation_clips",
             }
             for k, v in incoming_prof.items():
@@ -2607,11 +2804,24 @@ class ConversationSync:
                             pass
                     self.apply_muse_data(remote_data)
 
-            # 2. Push our Muse data to the peer when our digest changed since last push
+            # 2. Push our Muse data + latest Personal Cloud URLs + valid return token to the peer
             local_data = self.export_muse_data()
+            peer_id = str(peer.get("id") or "").strip()
+            peer_name = str(peer.get("name") or "").strip()
+            my_urls = self._my_reachable_urls()
+            return_tok = self._get_or_mint_return_token(peer_id, peer_name) if peer_id else ""
+            local_data["peer_sync_info"] = {
+                "device_id": self.svc.hub.device_id,
+                "name": self.svc.hub.device_name,
+                "kind": self._local_kind(),
+                "urls": my_urls,
+                "return_token": return_tok,
+            }
             digest_src = json.dumps(
                 {
                     "profile": local_data.get("profile"),
+                    "urls": my_urls,
+                    "ret_sig": return_tok[-8:] if return_tok else "",
                     "m": len(local_data.get("memories") or []),
                     "g": len(local_data.get("goals") or []),
                     "r": len(local_data.get("reminders") or []),
@@ -2888,9 +3098,8 @@ class ConversationSync:
     # ------------------------------------------------------------------ Easy pairing
     def issue_pair_code(self) -> dict[str, Any]:
         info = self.pairing.issue_code()
-        port = int(getattr(self.svc.settings.server, "port", 8787) or 8787)
         host = str(getattr(self.svc.settings.server, "host", "127.0.0.1") or "127.0.0.1")
-        urls = candidate_urls(port, host)
+        urls = self._my_reachable_urls()
         did = self.svc.hub.device_id
         name = self.svc.hub.device_name
         payload: dict[str, Any] = {
@@ -2968,12 +3177,11 @@ class ConversationSync:
         )
         clean_name = _clean_peer_name(remote_name, client_ip or remote_id, clean_kind)
         peer_tok = self.pairing.mint_inbound_token(remote_id, clean_name)
-        port = int(getattr(self.svc.settings.server, "port", 8787) or 8787)
-        host = str(getattr(self.svc.settings.server, "host", "127.0.0.1") or "127.0.0.1")
-        my_urls = candidate_urls(port, host)
+        my_urls = self._my_reachable_urls()
         # If the caller also exposed URLs + a return token, record mutual peer automatically!
         if remote_urls and return_token:
-            for rurl in self._reachable_peer_urls(remote_urls, client_ip):
+            reachable = self._reachable_peer_urls(remote_urls, client_ip)
+            for rurl in reachable:
                 try:
                     add_pair(
                         self.svc.data_dir,
@@ -2982,6 +3190,7 @@ class ConversationSync:
                         name=clean_name,
                         device_id=remote_id,
                         kind=clean_kind,
+                        urls=reachable,
                     )
                     break
                 except ValueError:
@@ -3027,9 +3236,7 @@ class ConversationSync:
         norm_code = normalize_pair_code(code or str(parsed.get("code") or ""))
         if not urls and target:
             raise ValueError("Enter the other device's address, QR link, or pick a nearby device")
-        my_port = int(getattr(self.svc.settings.server, "port", 8787) or 8787)
-        my_host = str(getattr(self.svc.settings.server, "host", "127.0.0.1") or "127.0.0.1")
-        my_urls = candidate_urls(my_port, my_host)
+        my_urls = self._my_reachable_urls()
         if norm_code:
             return_token = self.pairing.mint_inbound_token(
                 str(parsed.get("id") or ""), name or str(parsed.get("name") or "")
@@ -3060,6 +3267,11 @@ class ConversationSync:
                                 base,
                                 r_kind,
                             )
+                            r_urls = [
+                                str(u).strip().rstrip("/")
+                                for u in (data.get("urls") or [])
+                                if isinstance(u, str) and str(u).strip().startswith(("http://", "https://"))
+                            ]
                             if not peer_tok:
                                 raise ValueError("Peer did not return a pairing token")
                             add_pair(
@@ -3069,6 +3281,7 @@ class ConversationSync:
                                 name=r_name,
                                 device_id=r_id,
                                 kind=r_kind,
+                                urls=[base, *r_urls, *urls],
                             )
                             self.state["enabled"] = True
                             if sync_side_chats and not self.state.get("side_chats_set"):

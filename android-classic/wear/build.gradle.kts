@@ -21,8 +21,8 @@ android {
         applicationId = "io.github.nanomuse.wear"
         minSdk = 28
         targetSdk = 36
-        versionCode = 144
-        versionName = "1.2.16"
+        versionCode = 145
+        versionName = "1.2.17"
         buildConfigField("String", "SHELL_VERSION", "\"1.0.25\"")
     }
 

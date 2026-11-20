@@ -107,18 +107,18 @@ export function MuseSheet({ open, onClose }: { open: boolean; onClose: () => voi
 
   return (
     <Sheet open={open} onClose={onClose}>
-      <div className="relative flex flex-col items-center px-1 pb-3 text-center">
-        {/* the phone's top-right button: the face on a card, to share */}
+      <div className="relative flex flex-col items-center px-1 pt-2 pb-3 text-center overflow-visible">
+        {/* the phone's top-right button: the face on a card, to share (shifted left of sheet close X) */}
         <button
           type="button"
           aria-label={t("Share avatar")}
           title={t("Share avatar")}
           onClick={() => setShare(true)}
-          className="absolute right-0 top-0 flex h-9 w-9 items-center justify-center rounded-full bg-surface-2/70 text-fg hover:bg-surface-2"
+          className="absolute right-8 -top-3 flex h-9 w-9 items-center justify-center rounded-full bg-surface-2/70 text-fg hover:bg-surface-2 z-20"
         >
           <Share2 size={16} />
         </button>
-        <div className="relative">
+        <div className="relative overflow-visible">
           <Avatar profile={state.profile} status={state.status} size={72} />
           {/* the pen badge, bottom-right of the face: straight to Avatar Studio */}
           <button

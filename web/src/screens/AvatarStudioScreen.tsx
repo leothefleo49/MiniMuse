@@ -140,6 +140,9 @@ export function AvatarStudioScreen() {
 
   const styleLabel = (id: string | null | undefined) => AVATAR_STYLES.find((s) => s.id === id)?.label;
   const provider = view?.cloud ? "nanoMuse Cloud" : providerName(view?.host ?? "", t);
+  const [previewGlow, setPreviewGlow] = useState<number | null>(null);
+  const displayProfile: Profile | null =
+    profile && previewGlow !== null ? { ...profile, avatar_border_glow: previewGlow } : profile;
 
   const saveAvatarChoice = async (next: AvatarChoice) => {
     try {
@@ -154,6 +157,7 @@ export function AvatarStudioScreen() {
           avatar_border_mode: next.avatar_border_mode,
           avatar_border_color: next.avatar_border_color,
           avatar_border_glow: next.avatar_border_glow,
+          avatar_animated: next.avatar_animated,
           avatar_situation_clips: next.avatar_situation_clips,
         },
       });
@@ -216,8 +220,8 @@ export function AvatarStudioScreen() {
 
       <div className="flex-1 overflow-y-auto px-4 pb-8 space-y-5">
         {/* the face as it is */}
-        <div className="flex flex-col items-center pt-2 text-center">
-          <FacePreview profile={profile} name={name} />
+        <div className="flex flex-col items-center pt-7 text-center overflow-visible">
+          <FacePreview profile={displayProfile} name={name} />
           {drawn && (
             <div className="mt-0.5 max-w-sm text-[12.5px] text-muted">
               {[drawn.description, styleLabel(drawn.style) && t(styleLabel(drawn.style) as string)].filter(Boolean).join(" · ")}
@@ -273,8 +277,10 @@ export function AvatarStudioScreen() {
                 avatar_border_mode: profile.avatar_border_mode ?? "theme",
                 avatar_border_color: profile.avatar_border_color ?? "",
                 avatar_border_glow: typeof profile.avatar_border_glow === "number" ? profile.avatar_border_glow : 60,
+                avatar_animated: profile.avatar_animated !== false,
                 avatar_situation_clips: profile.avatar_situation_clips ?? {},
               }}
+              onGlowPreview={setPreviewGlow}
               onChange={(next) => void saveAvatarChoice(next)}
             />
           </section>

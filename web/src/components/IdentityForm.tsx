@@ -20,6 +20,7 @@ export type Identity = Pick<
   | "avatar_border_mode"
   | "avatar_border_color"
   | "avatar_border_glow"
+  | "avatar_animated"
   | "avatar_situation_clips"
   | "tone"
   | "communication"
@@ -87,13 +88,21 @@ export function IdentityForm({
   const lang = useLocale();
   const ids = useId();
   const [seed, setSeed] = useState(7);
+  const [glowPreview, setGlowPreview] = useState<number | null>(null);
   const names = useMemo(() => pickSix(value.name, seed, lang), [value.name, seed, lang]);
   const set = (patch: Partial<Identity>) => onChange({ ...value, ...patch });
-  const preview = { ...value, proactivity: "default" as const, proactive: true, goal_interval_minutes: 60, quiet_hours: "" };
+  const preview = {
+    ...value,
+    ...(glowPreview !== null ? { avatar_border_glow: glowPreview } : {}),
+    proactivity: "default" as const,
+    proactive: true,
+    goal_interval_minutes: 60,
+    quiet_hours: "",
+  };
 
   return (
     <div className="space-y-5">
-      <div className="flex items-start gap-4">
+      <div className="flex items-start gap-4 pt-2 overflow-visible">
         <Avatar profile={preview} size={72} />
         <div className="flex-1 min-w-0 space-y-2">
           <div>
@@ -142,8 +151,10 @@ export function IdentityForm({
           avatar_border_mode: value.avatar_border_mode,
           avatar_border_color: value.avatar_border_color,
           avatar_border_glow: value.avatar_border_glow,
+          avatar_animated: value.avatar_animated,
           avatar_situation_clips: value.avatar_situation_clips,
         }}
+        onGlowPreview={setGlowPreview}
         onChange={(look) => set(look)}
         onStudio={onStudio}
       />
@@ -203,6 +214,7 @@ export function identityOf(p: Partial<Profile> | null | undefined, fallbackAvata
     avatar_border_mode: p?.avatar_border_mode ?? "theme",
     avatar_border_color: p?.avatar_border_color ?? "",
     avatar_border_glow: typeof p?.avatar_border_glow === "number" ? p.avatar_border_glow : 55,
+    avatar_animated: p?.avatar_animated !== false,
     avatar_situation_clips: p?.avatar_situation_clips ?? {},
     tone: p?.tone ?? "",
     communication: p?.communication ?? "",
