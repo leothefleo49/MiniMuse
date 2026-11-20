@@ -24,8 +24,8 @@ android {
         applicationId = "io.github.nanomuse.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 147
-        versionName = "1.2.19"
+        versionCode = 148
+        versionName = "1.2.20"
         buildConfigField("boolean", "LOCAL_RUNTIME", "true")
         buildConfigField("String", "SHELL_VERSION", "\"1.0.25\"")
         ndk { abiFilters += "arm64-v8a" }

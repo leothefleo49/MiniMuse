@@ -269,7 +269,8 @@ export function AvatarPicker({
     }
     const faceId = otherStudio || activeStudioFace?.id;
     if (!faceId) return;
-    const nextMap = { ...(value.avatar_situation_clips ?? activeStudioFace?.situations ?? {}), [sitId]: chosenFile };
+    // Only persist the explicitly modified situation override (never copy computed defaults like call clips into idle!)
+    const nextMap = { ...(value.avatar_situation_clips ?? {}), [sitId]: chosenFile };
     onChange({
       ...value,
       avatar: faceId,

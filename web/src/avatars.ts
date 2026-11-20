@@ -84,11 +84,18 @@ export function dragonClipUrl(mood: string, situationClips?: Record<string, stri
 export function studioClipUrl(
   id: string,
   mood: string,
-  _dark = false,
+  dark = false,
   updatedAt?: number,
   situationClips?: Record<string, string>,
 ): string | null {
-  const custom = situationClips?.[mood] || (mood !== "error" ? situationClips?.[clipMood(mood)] : undefined);
+  const customRaw = situationClips?.[mood] || (mood !== "error" && mood !== "call" ? situationClips?.[clipMood(mood)] : undefined);
+  // Guard against stale polluted 7x12 portrait call clips saved on non-call moods by older builds
+  const isAccidentalCall =
+    mood !== "call" &&
+    !!customRaw &&
+    customRaw.toLowerCase().includes("call-") &&
+    customRaw.toLowerCase().includes("7x12");
+  const custom = isAccidentalCall ? undefined : customRaw;
   if (custom) {
     const lower = custom.toLowerCase();
     if (lower.endsWith(".mp4") || lower.endsWith(".webm")) {
@@ -99,5 +106,8 @@ export function studioClipUrl(
     }
   }
   if (mood === "error") return null;
+  if (mood === "call") {
+    return withCacheBust(fileUrl(`avatar/${id}/${dark ? "dark-call.mp4" : "call.mp4"}`), updatedAt);
+  }
   return withCacheBust(fileUrl(`avatar/${id}/${clipMood(mood)}.mp4`), updatedAt);
 }

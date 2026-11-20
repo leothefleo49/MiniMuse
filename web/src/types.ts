@@ -1183,6 +1183,9 @@ export interface ChromeBridgeStatus {
 export interface CallCapabilities {
   supported: boolean;
   voice_loop: boolean;
+  vision?: boolean;
+  camera?: boolean;
+  screen_share?: boolean;
   mode: "openai_realtime" | "gemini_live" | "voice_loop" | string;
   native_realtime: boolean;
   provider: string;

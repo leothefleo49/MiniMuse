@@ -292,6 +292,28 @@ class Bridge(private val activity: MainActivity) {
         }
     }
 
+    /** Start native screen sharing for Live Call (Accessibility fast path or Android MediaProjection). */
+    @JavascriptInterface
+    fun startScreenShare() {
+        activity.runOnUiThread { activity.startLiveScreenShare() }
+    }
+
+    /** Stop native screen sharing for Live Call. */
+    @JavascriptInterface
+    fun stopScreenShare() {
+        activity.runOnUiThread { activity.stopLiveScreenShare() }
+    }
+
+    /** Whether native Live Call screen sharing is currently active. */
+    @JavascriptInterface
+    fun isScreenSharing(): Boolean = activity.isScreenShareActive()
+
+    /** Capture one compressed JPEG frame of the shared screen; emits `nanomuse:screen-frame`. */
+    @JavascriptInterface
+    fun captureScreenFrame(requestId: String?) {
+        activity.captureLiveScreenFrame(requestId.orEmpty())
+    }
+
     companion object {
         const val NAME = "NanoMuseAndroid"
     }

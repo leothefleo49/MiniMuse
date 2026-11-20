@@ -609,6 +609,87 @@ def test_v1219_deep_memory_missing_fts_log_export_avatar_heal_and_trycloudflare(
     assert (face_dir / "idle.mp4").stat().st_size == 2048
 
 
+def _fake_mp4_with_dims(w: int, h: int, pad: int = 128) -> bytes:
+    """Build a minimal synthetic MP4 blob carrying a valid v0 tkhd box with width/height."""
+    import struct
+
+    tkhd = bytearray(92)
+    tkhd[0:4] = b"tkhd"
+    tkhd[4] = 0  # version 0
+    # width/height at offset 4 + 76 = 80 (16.16 fixed point)
+    struct.pack_into(">II", tkhd, 80, w << 16, h << 16)
+    return b"\x00\x00\x00\x18ftypisom" + bytes(tkhd) + (b"x" * pad)
+
+
+def test_v1220_portrait_call_never_leaks_to_idle_and_live_call_vision(tmp_path: Path) -> None:
+    """v1.2.20:
+    - Portrait 7x12 call MP4 mistakenly sitting at idle.mp4 is quarantined to call.mp4 & healed back to square idle.
+    - Polluted avatar_situation_clips['idle'] pointing to call-dark-idle-7x12 is sanitized automatically.
+    - dark-call.mp4 and call.mp4 serve the dedicated call clips cleanly.
+    - Live Call capabilities advertise vision/camera/screen_share and _save_call_frame persists frames.
+    """
+    import base64
+
+    from fastapi.testclient import TestClient
+
+    from nanomuse.server.api import create_app
+    from nanomuse.server.realtime import _save_call_frame, call_capabilities
+
+    svc = _make_service(tmp_path, "v1220")
+    face_id = "1791236806916264653"
+    face_dir = svc.workspace() / "avatar" / face_id
+    face_dir.mkdir(parents=True, exist_ok=True)
+    (face_dir / "idle.webp").write_bytes(b"RIFFxxxxWEBPVP8 ")
+    portrait_bytes = _fake_mp4_with_dims(448, 768, pad=300)
+    square_bytes = _fake_mp4_with_dims(720, 720, pad=100)
+
+    # Case 1: Phone has ONLY portrait call clip sitting in idle.mp4 (square clip not yet synced!)
+    (face_dir / "idle.mp4").write_bytes(portrait_bytes)
+    svc.update_profile({
+        "avatar": face_id,
+        "avatar_situation_clips": {
+            "idle": f"avatar-{face_id}-1-call-dark-idle-abc-7x12-v1.mp4",
+        },
+    })
+    app = create_app(svc.settings, service=svc)
+    tc = TestClient(app)
+
+    r_idle = tc.get(f"/api/files/avatar/{face_id}/idle.mp4")
+    # Portrait call video must NEVER be served for idle.mp4!
+    assert r_idle.status_code == 404
+    assert not (face_dir / "idle.mp4").exists()
+    # And it was preserved cleanly as call.mp4 for Live Call!
+    assert (face_dir / "call.mp4").is_file()
+    assert (face_dir / "call.mp4").read_bytes() == portrait_bytes
+    assert "idle" not in (svc.profile.avatar_situation_clips or {})
+
+    # Case 2: Once square avatar-<id>-1.mp4 + dark call clip exist, idle.mp4 heals to square & dark-call.mp4 serves dark call
+    (face_dir / f"avatar-{face_id}-1.mp4").write_bytes(square_bytes)
+    dark_call_bytes = _fake_mp4_with_dims(448, 768, pad=450)
+    (face_dir / f"avatar-{face_id}-1-call-dark-idle-abc-7x12-v1.mp4").write_bytes(dark_call_bytes)
+
+    r_lib = tc.get("/api/avatar/library")
+    assert r_lib.status_code == 200
+    face_info = next(f for f in r_lib.json()["faces"] if f["id"] == face_id)
+    assert face_info["situations"]["idle"] == f"avatar-{face_id}-1.mp4"
+    assert (face_dir / "idle.mp4").read_bytes() == square_bytes
+
+    r_dark_call = tc.get(f"/api/files/avatar/{face_id}/dark-call.mp4")
+    assert r_dark_call.status_code == 200
+    assert r_dark_call.content == dark_call_bytes
+
+    # Case 3: Live Call capabilities & live frame saving
+    caps = call_capabilities(svc)
+    assert caps["vision"] is True
+    assert caps["camera"] is True
+    assert caps["screen_share"] is True
+    fake_jpg = base64.b64encode(b"\xff\xd8\xff\xe0FAKEJPEG\xff\xd9").decode("ascii")
+    rel = _save_call_frame(svc, f"data:image/jpeg;base64,{fake_jpg}", "screen")
+    assert rel is not None and rel.startswith("attachments/live-screen-")
+    assert (svc.workspace() / rel).is_file()
+
+
+
 
 
 

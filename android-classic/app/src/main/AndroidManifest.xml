@@ -15,6 +15,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Keep it running (docs/android.md): each one is a page the user opens from Settings -->
@@ -227,6 +228,11 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Runs the user's own nanoMuse agent server locally on the device (a Python process under a user-mode chroot) so scheduled routines, check-ins and long tasks keep running while the app is in the background. Nothing is sent anywhere but to the model provider the user configured." />
         </service>
+
+        <service
+            android:name=".ScreenShareService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
         <!-- the GUI operator's hands and eyes; the user turns it on in Android's accessibility
              settings, and the agent only ever uses it through the server (docs/gui.md) -->

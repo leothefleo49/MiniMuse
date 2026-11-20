@@ -87,6 +87,14 @@ export interface AndroidBridge {
   openDeveloperSettings?(): void;
   /** Open Android Settings → Notification Access / App Notifications for Live Notifications. */
   openNotificationListenerSettings?(): void;
+  /** Start native screen sharing for Live Call (Accessibility or MediaProjection). */
+  startScreenShare?(): void;
+  /** Stop native screen sharing for Live Call. */
+  stopScreenShare?(): void;
+  /** Whether native screen sharing is active on Android. */
+  isScreenSharing?(): boolean;
+  /** Capture a single compressed JPEG of the shared screen; emits `nanomuse:screen-frame`. */
+  captureScreenFrame?(requestId: string): void;
 }
 
 export interface WatchAdbEndpoint {
@@ -337,5 +345,60 @@ export function authenticateNativeBiometric(title: string, subtitle = ""): Promi
     };
     window.addEventListener("nanomuse:native-biometric", onResult);
     app.authenticateBiometric?.(requestId, title, subtitle);
+  });
+}
+
+export function canAndroidScreenShare(): boolean {
+  const app = androidApp();
+  return !!app && typeof app.startScreenShare === "function" && typeof app.captureScreenFrame === "function";
+}
+
+export function startAndroidScreenShare(): Promise<{ active: boolean; mode?: string; error?: string }> {
+  const app = androidApp();
+  if (!app || typeof app.startScreenShare !== "function") {
+    return Promise.resolve({ active: false, error: "Native Android screen sharing is unavailable." });
+  }
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => {
+      window.removeEventListener("nanomuse:screen-share-state", onState);
+      resolve({ active: !!app.isScreenSharing?.(), error: "Timed out waiting for screen share permission." });
+    }, 35_000);
+    const onState = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ active?: boolean; mode?: string; error?: string }>).detail;
+      window.clearTimeout(timer);
+      window.removeEventListener("nanomuse:screen-share-state", onState);
+      resolve({
+        active: !!detail?.active,
+        mode: detail?.mode,
+        error: detail?.error || undefined,
+      });
+    };
+    window.addEventListener("nanomuse:screen-share-state", onState);
+    app.startScreenShare?.();
+  });
+}
+
+export function stopAndroidScreenShare(): void {
+  androidApp()?.stopScreenShare?.();
+}
+
+export function captureAndroidScreenFrame(): Promise<string | null> {
+  const app = androidApp();
+  if (!app || typeof app.captureScreenFrame !== "function") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const requestId = `scr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const timer = window.setTimeout(() => {
+      window.removeEventListener("nanomuse:screen-frame", onFrame);
+      resolve(null);
+    }, 4000);
+    const onFrame = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ requestId?: string; ok?: boolean; jpeg?: string }>).detail;
+      if (!detail || detail.requestId !== requestId) return;
+      window.clearTimeout(timer);
+      window.removeEventListener("nanomuse:screen-frame", onFrame);
+      resolve(detail.ok && detail.jpeg ? detail.jpeg : null);
+    };
+    window.addEventListener("nanomuse:screen-frame", onFrame);
+    app.captureScreenFrame?.(requestId);
   });
 }

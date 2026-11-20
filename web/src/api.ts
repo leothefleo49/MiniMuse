@@ -754,6 +754,8 @@ export const api = {
   callCapabilities: () => request<CallCapabilities>("/api/call/capabilities"),
   setCallConfig: (provider: string, model: string) =>
     request<CallCapabilities>("/api/call/config", { method: "PUT", body: JSON.stringify({ provider, model }) }),
+  callScreenFrame: () =>
+    request<{ ok: boolean; jpeg?: string; width?: number; height?: number; error?: string }>("/api/call/screen-frame"),
   watchCode: () => request<WatchCodeInfo>("/api/watch/code", { method: "POST" }),
   watchDevices: () => request<WatchDevicesInfo>("/api/watch/devices"),
   watchInstall: (targetOrOpts?: string | WatchInstallOptions) =>

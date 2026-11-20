@@ -2538,11 +2538,41 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
 
         variants = model.get("animated_variants_mp4") if isinstance(model.get("animated_variants_mp4"), dict) else {}
         call_anims = model.get("call_idle_animations_mp4") if isinstance(model.get("call_idle_animations_mp4"), dict) else {}
-        custom_sits = model.get("situation_clips") if isinstance(model.get("situation_clips"), dict) else {}
-        prof_sits = svc.profile.avatar_situation_clips if svc.profile.avatar == face_id else {}
+        custom_sits = dict(model.get("situation_clips")) if isinstance(model.get("situation_clips"), dict) else {}
+        prof_sits = dict(svc.profile.avatar_situation_clips) if svc.profile.avatar == face_id and isinstance(svc.profile.avatar_situation_clips, dict) else {}
+
+        def _is_polluted_call_for_normal(val: Any) -> bool:
+            s = str(val or "").strip().lower()
+            return bool(s and ("call-" in s or "7x12" in s))
+
+        # Never allow an accidental Muse 7x12 portrait call-dark/light-idle clip to hijack non-call moods
+        for normal_mood in ("idle", "working", "waiting", "happy"):
+            if _is_polluted_call_for_normal(prof_sits.get(normal_mood)):
+                prof_sits.pop(normal_mood, None)
+            if _is_polluted_call_for_normal(custom_sits.get(normal_mood)):
+                custom_sits.pop(normal_mood, None)
+
+        non_call_mp4s = [
+            rel
+            for rel in display_mp4s
+            if "call-" not in Path(rel).name.lower()
+            and "7x12" not in Path(rel).name.lower()
+            and "darkmode" not in Path(rel).name.lower()
+            and "-attempt-" not in Path(rel).name.lower()
+        ]
+        exact_idle = f"avatar-{face_id}-1.mp4"
+        default_idle = (
+            str(variants.get("idle"))
+            if variants.get("idle") and not _is_polluted_call_for_normal(variants.get("idle"))
+            else (
+                exact_idle
+                if exact_idle in non_call_mp4s
+                else (non_call_mp4s[0] if non_call_mp4s else "idle.mp4")
+            )
+        )
 
         situations: dict[str, str] = {
-            "idle": str(prof_sits.get("idle") or custom_sits.get("idle") or variants.get("idle") or (display_mp4s[0] if display_mp4s else "idle.mp4")),
+            "idle": str(prof_sits.get("idle") or custom_sits.get("idle") or default_idle),
             "working": str(prof_sits.get("working") or custom_sits.get("working") or variants.get("working") or "working.mp4"),
             "waiting": str(prof_sits.get("waiting") or custom_sits.get("waiting") or variants.get("making_something") or variants.get("waiting") or "waiting.mp4"),
             "happy": str(prof_sits.get("happy") or custom_sits.get("happy") or variants.get("milestone_level_up") or variants.get("happy") or "happy.mp4"),
@@ -2590,56 +2620,169 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             "stills": all_stills[:40],
             "assets": assets,
             "situations": situations,
+            "call_clips": {
+                "light": str(call_anims.get("light") or ("call.mp4" if (face_dir / "call.mp4").is_file() else "")),
+                "dark": str(call_anims.get("dark") or ("dark-call.mp4" if (face_dir / "dark-call.mp4").is_file() else "")),
+            },
             "has_clips": len(all_mp4s) > 0,
         }
 
+    def _mp4_is_portrait_call(path: Path) -> bool:
+        """Return True if an MP4 file has portrait 7x12 call aspect ratio (height > width * 1.15)."""
+        import struct
+
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return False
+        idx = 0
+        best_w = 0.0
+        best_h = 0.0
+        while True:
+            idx = data.find(b"tkhd", idx)
+            if idx < 0 or idx + 92 > len(data):
+                break
+            ver = data[idx + 4]
+            off = idx + 4 + (88 if ver == 1 else 76)
+            if off + 8 <= len(data):
+                w = struct.unpack(">I", data[off : off + 4])[0] / 65536.0
+                h = struct.unpack(">I", data[off + 4 : off + 8])[0] / 65536.0
+                if w > 0 and h > 0:
+                    best_w, best_h = w, h
+            idx += 4
+        return best_w > 0 and best_h > best_w * 1.15
+
     def _heal_face_canonical_clips(face_dir: Path) -> None:
         """Auto-heal canonical idle/working/waiting/happy .mp4 clips if an older build
-        accidentally copied a portrait call-dark-idle (7x12) or darkmode -attempt- video into them."""
+        accidentally copied a portrait call-dark-idle (7x12) or darkmode -attempt- video into them,
+        and ensure dedicated call.mp4 / dark-call.mp4 clips are materialized for Live Call."""
         if not face_dir.is_dir():
             return
         face_id = face_dir.name
-        custom_sits = svc.profile.avatar_situation_clips if svc.profile.avatar == face_id else {}
-        if (face_dir / "avatar-model.json").is_file():
+        model_raw: dict[str, Any] = {}
+        model_path = face_dir / "avatar-model.json"
+        if model_path.is_file():
             with contextlib.suppress(Exception):
-                raw = json.loads((face_dir / "avatar-model.json").read_text(encoding="utf-8"))
-                if isinstance(raw, dict) and isinstance(raw.get("situation_clips"), dict):
-                    custom_sits = {**raw["situation_clips"], **custom_sits}
+                raw = json.loads(model_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    model_raw = raw
+
+        # Clean any stale polluted 7x12 call-* entry from non-call situation_clips
+        def _is_accidental_call(val: Any) -> bool:
+            s = str(val or "").strip().lower()
+            return bool(s and ("call-" in s and "7x12" in s))
+
+        if isinstance(model_raw.get("situation_clips"), dict):
+            sits_m = dict(model_raw["situation_clips"])
+            m_changed = False
+            for nm in ("idle", "working", "waiting", "happy"):
+                if _is_accidental_call(sits_m.get(nm)):
+                    sits_m.pop(nm, None)
+                    m_changed = True
+            if m_changed:
+                model_raw["situation_clips"] = sits_m
+                with contextlib.suppress(OSError):
+                    model_path.write_text(json.dumps(model_raw, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        if svc.profile.avatar == face_id and isinstance(svc.profile.avatar_situation_clips, dict):
+            sits_p = dict(svc.profile.avatar_situation_clips)
+            p_changed = False
+            for nm in ("idle", "working", "waiting", "happy"):
+                if _is_accidental_call(sits_p.get(nm)):
+                    sits_p.pop(nm, None)
+                    p_changed = True
+            if p_changed:
+                with contextlib.suppress(Exception):
+                    svc.update_profile({"avatar_situation_clips": sits_p})
+
+        custom_sits = dict(svc.profile.avatar_situation_clips) if svc.profile.avatar == face_id and isinstance(svc.profile.avatar_situation_clips, dict) else {}
+        if isinstance(model_raw.get("situation_clips"), dict):
+            custom_sits = {**model_raw["situation_clips"], **custom_sits}
+
         bad_sizes: set[int] = set()
         for p in face_dir.glob("*.mp4"):
             low = p.name.lower()
-            if "call-" in low or "darkmode" in low or "-attempt-" in low:
+            if "call-" in low or "7x12" in low or low in ("call.mp4", "dark-call.mp4") or "darkmode" in low or "-attempt-" in low:
                 with contextlib.suppress(OSError):
                     bad_sizes.add(p.stat().st_size)
+
+        variants = model_raw.get("animated_variants_mp4") if isinstance(model_raw.get("animated_variants_mp4"), dict) else {}
+        call_anims = model_raw.get("call_idle_animations_mp4") if isinstance(model_raw.get("call_idle_animations_mp4"), dict) else {}
+
+        # Materialize dedicated call.mp4 & dark-call.mp4 for Live Call
+        call_targets = (
+            ("call.mp4", (str(call_anims.get("light") or ""),), ("call-light-idle", "call-light", "call-dark-idle", "call-")),
+            ("dark-call.mp4", (str(call_anims.get("dark") or ""),), ("call-dark-idle", "call-dark", "call-light-idle", "call-")),
+        )
+        for cname, exact_cands, hint_cands in call_targets:
+            cdst = face_dir / cname
+            if not cdst.is_file() or cdst.stat().st_size == 0:
+                chosen_call: Path | None = None
+                for ec in exact_cands:
+                    if ec:
+                        ep = face_dir / Path(ec).name
+                        if ep.is_file() and ep.stat().st_size > 0:
+                            chosen_call = ep
+                            break
+                if chosen_call is None:
+                    for hint in hint_cands:
+                        for p in sorted(face_dir.glob("*.mp4")):
+                            if p.name.lower() not in ("call.mp4", "dark-call.mp4") and hint in p.name.lower() and p.stat().st_size > 0:
+                                chosen_call = p
+                                break
+                        if chosen_call is not None:
+                            break
+                if chosen_call is not None and chosen_call.resolve() != cdst.resolve():
+                    with contextlib.suppress(OSError):
+                        cdst.write_bytes(chosen_call.read_bytes())
+
         canonical_sources: dict[str, tuple[str, ...]] = {
-            "idle": (f"avatar-{face_id}-1.mp4", f"avatar-{face_id}.mp4"),
-            "working": (f"avatar-{face_id}-1-working.mp4",),
-            "waiting": (f"avatar-{face_id}-1-making_something.mp4",),
-            "happy": (f"avatar-{face_id}-1-milestone_level_up.mp4",),
+            "idle": tuple(x for x in (str(variants.get("idle") or ""), f"avatar-{face_id}-1.mp4", f"avatar-{face_id}.mp4") if x),
+            "working": tuple(x for x in (str(variants.get("working") or ""), f"avatar-{face_id}-1-working.mp4") if x),
+            "waiting": tuple(x for x in (str(variants.get("making_something") or ""), str(variants.get("waiting") or ""), f"avatar-{face_id}-1-making_something.mp4") if x),
+            "happy": tuple(x for x in (str(variants.get("milestone_level_up") or ""), str(variants.get("happy") or ""), f"avatar-{face_id}-1-milestone_level_up.mp4") if x),
         }
         for mood, src_names in canonical_sources.items():
-            # Respect explicit user situation override
-            if custom_sits.get(mood):
+            # Respect explicit non-call user situation override
+            override_val = str(custom_sits.get(mood) or "").strip()
+            if override_val and not _is_accidental_call(override_val):
                 continue
             dst = face_dir / f"{mood}.mp4"
+            is_portrait = dst.is_file() and _mp4_is_portrait_call(dst)
             needs_fill = False
             if not dst.is_file():
                 needs_fill = True
             else:
                 try:
                     dst_sz = dst.stat().st_size
-                    if dst_sz == 0 or dst_sz in bad_sizes:
+                    if dst_sz == 0 or dst_sz in bad_sizes or is_portrait:
                         needs_fill = True
                 except OSError:
                     needs_fill = True
             if not needs_fill:
                 continue
+            healed = False
             for sname in src_names:
-                src = face_dir / sname
-                if src.is_file() and src.stat().st_size > 0 and src.stat().st_size not in bad_sizes:
+                sname_low = sname.lower()
+                if "call-" in sname_low or "7x12" in sname_low or "darkmode" in sname_low or "-attempt-" in sname_low:
+                    continue
+                src = face_dir / Path(sname).name
+                if src.is_file() and src.stat().st_size > 0 and src.stat().st_size not in bad_sizes and not _mp4_is_portrait_call(src):
                     with contextlib.suppress(OSError):
                         dst.write_bytes(src.read_bytes())
-                    break
+                        healed = True
+                    if healed:
+                        break
+            if not healed and is_portrait and dst.is_file():
+                # Never leave a portrait 7x12 call video sitting inside idle.mp4/working.mp4!
+                # Preserve it as call.mp4 if needed, then remove the wrongly-placed non-call copy
+                # so the square still renders cleanly until peer sync restores the square clip.
+                call_dst = face_dir / "call.mp4"
+                if not call_dst.is_file() or call_dst.stat().st_size == 0:
+                    with contextlib.suppress(OSError):
+                        call_dst.write_bytes(dst.read_bytes())
+                with contextlib.suppress(OSError):
+                    dst.unlink()
 
     @app.get("/api/avatar/library", dependencies=dep)
     async def get_avatar_library() -> dict[str, Any]:
@@ -3858,6 +4001,47 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     @app.put("/api/call/config", dependencies=dep)
     async def update_call_config(body: CallConfigBody) -> dict[str, Any]:
         return set_call_config(svc, body.provider, body.model)
+
+    @app.get("/api/call/screen-frame", dependencies=dep)
+    async def get_call_screen_frame() -> dict[str, Any]:
+        """Capture a single resized JPEG of the desktop screen for Live Call screen sharing
+        (fallback when a native desktop WebView restricts browser getDisplayMedia)."""
+        import base64
+        import io
+
+        def _capture() -> dict[str, Any]:
+            img = None
+            try:
+                from PIL import ImageGrab
+
+                img = ImageGrab.grab()
+            except Exception:
+                img = None
+            if img is None:
+                try:
+                    import mss
+                    from PIL import Image
+
+                    with mss.mss() as sct:
+                        mon = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+                        raw = sct.grab(mon)
+                        img = Image.frombytes("RGB", raw.size, raw.rgb)
+                except Exception:
+                    img = None
+            if img is None:
+                return {"ok": False, "error": "Desktop screen capture unavailable on this host"}
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            max_w = 960
+            if img.width > max_w:
+                new_h = max(1, round(img.height * (max_w / img.width)))
+                img = img.resize((max_w, new_h))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=72, optimize=True)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            return {"ok": True, "jpeg": b64, "width": img.width, "height": img.height}
+
+        return await asyncio.to_thread(_capture)
 
     @app.post("/api/watch/code", dependencies=dep)
     async def create_watch_code() -> dict[str, Any]:
@@ -5644,38 +5828,53 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         face_id = face_dir.name
 
         # 1. For canonical idle/working/waiting/happy/call, check exact Muse canonical filenames first
-        if not is_dark and ext == ".mp4":
-            exact_map: dict[str, tuple[str, ...]] = {
-                "idle": (f"avatar-{face_id}-1.mp4", f"avatar-{face_id}.mp4"),
-                "working": (f"avatar-{face_id}-1-working.mp4",),
-                "waiting": (f"avatar-{face_id}-1-making_something.mp4",),
-                "happy": (f"avatar-{face_id}-1-milestone_level_up.mp4",),
-            }
-            for exact_name in exact_map.get(mood, ()):
-                cand = face_dir / exact_name
-                if cand.is_file():
-                    with contextlib.suppress(OSError):
-                        target.write_bytes(cand.read_bytes())
-                        return target
-                    return cand
+        if ext == ".mp4":
+            if mood == "call":
+                call_hints = ("call-dark-idle", "call-dark", "call-light-idle", "call-light", "call-") if is_dark else ("call-light-idle", "call-light", "call-dark-idle", "call-dark", "call-")
+                for hint in call_hints:
+                    for cand in sorted(face_dir.glob("*.mp4")):
+                        cn = cand.name.lower()
+                        if cn not in ("call.mp4", "dark-call.mp4") and hint in cn and cand.stat().st_size > 0:
+                            with contextlib.suppress(OSError):
+                                target.write_bytes(cand.read_bytes())
+                                return target
+                            return cand
+                for fb_call in ("dark-call.mp4", "call.mp4") if is_dark else ("call.mp4", "dark-call.mp4"):
+                    fbp = face_dir / fb_call
+                    if fbp.is_file() and fbp.stat().st_size > 0:
+                        return fbp
+            elif not is_dark:
+                exact_map: dict[str, tuple[str, ...]] = {
+                    "idle": (f"avatar-{face_id}-1.mp4", f"avatar-{face_id}.mp4"),
+                    "working": (f"avatar-{face_id}-1-working.mp4",),
+                    "waiting": (f"avatar-{face_id}-1-making_something.mp4",),
+                    "happy": (f"avatar-{face_id}-1-milestone_level_up.mp4",),
+                }
+                for exact_name in exact_map.get(mood, ()):
+                    cand = face_dir / exact_name
+                    if cand.is_file() and cand.stat().st_size > 0 and not _mp4_is_portrait_call(cand):
+                        with contextlib.suppress(OSError):
+                            target.write_bytes(cand.read_bytes())
+                            return target
+                        return cand
 
         hints_map: dict[str, tuple[str, ...]] = {
             "idle": ("-1.mp4", "idle"),
             "working": ("working",),
             "waiting": ("making_something", "waiting"),
             "happy": ("milestone_level_up", "happy"),
-            "call": ("call-light", "call-"),
+            "call": ("call-dark", "call-light", "call-") if is_dark else ("call-light", "call-dark", "call-"),
             "error": ("error", "idle"),
         }
         hints = hints_map.get(mood, (mood, "idle"))
-        candidates = sorted(p for p in face_dir.rglob(f"*{ext}") if p.is_file())
+        candidates = sorted(p for p in face_dir.rglob(f"*{ext}") if p.is_file() and p.stat().st_size > 0)
         for hint in hints:
             for cand in candidates:
                 cn = cand.name.lower()
                 # NEVER pick a 7x12 portrait call clip for idle/working/waiting/happy!
-                if mood != "call" and ("call-" in cn or "7x12" in cn):
+                if mood != "call" and ("call-" in cn or "7x12" in cn or cn in ("call.mp4", "dark-call.mp4") or (ext == ".mp4" and _mp4_is_portrait_call(cand))):
                     continue
-                if is_dark and "darkmode" in cn and hint in cn:
+                if is_dark and (mood == "call" or "darkmode" in cn) and hint in cn:
                     try:
                         target.write_bytes(cand.read_bytes())
                         return target
@@ -5687,16 +5886,19 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                         return target
                     except OSError:
                         return cand
-        # Fallback to canonical idle or non-dark mood file
-        for fallback_name in (f"{mood}{ext}", f"idle{ext}"):
-            fb = face_dir / fallback_name
-            if fb.is_file():
-                return fb
-        # Final fallback: prefer non-call, non-darkmode candidates
-        for cand in candidates:
-            cn = cand.name.lower()
-            if "call-" not in cn and "darkmode" not in cn and "-attempt-" not in cn:
-                return cand
+        # Fallback to canonical non-call mood/idle file
+        if mood != "call":
+            for fallback_name in (f"{mood}{ext}", f"idle{ext}"):
+                fb = face_dir / fallback_name
+                if fb.is_file() and fb.stat().st_size > 0 and not (ext == ".mp4" and _mp4_is_portrait_call(fb)):
+                    return fb
+            # Final fallback: strictly non-call, non-darkmode, non-portrait candidates only!
+            for cand in candidates:
+                cn = cand.name.lower()
+                if "call-" not in cn and "7x12" not in cn and cn not in ("call.mp4", "dark-call.mp4") and "darkmode" not in cn and "-attempt-" not in cn:
+                    if ext != ".mp4" or not _mp4_is_portrait_call(cand):
+                        return cand
+            return target
         if candidates:
             return candidates[0]
         return target
@@ -5707,7 +5909,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             target = svc.resolve_workspace_path(path)
         except PermissionError as exc:
             raise HTTPException(403, str(exc)) from exc
-        if target.is_file() and target.suffix.lower() == ".mp4" and len(Path(path).parts) >= 3 and Path(path).parts[0] == "avatar":
+        if target.suffix.lower() == ".mp4" and len(Path(path).parts) >= 3 and Path(path).parts[0] == "avatar" and target.parent.is_dir():
             _heal_face_canonical_clips(target.parent)
         if not target.is_file() or (target.suffix.lower() == ".mp4" and target.stat().st_size == 0):
             target = _resolve_avatar_fallback(path, target)

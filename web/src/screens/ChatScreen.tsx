@@ -574,6 +574,7 @@ export function ChatScreen() {
         open={callOpen}
         threadId={activeThread === DRAFT_THREAD ? "main" : activeThread}
         agentName={name}
+        profile={profile}
         onClose={() => setCallOpen(false)}
       />
       <SetupPromptModal

@@ -6,14 +6,17 @@ import android.app.DownloadManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.graphics.drawable.ColorDrawable
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.CalendarContract
 import android.provider.ContactsContract
+import android.util.Base64
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -152,6 +155,121 @@ class MainActivity : AppCompatActivity() {
     private val askPhoneSyncPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         emitPermissionsChanged()
         extractAndEmitPhoneSync()
+    }
+
+    /** True when Live Call screen sharing is using AccessibilityService.takeScreenshot() (Android 11+). */
+    @Volatile
+    private var a11yScreenShareActive = false
+
+    private val askScreenShare = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) {
+            ScreenShareService.onStartedListener = {
+                emitScreenShareState(active = true, mode = "projection", error = null)
+            }
+            ScreenShareService.onStoppedListener = { err ->
+                emitScreenShareState(active = false, mode = "projection", error = err)
+            }
+            ScreenShareService.start(this, result.resultCode, data)
+        } else {
+            emitScreenShareState(active = false, mode = "projection", error = "Screen sharing permission was cancelled.")
+        }
+    }
+
+    internal fun isScreenShareActive(): Boolean = a11yScreenShareActive || ScreenShareService.running
+
+    internal fun startLiveScreenShare() {
+        // Fast path: if Android 11+ Accessibility Service is already active, capture screenshots directly
+        // with zero system dialogs and full cross-app coverage!
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && io.github.nanomuse.app.gui.MuseAccessibilityService.instance != null) {
+            a11yScreenShareActive = true
+            emitScreenShareState(active = true, mode = "accessibility", error = null)
+            return
+        }
+        if (ScreenShareService.running) {
+            emitScreenShareState(active = true, mode = "projection", error = null)
+            return
+        }
+        try {
+            val mgr = getSystemService(MediaProjectionManager::class.java)
+            if (mgr == null) {
+                emitScreenShareState(active = false, mode = "projection", error = "Screen sharing is not supported on this device.")
+                return
+            }
+            askScreenShare.launch(mgr.createScreenCaptureIntent())
+        } catch (e: Exception) {
+            emitScreenShareState(active = false, mode = "projection", error = e.message ?: "Could not request screen share")
+        }
+    }
+
+    internal fun stopLiveScreenShare() {
+        a11yScreenShareActive = false
+        ScreenShareService.stop(this)
+        emitScreenShareState(active = false, mode = "none", error = null)
+    }
+
+    internal fun captureLiveScreenFrame(requestId: String) {
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            var b64: String? = null
+            if (ScreenShareService.running) {
+                b64 = ScreenShareService.captureLatestJpeg()
+            }
+            if (b64 == null && a11yScreenShareActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val svc = io.github.nanomuse.app.gui.MuseAccessibilityService.instance
+                if (svc != null) {
+                    val bmp = runCatching { svc.screenshot() }.getOrNull()
+                    if (bmp != null) {
+                        b64 = runCatching {
+                            val maxDim = 720f
+                            val scale = minOf(1f, maxDim / maxOf(bmp.width, bmp.height).toFloat())
+                            val scaled = if (scale < 0.99f) {
+                                Bitmap.createScaledBitmap(
+                                    bmp,
+                                    (bmp.width * scale).toInt().coerceAtLeast(160),
+                                    (bmp.height * scale).toInt().coerceAtLeast(160),
+                                    true,
+                                ).also { bmp.recycle() }
+                            } else {
+                                bmp
+                            }
+                            val baos = java.io.ByteArrayOutputStream()
+                            scaled.compress(Bitmap.CompressFormat.JPEG, 68, baos)
+                            scaled.recycle()
+                            Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+                        }.getOrNull()
+                    }
+                }
+            }
+            val payload = JSONObject()
+                .put("requestId", requestId)
+                .put("ok", !b64.isNullOrEmpty())
+                .put("jpeg", b64 ?: "")
+                .toString()
+            runOnUiThread {
+                if (::ui.isInitialized) {
+                    ui.web.evaluateJavascript(
+                        "window.dispatchEvent(new CustomEvent('nanomuse:screen-frame', {detail: $payload}))",
+                        null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun emitScreenShareState(active: Boolean, mode: String, error: String?) {
+        val payload = JSONObject()
+            .put("active", active)
+            .put("mode", mode)
+            .put("error", error ?: "")
+            .toString()
+        runOnUiThread {
+            if (::ui.isInitialized) {
+                ui.web.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('nanomuse:screen-share-state', {detail: $payload}))",
+                    null,
+                )
+            }
+        }
     }
 
     /** A home-screen shortcut's workspace file, waiting for the web app to be ready. */
@@ -1001,11 +1119,9 @@ class MainActivity : AppCompatActivity() {
         }
         if (::ui.isInitialized) {
             ui.web.removeCallbacks(barSync)
-            // In split-screen / pop-up windows this activity is "paused" the moment the
-            // other app takes focus while it is still fully on screen. Pausing the WebView
-            // then freezes its renderer and leaves a black surface, so only pause it when
-            // the window is really going away.
-            if (!isInMultiWindowMode) ui.web.onPause()
+            // In split-screen / pop-up windows (or active Live Call screen share), keep the
+            // WebView alive so screen frames & voice continue even when viewing another app.
+            if (!isInMultiWindowMode && !isScreenShareActive()) ui.web.onPause()
         }
         super.onPause()
     }
@@ -1071,6 +1187,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        a11yScreenShareActive = false
+        ScreenShareService.onStartedListener = null
+        ScreenShareService.onStoppedListener = null
+        ScreenShareService.stop(this)
         RuntimeService.listeners.remove(runtimeListener)
         takeOver?.dismiss()
         if (::ui.isInitialized) ui.web.destroy()

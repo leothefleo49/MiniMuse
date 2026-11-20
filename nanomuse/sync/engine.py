@@ -159,6 +159,8 @@ _CANONICAL_AVATAR_FILES = (
     "happy.mp4",
     "waiting.webp",
     "waiting.mp4",
+    "call.mp4",
+    "dark-call.mp4",
     "error.webp",
     "error.mp4",
     "dark-idle.webp",
@@ -2586,6 +2588,19 @@ class ConversationSync:
         # 1. Profile — sync newer profile updates and prefer custom non-default identity/avatar
         incoming_prof = payload.get("profile")
         if isinstance(incoming_prof, dict) and incoming_prof:
+            incoming_prof = dict(incoming_prof)
+            if isinstance(incoming_prof.get("avatar_situation_clips"), dict):
+                cleaned_sits = {
+                    sk: sv
+                    for sk, sv in incoming_prof["avatar_situation_clips"].items()
+                    if not (
+                        sk in ("idle", "working", "waiting", "happy")
+                        and isinstance(sv, str)
+                        and "call-" in sv.lower()
+                        and "7x12" in sv.lower()
+                    )
+                }
+                incoming_prof["avatar_situation_clips"] = cleaned_sits
             cur_prof = self.svc.profile.to_dict()
             changed = False
             defaults = {"name": ("MiniMuse", "nanoMuse", ""), "avatar": ("dragon", "none", "")}

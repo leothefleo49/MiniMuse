@@ -20,6 +20,7 @@ import base64
 import contextlib
 import json
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
 from nanomuse.logger import logger
@@ -153,6 +154,9 @@ def call_capabilities(svc: MuseService) -> dict[str, Any]:
     return {
         "supported": True,
         "voice_loop": True,
+        "vision": True,
+        "camera": True,
+        "screen_share": True,
         "mode": target["mode"],
         "native_realtime": target["native_realtime"],
         "provider": target["provider"],
@@ -206,12 +210,61 @@ async def handle_call_websocket(
     await _run_universal_voice_loop(svc, ws, thread_id=thread_id)
 
 
+def _clean_jpeg_b64(raw: Any) -> str:
+    """Strip data URL prefix and validate a base64 JPEG payload (cap at ~2 MB)."""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if s.startswith("data:"):
+        idx = s.find(",")
+        if idx >= 0:
+            s = s[idx + 1 :].strip()
+    if len(s) > 2_800_000:
+        return ""
+    return s
+
+
+def _save_call_frame(svc: MuseService, jpeg_b64: str, source: str = "camera") -> str | None:
+    """Persist a live call camera/screen-share JPEG into workspace/attachments and prune old ones."""
+    clean = _clean_jpeg_b64(jpeg_b64)
+    if not clean:
+        return None
+    try:
+        raw = base64.b64decode(clean)
+    except Exception:  # noqa: BLE001
+        return None
+    if not raw or len(raw) > 2_200_000:
+        return None
+    src_tag = "screen" if str(source or "").lower().startswith("screen") else "camera"
+    att_dir = svc.workspace() / "attachments"
+    try:
+        att_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"live-{src_tag}-{int(time.time() * 1000)}.jpg"
+        dst = att_dir / fname
+        dst.write_bytes(raw)
+        # Keep only the 16 newest live call snapshots so workspace stays clean
+        existing = sorted(
+            att_dir.glob("live-*.jpg"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for stale in existing[16:]:
+            with contextlib.suppress(OSError):
+                stale.unlink()
+        return f"attachments/{fname}"
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("save live call frame failed: {}", exc)
+        return None
+
+
 async def _run_universal_voice_loop(
     svc: MuseService, ws: WebSocket, *, thread_id: str
 ) -> None:
-    """Universal hands-free turn loop: works with any configured MiniMuse model."""
+    """Universal hands-free turn loop: works with any configured MiniMuse model,
+    including live camera and screen-share frames."""
     queue = svc.bus.subscribe()
     send_lock = asyncio.Lock()
+    latest_frame: dict[str, Any] | None = None
 
     async def safe_send(payload: dict[str, Any]) -> None:
         async with send_lock:
@@ -259,14 +312,40 @@ async def _run_universal_voice_loop(
                 svc.stop_thread(thread_id)
                 await safe_send({"kind": "interrupted"})
                 continue
+            if mtype == "video_frame":
+                jpeg = _clean_jpeg_b64(msg.get("jpeg") or msg.get("data"))
+                src = "screen" if str(msg.get("source") or "").lower().startswith("screen") else "camera"
+                if jpeg:
+                    latest_frame = {"jpeg": jpeg, "source": src, "ts": time.monotonic()}
+                    if msg.get("ack"):
+                        await safe_send({"kind": "frame_ack", "source": src})
+                continue
+            if mtype == "video_stop":
+                latest_frame = None
+                continue
             if mtype == "user_text":
                 text = str(msg.get("text") or "").strip()
                 language = str(msg.get("language") or "").strip()
-                if not text:
+                inline_jpeg = _clean_jpeg_b64(msg.get("jpeg") or msg.get("image"))
+                src = str(msg.get("source") or "").strip().lower()
+                files: list[str] = []
+                frame_b64 = inline_jpeg
+                frame_src = src
+                if not frame_b64 and latest_frame and (time.monotonic() - float(latest_frame["ts"]) < 25.0):
+                    frame_b64 = str(latest_frame["jpeg"])
+                    frame_src = str(latest_frame["source"])
+                if frame_b64:
+                    saved = _save_call_frame(svc, frame_b64, frame_src or "camera")
+                    if saved:
+                        files.append(saved)
+                if not text and not files:
                     continue
+                if not text and files:
+                    label = "shared screen" if frame_src.startswith("screen") else "live camera"
+                    text = f"Here is what I'm showing you on my {label} right now. What do you see?"
                 try:
-                    ev = svc.send(thread_id, text, language=language)
-                    await safe_send({"kind": "user_accepted", "id": ev.get("id"), "text": text})
+                    ev = svc.send(thread_id, text, files=files or None, language=language)
+                    await safe_send({"kind": "user_accepted", "id": ev.get("id"), "text": text, "has_frame": bool(files)})
                 except Exception as exc:  # noqa: BLE001
                     await safe_send({"kind": "call_error", "message": str(exc)})
             elif mtype == "end_call":
@@ -288,16 +367,20 @@ def _agent_instructions(svc: MuseService) -> str:
     return (
         f"You are {name}, a helpful, natural-sounding personal voice assistant in a live call.{user_part} "
         "Keep spoken replies clear and concise unless asked for detail. Wait patiently if the user pauses briefly. "
+        "The user may also share their live camera or screen during the call; when visual frames are shared, "
+        "respond naturally to what you see. "
         "Use `run_agent_task` whenever the user asks to check files, search the web, control apps, "
         "inspect calendar/email, create reminders, or do anything requiring MiniMuse tools."
     )
 
 
-async def _delegate_to_thread(svc: MuseService, thread_id: str, instruction: str) -> str:
+async def _delegate_to_thread(
+    svc: MuseService, thread_id: str, instruction: str, files: list[str] | None = None
+) -> str:
     """Run a delegated MiniMuse turn from inside a native realtime voice call and wait for its answer."""
     q = svc.bus.subscribe()
     try:
-        svc.send(thread_id, instruction)
+        svc.send(thread_id, instruction, files=files)
         deadline = asyncio.get_running_loop().time() + 90.0
         while asyncio.get_running_loop().time() < deadline:
             rem = deadline - asyncio.get_running_loop().time()
@@ -378,6 +461,8 @@ async def _run_openai_realtime(
                 )
             )
 
+            latest_frame: dict[str, Any] | None = None
+
             async def upstream_to_client() -> None:
                 async for raw in upstream:
                     ev = json.loads(raw)
@@ -400,8 +485,13 @@ async def _run_openai_realtime(
                             call_id = ev.get("call_id")
                             try:
                                 args = json.loads(ev.get("arguments") or "{}")
+                                extra_files: list[str] | None = None
+                                if latest_frame and (time.monotonic() - float(latest_frame["ts"]) < 25.0):
+                                    saved = _save_call_frame(svc, str(latest_frame["jpeg"]), str(latest_frame["source"]))
+                                    if saved:
+                                        extra_files = [saved]
                                 out = await _delegate_to_thread(
-                                    svc, thread_id, str(args.get("request") or "")
+                                    svc, thread_id, str(args.get("request") or ""), files=extra_files
                                 )
                             except Exception as exc:  # noqa: BLE001
                                 out = f"Task failed: {exc}"
@@ -423,6 +513,7 @@ async def _run_openai_realtime(
                         await ws.send_json({"kind": "call_error", "message": msg})
 
             async def client_to_upstream() -> None:
+                nonlocal latest_frame
                 while True:
                     msg = await ws.receive_json()
                     kind = str(msg.get("kind") or msg.get("type") or "")
@@ -435,25 +526,46 @@ async def _run_openai_realtime(
                                 }
                             )
                         )
+                    elif kind == "video_frame":
+                        jpeg = _clean_jpeg_b64(msg.get("jpeg") or msg.get("data"))
+                        src = "screen" if str(msg.get("source") or "").lower().startswith("screen") else "camera"
+                        if jpeg:
+                            latest_frame = {"jpeg": jpeg, "source": src, "ts": time.monotonic()}
+                            if msg.get("ack"):
+                                await ws.send_json({"kind": "frame_ack", "source": src})
+                    elif kind == "video_stop":
+                        latest_frame = None
                     elif kind == "commit_turn":
                         await upstream.send(json.dumps({"type": "input_audio_buffer.commit"}))
                         await upstream.send(json.dumps({"type": "response.create"}))
-                    elif kind == "user_text" and msg.get("text"):
-                        await upstream.send(
-                            json.dumps(
+                    elif kind == "user_text" and (msg.get("text") or msg.get("jpeg")):
+                        content_parts: list[dict[str, Any]] = []
+                        if msg.get("text"):
+                            content_parts.append({"type": "input_text", "text": str(msg["text"])})
+                        jpeg = _clean_jpeg_b64(msg.get("jpeg") or msg.get("image"))
+                        if not jpeg and latest_frame and (time.monotonic() - float(latest_frame["ts"]) < 25.0):
+                            jpeg = str(latest_frame["jpeg"])
+                        if jpeg:
+                            content_parts.append(
                                 {
-                                    "type": "conversation.item.create",
-                                    "item": {
-                                        "type": "message",
-                                        "role": "user",
-                                        "content": [
-                                            {"type": "input_text", "text": str(msg["text"])}
-                                        ],
-                                    },
+                                    "type": "input_image",
+                                    "image_url": f"data:image/jpeg;base64,{jpeg}",
                                 }
                             )
-                        )
-                        await upstream.send(json.dumps({"type": "response.create"}))
+                        if content_parts:
+                            await upstream.send(
+                                json.dumps(
+                                    {
+                                        "type": "conversation.item.create",
+                                        "item": {
+                                            "type": "message",
+                                            "role": "user",
+                                            "content": content_parts,
+                                        },
+                                    }
+                                )
+                            )
+                            await upstream.send(json.dumps({"type": "response.create"}))
                     elif kind == "interrupt":
                         await upstream.send(json.dumps({"type": "response.cancel"}))
                     elif kind == "end_call":
@@ -577,26 +689,62 @@ async def _run_gemini_live(
                                 }
                             )
                         )
+                    elif kind == "video_frame":
+                        jpeg = _clean_jpeg_b64(msg.get("jpeg") or msg.get("data"))
+                        src = "screen" if str(msg.get("source") or "").lower().startswith("screen") else "camera"
+                        if jpeg:
+                            await upstream.send(
+                                json.dumps(
+                                    {
+                                        "realtimeInput": {
+                                            "mediaChunks": [
+                                                {
+                                                    "mimeType": "image/jpeg",
+                                                    "data": jpeg,
+                                                }
+                                            ]
+                                        }
+                                    }
+                                )
+                            )
+                            if msg.get("ack"):
+                                await ws.send_json({"kind": "frame_ack", "source": src})
+                    elif kind == "video_stop":
+                        pass
                     elif kind == "commit_turn":
                         await upstream.send(
                             json.dumps({"realtimeInput": {"audioStreamEnd": True}})
                         )
-                    elif kind == "user_text" and msg.get("text"):
-                        await upstream.send(
-                            json.dumps(
+                    elif kind == "user_text" and (msg.get("text") or msg.get("jpeg")):
+                        parts: list[dict[str, Any]] = []
+                        if msg.get("text"):
+                            parts.append({"text": str(msg["text"])})
+                        jpeg = _clean_jpeg_b64(msg.get("jpeg") or msg.get("image"))
+                        if jpeg:
+                            parts.append(
                                 {
-                                    "clientContent": {
-                                        "turns": [
-                                            {
-                                                "role": "user",
-                                                "parts": [{"text": str(msg["text"])}],
-                                            }
-                                        ],
-                                        "turnComplete": True,
+                                    "inlineData": {
+                                        "mimeType": "image/jpeg",
+                                        "data": jpeg,
                                     }
                                 }
                             )
-                        )
+                        if parts:
+                            await upstream.send(
+                                json.dumps(
+                                    {
+                                        "clientContent": {
+                                            "turns": [
+                                                {
+                                                    "role": "user",
+                                                    "parts": parts,
+                                                }
+                                            ],
+                                            "turnComplete": True,
+                                        }
+                                    }
+                                )
+                            )
                     elif kind == "end_call":
                         break
 

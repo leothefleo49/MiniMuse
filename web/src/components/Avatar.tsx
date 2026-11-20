@@ -258,6 +258,7 @@ export function Avatar({
   size = 40,
   onClick,
   still = false,
+  moodOverride = null,
   previewClipUrl = null,
   className,
 }: {
@@ -267,6 +268,8 @@ export function Avatar({
   onClick?: () => void;
   /** no idle animation (lists, pickers) */
   still?: boolean;
+  /** Optional explicit mood override (e.g. "call" inside LiveCallModal) */
+  moodOverride?: "idle" | "working" | "waiting" | "happy" | "error" | "call" | null;
   /** Optional explicit animation/still URL to live-preview inside Avatar Studio */
   previewClipUrl?: string | null;
   className?: string;
@@ -315,7 +318,7 @@ export function Avatar({
   // a face from the studio: anything else that is not the emoji
   const studio = !dragon && profile?.avatar ? profile.avatar : null;
   // Never switch pose on click/tap so the avatar never flashes a different camera angle
-  const pose = still ? "idle" : mood;
+  const pose = moodOverride ?? (still ? "idle" : mood);
   const updatedAt = profile?.updated_at;
   const situationClips = profile?.avatar_situation_clips;
   const animationsEnabled = profile?.avatar_animated !== false;
@@ -330,12 +333,12 @@ export function Avatar({
       : dragon
         ? dragonClipUrl(pose, situationClips)
         : studio
-          ? studioClipUrl(studio, pose, false, updatedAt, situationClips)
+          ? studioClipUrl(studio, pose, pose === "call" ? isDark : false, updatedAt, situationClips)
           : null;
   // If a custom situation clip filename isn't synced yet, fall back cleanly to canonical <pose>.mp4 before still
   const canonicalFallbackClip =
     !previewIsVideo && !previewIsImage && !still && animationsEnabled && size >= CLIP_MIN_PX && studio
-      ? studioClipUrl(studio, pose, false, updatedAt, undefined)
+      ? studioClipUrl(studio, pose === "call" ? "idle" : pose, false, updatedAt, undefined)
       : null;
   const clip =
     primaryClipCandidate && !isClipTemporarilyMissing(primaryClipCandidate)
