@@ -63,7 +63,10 @@ in English and written as instructions to another assistant, not as documentatio
    turn headings against reported message counts, validate every JSON file.
 6. **Every run** - build or update in place, no duplicate copies, append to the changelog.
 7. **Updates only** - the delta rules above.
-8. **Report back** - the profile JSON block, verified totals, gaps, and how to export.
+8. **Nothing silent** - the archive's profile carries an `excluded` list naming anything the
+   export could not include (media that only lives in the chat store, files too large to
+   bundle), and the report repeats it, so nothing is claimed transferred when it is not.
+9. **Report back** - the profile JSON block, verified totals, gaps, and how to export.
 
 ## Changing it
 

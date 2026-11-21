@@ -9,7 +9,8 @@ were away.
 
 One-off items fire once and are kept as ``done`` for a while so the list shows what
 happened; repeating ones use the same cadence grammar as goal check-ins
-(``daily 08:00``, ``weekdays 07:30``, ``weekly mon 09:00``, ``monthly 1 09:00``).
+(``daily 08:00``, ``weekdays 07:30``, ``weekly mon 09:00``, ``monthly 1 09:00``,
+``every 1h`` for an interval instead of a wall-clock time).
 """
 
 from __future__ import annotations
@@ -157,7 +158,7 @@ class ReminderStore:
             if parse_check_in(repeat) is None:
                 raise ValueError(
                     f"unknown cadence {repeat!r}; use 'daily 08:00', 'weekdays 07:30', "
-                    "'weekly mon 09:00' or 'monthly 1 09:00'"
+                    "'weekly mon 09:00', 'monthly 1 09:00' or 'every 1h'"
                 )
             first = next_check_in(repeat)
             if first is None:  # pragma: no cover - the grammar always yields a next time

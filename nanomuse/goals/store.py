@@ -38,12 +38,15 @@ CATEGORIES = (
     "creative",
     "other",
 )
-CHECK_IN_CADENCES = ("daily", "weekdays", "weekly", "monthly")
+CHECK_IN_CADENCES = ("daily", "weekdays", "weekly", "monthly", "every")
 _WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 # "daily 08:00" · "weekdays 07:30" · "weekly mon 09:00" · "monthly 1 09:00"
+# "every 1h" / "every 30m": an interval instead of a wall-clock time (Muse's cron list
+# writes those), so an imported job like "every 1h" keeps firing on its own rhythm
 _CHECK_IN_RE = re.compile(
     r"^(daily|weekdays|weekly(?: (mon|tue|wed|thu|fri|sat|sun))?|monthly(?: ([1-9]|[12]\d|3[01]))?)"
     r"(?: ([01]?\d|2[0-3]):([0-5]\d))?$"
+    r"|every ([1-9]\d{0,3}) ?(h|m)$"
 )
 
 
@@ -53,10 +56,15 @@ def _now() -> str:
 
 def parse_check_in(spec: str) -> tuple[str, int | None, int, int] | None:
     """``"weekly mon 09:00"`` → ``("weekly", 0, 9, 0)``; ``("monthly", 15, h, m)`` for a day of
-    the month; ``None`` when the spec is not one we understand. The time defaults to 09:00."""
+    the month; ``("every", minutes, 0, 0)`` for ``"every 1h"`` / ``"every 30m"``; ``None``
+    when the spec is not one we understand. The time defaults to 09:00."""
     m = _CHECK_IN_RE.match((spec or "").strip().lower())
     if not m:
         return None
+    if m.group(6):
+        # "every 1h" / "every 30m": the anchor carries whole minutes, no wall clock
+        minutes = int(m.group(6)) * (60 if m.group(7) == "h" else 1)
+        return ("every", minutes, 0, 0)
     head = m.group(1).split()
     cadence = head[0]
     anchor: int | None = None
@@ -76,6 +84,9 @@ def next_check_in(spec: str, after: datetime | None = None) -> datetime | None:
         return None
     cadence, anchor, hour, minute = parsed
     now = (after or datetime.now()).astimezone()
+    if cadence == "every":
+        # an interval job fires on its own rhythm, not at a wall-clock time
+        return (now + timedelta(minutes=anchor or 60)).replace(second=0, microsecond=0)
     if cadence == "weekly" and anchor is None:
         anchor = now.weekday()  # "weekly" alone: same weekday as today
     day = now.date()

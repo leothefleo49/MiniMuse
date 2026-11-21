@@ -399,6 +399,80 @@ def test_import_zip_muse_main_becomes_a_side_chat(tmp_path: Path) -> None:
     assert result["threads_created"] == 1
 
 
+def test_manifest_attachments_link_to_the_staged_files(tmp_path: Path) -> None:
+    svc = make_svc(tmp_path)
+    (tmp_path / "data" / "personal.db").write_bytes(b"")  # not a real db: indexing skipped
+    manifest = {
+        "turns": [
+            {
+                "role": "user",
+                "content": "what is in this picture",
+                "created_at": "2026-10-01T10:00:00Z",
+                "resources": [
+                    {
+                        "kind": "file",
+                        "uri": "workspace/user/files/pic_1_ab.jpg",
+                        "label": "image_0.jpg",
+                        "mime_type": "image/jpeg",
+                        "size_bytes": 1234,
+                        "bundled_file_path": "workspace/user/files/pic_1_ab.jpg",
+                    },
+                    {
+                        "kind": "citation",
+                        "uri": "https://example.com/page",
+                        "label": "a link",
+                        "bundled_file_path": None,
+                    },
+                ],
+            },
+            {"role": "assistant", "content": "a cat", "created_at": "2026-10-01T10:00:05Z"},
+            {
+                "role": "user",
+                "content": "and a note it could not bundle",
+                "created_at": "2026-10-01T11:00:00Z",
+                "resources": [
+                    {
+                        "kind": "file",
+                        "uri": "workspace/user/files/never_bundled.png",
+                        "label": "gone.png",
+                        "mime_type": "image/png",
+                        "size_bytes": 10,
+                        # no such member in the zip: the attachment is skipped, not faked
+                        "bundled_file_path": "workspace/user/files/never_bundled.png",
+                    }
+                ],
+            },
+        ]
+    }
+    zip_path = make_zip(
+        tmp_path,
+        {
+            "manifest.json": json.dumps(manifest),
+            "workspace/user/files/pic_1_ab.jpg": "jpeg-bytes",
+        },
+    )
+    result = import_file(svc, zip_path, "export.zip", ImportOptions())
+    assert result["attachments_linked"] == 1
+    side = next(t for t in svc.threads.values() if t.title == "Muse main chat")
+    user_ev = side.timeline.events[0]
+    assert user_ev["files"] == [
+        {
+            "path": "imported/uploads/pic_1_ab.jpg",
+            "name": "image_0.jpg",
+            "size": 1234,
+            "kind": "image",
+            "mime": "image/jpeg",
+        }
+    ]
+    # the staged file really is at that path, so the chat's thumbnail will load
+    stored = svc.workspace_dir / "imported" / "uploads" / "pic_1_ab.jpg"
+    assert stored.read_text() == "jpeg-bytes"
+    # the turn whose file never made it into the zip gets no attachment, but keeps its text
+    last_ev = side.timeline.events[-1]
+    assert "files" not in last_ev
+    assert last_ev["text"].startswith("and a note")
+
+
 def test_import_muse_main_replace_sets_the_current_main_aside(tmp_path: Path) -> None:
     svc = make_svc(tmp_path)
     main = svc.create_thread("Main chat")
@@ -1205,3 +1279,144 @@ def test_api_import_without_keep_copy_leaves_no_original(api_server: Any, tmp_pa
     assert reply.status_code == 200, reply.text
     assert reply.json()["kept_copy"] is None
     assert client.get("/api/data/import/copies").json() == []
+
+# ------------------------------------------------------------------ scheduled jobs
+def _jobs_zip(tmp_path: Path, jobs_md: str) -> Path:
+    return make_zip(
+        tmp_path,
+        {
+            "manifest.json": json.dumps({"turns": []}),
+            "workspace/your_files/minimuse-archive/system/scheduled-jobs.md": jobs_md,
+        },
+    )
+
+
+JOBS_MD = """# Scheduled jobs — Tyler's cron jobs
+Generated: Wed Nov 18, 2026 ~10:44 PM MST (auto top-up), from a live cron list.
+
+## Enabled — recurring
+| Job ID | Title | Schedule | Owner |
+|---|---|---|---|
+| minimuse-archive-auto-update | MiniMuse archive auto-update (every 30 min) | every 30m | goal:minimuse-complete-archive |
+| daily-scripture-study-reminder | Daily scripture study reminder | daily 07:42 | goal:daily-scripture-study |
+| plasma-donation-prep | Plasma donation prep | weekly Wed,Fri 06:30 | goal:plasma-donation-routine |
+| miranda-reply-watch | Watch for Miranda (RISE) reply | every 1h | goal:rise-shift-follow-up |
+| heartbeat | (heartbeat) | every 30m | — |
+
+## Enabled — one-time (future)
+| Job ID | Title | Fires |
+|---|---|---|
+| gamecube-ask | Ask Jonah & Ellie about the GameCube | {future} |
+
+## Disabled (kept definitions, not firing)
+call-josiah-reminder, call-juan-reminder, nov18-day-wrap (fired Nov 18, 2026 21:42).
+"""
+
+
+def test_scheduled_jobs_continue_running_here(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from nanomuse.reminders.store import ReminderStore
+
+    svc = make_svc(tmp_path)
+    (tmp_path / "data" / "personal.db").write_bytes(b"")
+    svc.app = SimpleNamespace(reminders=ReminderStore(tmp_path / "data" / "reminders.db"))
+    from datetime import datetime, timedelta
+
+    soon = (datetime.now() + timedelta(days=6)).strftime("%b %d, %Y %H:%M")
+    zip_path = _jobs_zip(tmp_path, JOBS_MD.format(future=soon))
+    result = import_file(svc, zip_path, "export.zip", ImportOptions())
+    # scripture (1) + plasma on two days (2) + hourly watch (1) + the one-time ask (1);
+    # the archive auto-update and the heartbeat are Muse's own plumbing and stay out
+    assert result["tasks_created"] == 5
+    store = svc.app.reminders
+    active = store.list("active")
+    scripture = next(r for r in active if r.text == "Daily scripture study reminder")
+    assert scripture.kind == "task" and scripture.repeat == "daily 07:42"
+    plasma = [r for r in active if r.text == "Plasma donation prep"]
+    assert sorted(r.repeat for r in plasma) == ["weekly fri 06:30", "weekly wed 06:30"]
+    watch = next(r for r in active if r.text == "Watch for Miranda (RISE) reply")
+    assert watch.repeat == "every 1h"
+    ask = next(r for r in active if r.text == "Ask Jonah & Ellie about the GameCube")
+    assert ask.kind == "remind" and ask.repeat == ""
+
+    # the same archive again: every job is already in place, nothing is duplicated
+    zip_path2 = _jobs_zip(tmp_path, JOBS_MD.format(future=soon))
+    again = import_file(svc, zip_path2, "export.zip", ImportOptions())
+    assert again["tasks_created"] == 0
+    assert len([r for r in store.list("active") if r.text == "Daily scripture study reminder"]) == 1
+
+    # Muse turns a job off: the next transfer cancels it here
+    turned_off = JOBS_MD.format(future=soon).replace(
+        "| daily-scripture-study-reminder | Daily scripture study reminder | daily 07:42 |",
+        "",
+    ).replace(
+        "call-josiah-reminder, call-juan-reminder,",
+        "call-josiah-reminder, call-juan-reminder, daily-scripture-study-reminder,",
+    )
+    zip_path3 = _jobs_zip(tmp_path, turned_off)
+    third = import_file(svc, zip_path3, "export.zip", ImportOptions())
+    assert third["tasks_cancelled"] == 1
+    ids = {r.id for r in store.list(None) if r.text == "Daily scripture study reminder"}
+    assert all(store.get(i).status == "cancelled" for i in ids)  # type: ignore[union-attr]
+
+    # the switch: with continue_tasks off, the jobs are read but never made
+    svc2 = make_svc(tmp_path / "off")
+    (tmp_path / "off" / "data").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "off" / "data" / "personal.db").write_bytes(b"")
+    svc2.app = SimpleNamespace(reminders=ReminderStore(tmp_path / "off" / "data" / "reminders.db"))
+    off = import_file(svc2, _jobs_zip(tmp_path / "off", JOBS_MD.format(future=soon)), "e.zip",
+                      ImportOptions(continue_tasks=False))
+    assert off["tasks_created"] == 0
+    assert svc2.app.reminders.list("active") == []
+
+
+def test_delta_transfer_is_understood_and_reports_its_code(tmp_path: Path) -> None:
+    svc = make_svc(tmp_path)
+    (tmp_path / "data" / "personal.db").write_bytes(b"")
+    profile = {
+        "scope": "delta",
+        "since_code": "2026-11-18T17:42:03Z",
+        "built_at": "2026-11-21T04:00:47Z",
+        "archive_root": "workspace/your_files/minimuse-archive/",
+        "counts": {"chat_transcripts_in_archive": 1, "total_transcript_messages": 2},
+        "excluded": [{"area": "photos I sent", "count": 43, "why": "not exportable"}],
+    }
+    delta_transcript = (
+        "## User — 2026-11-20 19:00:00 MST\n\nnew thing\n\n"
+        "## Muse — 2026-11-20 19:01:00 MST\n\nnew reply\n"
+    )
+    zip_path = make_zip(
+        tmp_path,
+        {
+            "workspace/your_files/minimuse-archive/profile/muse-profile.json": json.dumps(profile),
+            "workspace/your_files/minimuse-archive/chat-transcripts/"
+            "2026-11-20-evening-check-transcript.md": delta_transcript,
+        },
+    )
+    result = import_file(svc, zip_path, "export.zip", ImportOptions())
+    assert result["scope"] == "delta"
+    assert result["since_code"] == "2026-11-18T17:42:03Z"
+    # the code the next delta pastes above the prompt is this archive's build moment
+    assert result["transfer_code"] == "2026-11-21T04:00:47Z"
+    assert result["excluded"] == [{"area": "photos I sent", "count": 43, "why": "not exportable"}]
+    assert result["events_added"] == 2
+    assert result["verify"]["ok"] is True
+    joined = "\n".join(result["verify"]["lines"])
+    assert "delta update built against 2026-11-18T17:42:03Z" in joined
+    assert "Muse could not include photos I sent (43) - not exportable" in joined
+
+
+def test_full_import_still_offers_a_transfer_code(tmp_path: Path) -> None:
+    svc = make_svc(tmp_path)
+    (tmp_path / "data" / "personal.db").write_bytes(b"")
+    zip_path = make_zip(
+        tmp_path, {"manifest.json": json.dumps({"turns": [], "exported_at": "2026-11-21T04:00:47Z"})}
+    )
+    result = import_file(svc, zip_path, "export.zip", ImportOptions())
+    assert result["scope"] == "full"
+    assert result["transfer_code"] == "2026-11-21T04:00:47Z"
+    # an archive that says nothing about when it was built still gets a usable code: now
+    zip_path2 = make_zip(tmp_path, {"manifest.json": json.dumps({"turns": []})})
+    result2 = import_file(svc, zip_path2, "export.zip", ImportOptions())
+    assert result2["transfer_code"].endswith("Z") and "T" in result2["transfer_code"]

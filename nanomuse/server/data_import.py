@@ -222,6 +222,9 @@ class ImportOptions:
     background_memory: bool = True
     apps: str = "both"  # "save" | "restore" | "both" | "neither"
     main_chat: str = "side"  # "side" | "replace" | "merge"
+    # Turn Muse's scheduled jobs (system/scheduled-jobs.md) into this app's own routines and
+    # reminders, so they keep firing here after the transfer.
+    continue_tasks: bool = True
     # Keep the uploaded file itself, byte for byte, under workspace/imports/ so the
     # original can be re-checked (by the person or the agent) after the transfer.
     keep_copy: bool = True
@@ -233,7 +236,8 @@ class ImportOptions:
             raise ValueError(f"unknown main chat option: {self.main_chat}")
 
     def key(self) -> str:
-        # the copy switch changes no content, so it is not part of the ledger identity
+        # the copy and tasks switches change no imported content (jobs have their own
+        # per-job ledger), so neither is part of the ledger identity
         return (
             f"{int(self.restore_chats)}|{int(self.background_memory)}|{self.apps}|{self.main_chat}"
         )
@@ -245,6 +249,9 @@ class Turn:
     text: str
     ts: str = FLOOR_TS  # ISO UTC
     source_msg_id: str = ""
+    # files this turn carried, as the manifest named them ({"bundled_file_path", "label",
+    # "mime", "size"}): resolved onto the message in apply_plan, once the files have landed
+    files: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -265,6 +272,19 @@ class ImportedApp:
     files: int
     # true when the page was registered as an interactive app at /apps/<slug>
     registered: bool = False
+
+
+@dataclass
+class ScheduledJob:
+    """One job from Muse's own cron list (``system/scheduled-jobs.md``): what it is called,
+    when it fires, and whether Muse still has it enabled. The importer turns the enabled
+    ones into this app's own routines and reminders, so they keep running here."""
+
+    job_id: str
+    title: str
+    schedule: str = ""  # recurring: "daily 07:42", "weekly Wed,Fri 06:30", "every 1h"
+    fires: str = ""  # one-time: "Nov 27, 2026 16:42"
+    state: str = "recurring"  # recurring | once | disabled
 
 
 @dataclass
@@ -306,6 +326,19 @@ class ImportPlan:
     # Muse's own working copy): one chat each, merged by chat id or opening-turn fingerprint
     chats_by_id: dict[str, Conversation] = field(default_factory=dict)
     chats_by_sig: dict[str, Conversation] = field(default_factory=dict)
+    # where each staged file actually landed (member path, lower case, forward slashes ->
+    # workspace-relative path), so a turn's attachments can point at the real file
+    member_targets: dict[str, str] = field(default_factory=dict)
+    # how many imported messages got their attachments linked
+    attachments_linked: int = 0
+    # Muse's cron list, read from system/scheduled-jobs.md
+    scheduled_jobs: list[ScheduledJob] = field(default_factory=list)
+    # the archive's own view of this transfer: "full" or "delta", the SINCE code it was
+    # built against, when it was built, and what Muse said it could not include
+    import_scope: str = ""
+    since_code: str = ""
+    archive_built_at: str = ""
+    excluded: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------ parsing
@@ -1193,6 +1226,10 @@ class ImportLedger:
                 "CREATE TABLE IF NOT EXISTS imported_files ("
                 "rel_path TEXT PRIMARY KEY, sha256 TEXT NOT NULL, updated_at TEXT NOT NULL)"
             )
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS imported_jobs ("
+                "job_key TEXT PRIMARY KEY, reminder_id TEXT NOT NULL, updated_at TEXT NOT NULL)"
+            )
             self._conn.commit()
 
     def seen(self, digest: str, kind: str, options_key: str) -> bool:
@@ -1250,6 +1287,23 @@ class ImportLedger:
         self._conn.execute(
             "INSERT OR REPLACE INTO imported_files (rel_path, sha256, updated_at) VALUES (?, ?, ?)",
             (rel_path, sha256, datetime.now(UTC).isoformat(timespec="seconds")),
+        )
+
+    def get_job(self, job_key: str) -> str | None:
+        """The reminder this Muse job already runs as, when an earlier transfer made one."""
+        if not job_key or self._conn is None:
+            return None
+        row = self._conn.execute(
+            "SELECT reminder_id FROM imported_jobs WHERE job_key = ?", (job_key,)
+        ).fetchone()
+        return str(row[0]) if row and row[0] else None
+
+    def remember_job(self, job_key: str, reminder_id: str) -> None:
+        if not job_key or not reminder_id or self._conn is None:
+            return
+        self._conn.execute(
+            "INSERT OR REPLACE INTO imported_jobs (job_key, reminder_id, updated_at) VALUES (?, ?, ?)",
+            (job_key, reminder_id, datetime.now(UTC).isoformat(timespec="seconds")),
         )
 
     def commit(self) -> None:
@@ -1742,6 +1796,28 @@ def _extract_profile_dict(raw: dict[str, Any], plan: ImportPlan, data_dir: Path)
         segments = [p for p in archive_root.replace("\\", "/").split("/") if p]
         if segments:
             plan.archive_root = segments[-1].lower()
+    # a delta transfer says so itself: "scope": "delta" plus the SINCE code it was built
+    # against, and when the archive was built (the next transfer code comes from this)
+    scope = raw.get("scope")
+    if isinstance(scope, str) and scope.strip().lower() in ("full", "delta"):
+        plan.import_scope = scope.strip().lower()
+    since_code = raw.get("since_code")
+    if isinstance(since_code, str) and since_code.strip():
+        plan.since_code = since_code.strip()
+    built_at = raw.get("built_at") or raw.get("exported_at")
+    if isinstance(built_at, str) and built_at.strip():
+        plan.archive_built_at = built_at.strip()
+    excluded = raw.get("excluded")
+    if isinstance(excluded, list):
+        for item in excluded:
+            if isinstance(item, dict):
+                plan.excluded.append(
+                    {
+                        "area": str(item.get("area") or item.get("kind") or "").strip(),
+                        "count": item.get("count") if isinstance(item.get("count"), int) else 0,
+                        "why": str(item.get("why") or item.get("reason") or "").strip(),
+                    }
+                )
     if isinstance(raw.get("ui_preferences"), dict) and raw["ui_preferences"]:
         plan.ui_prefs.update(raw["ui_preferences"])
         matched = True
@@ -1894,6 +1970,8 @@ def _ingest_zip(
                 _read_thread_entry(archive, member, plan)
             elif kind == "memory":
                 _read_memory_entry(archive, member, data_dir, options, plan)
+            elif kind == "jobs":
+                _read_jobs_entry(archive, member, plan)
             elif kind == "file":
                 _read_file_entry(svc, archive, member, parts, plan)
             elif kind == "app":
@@ -1973,6 +2051,9 @@ def _classify(parts: list[str]) -> str:
     if filename == "manifest.md":
         # the archive's own MANIFEST: a document about the archive, not one of its chats
         return "memory"
+    if filename == "scheduled-jobs.md":
+        # Muse's cron list: becomes this app's own routines and reminders
+        return "jobs"
     if filename in ("profile.json", "muse-profile.json", "minimuse-profile.json", "identity.json"):
         return "profile"
     if filename == "ui-prefs.json":
@@ -2034,6 +2115,65 @@ def _app_root(parts: list[str]) -> tuple[str, ...] | None:
     return tuple(parts[: idx + 2])
 
 
+# extensions the chat treats as pictures and clips, so an imported attachment shows as a
+# thumbnail rather than a file chip (mirrors the Attachment kinds the app itself writes)
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".avif"}
+_VIDEO_EXTS = {".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv"}
+_AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".ogg", ".oga", ".flac"}
+
+
+def _attachment_kind(name: str, mime: str) -> str:
+    ext = Path(name).suffix.lower()
+    if mime.startswith("image/") or ext in _IMAGE_EXTS:
+        return "image"
+    if mime.startswith("video/") or ext in _VIDEO_EXTS:
+        return "video"
+    if mime.startswith("audio/") or ext in _AUDIO_EXTS:
+        return "audio"
+    if ext == ".pdf" or mime == "application/pdf":
+        return "pdf"
+    if ext in (".csv", ".tsv", ".json", ".xlsx", ".xls"):
+        return "data"
+    return "other"
+
+
+def _turn_files(turn: dict[str, Any]) -> list[dict[str, Any]]:
+    """The real files a manifest turn carried: each resource names the member it was bundled
+    as (``bundled_file_path``), so apply_plan can link the message to the staged copy.
+    Citations and web links are not files and stay out."""
+    out: list[dict[str, Any]] = []
+    for res in turn.get("resources") or []:
+        if not isinstance(res, dict):
+            continue
+        kind = str(res.get("kind") or "")
+        bundled = str(res.get("bundled_file_path") or "").replace("\\", "/").strip()
+        if not bundled:
+            continue
+        if kind and kind not in ("file", "attachment", "upload"):
+            continue
+        lowered = bundled.lower()
+        if lowered.startswith(("http://", "https://")) or lowered.endswith(
+            (".tmp", ".part", ".crdownload")
+        ):
+            continue
+        name = str(res.get("label") or "").strip() or bundled.rsplit("/", 1)[-1]
+        mime = str(res.get("mime_type") or "")
+        try:
+            size = int(res.get("size_bytes") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        out.append(
+            {
+                "bundled_file_path": bundled,
+                "name": name,
+                "mime": mime,
+                "size": size,
+                "kind": _attachment_kind(name, mime),
+            }
+        )
+    return out
+
+
 def _read_manifest(
     archive: zipfile.ZipFile, member: str, name: str, plan: ImportPlan, data_dir: Path
 ) -> None:
@@ -2054,7 +2194,8 @@ def _read_manifest(
         if role not in ("user", "assistant"):
             continue
         content = WIDGET_TOKEN.sub("", str(turn.get("content") or "")).strip()
-        if not content:
+        files = _turn_files(turn)
+        if not content and not files:
             continue
         transcript_file = str(turn.get("transcript_file") or "").strip()
         if transcript_file:
@@ -2064,6 +2205,7 @@ def _read_manifest(
                 role=role,
                 text=content,
                 ts=parse_timestamp(str(turn.get("created_at") or "")) or FLOOR_TS,
+                files=files,
             )
         )
     if turns:
@@ -2505,12 +2647,232 @@ def _read_file_entry(
     rel = _file_rel(parts)
     out, sha, status = _store_app_stream(svc.workspace(), Path("imported"), rel, archive, member, plan)
     plan.ledger_marks.append((sha, "file"))
+    if status != "failed":
+        # where this member landed (a duplicate keeps the path it already occupies), so a
+        # manifest turn that carried this file can link to it as an attachment
+        plan.member_targets[member.replace("\\", "/").lower()] = out or (Path("imported") / rel).as_posix()
     if status != "failed" and _in_archive(plan, member):
         key = _section_of(parts)
         if key:
             plan.staged_counts[key] = plan.staged_counts.get(key, 0) + 1
     if not out and status == "failed":
         plan.skipped_files += 1
+
+
+# ------------------------------------------------------------------ scheduled jobs
+_WEEKDAY_WORDS = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+
+
+def parse_scheduled_jobs(text: str) -> list[ScheduledJob]:
+    """Muse writes its cron list as markdown: a table of enabled recurring jobs
+    (Job ID | Title | Schedule | Owner), a table of enabled one-time future jobs
+    (Job ID | Title | Fires), and a comma-separated line of disabled job ids. Anything the
+    sections do not name is left out; nothing is invented."""
+    jobs: list[ScheduledJob] = []
+    section = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("#"):
+            low = line.lower()
+            if "disabled" in low:
+                section = "disabled"
+            elif "one-time" in low or "one time" in low:
+                section = "once"
+            elif "recurring" in low or "enabled" in low:
+                section = "recurring"
+            else:
+                section = ""
+            continue
+        if section == "disabled":
+            # "an-id, another-id, third-one (fired Nov 18, 2026 21:42)."
+            if line and not line.startswith(("|", ">", "-", "*", "_", "`")):
+                for chunk in line.split(","):
+                    jid = chunk.strip().strip(".")
+                    if jid and " " not in jid:
+                        jobs.append(ScheduledJob(job_id=jid, title="", state="disabled"))
+            continue
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if not cells or all(set(c) <= {"-", " ", ":"} for c in cells):
+            continue  # the header underline row
+        if cells[0].lower() in ("job id", "job", "id") or not cells[0]:
+            continue
+        if section == "recurring" and len(cells) >= 3:
+            jobs.append(
+                ScheduledJob(
+                    job_id=cells[0], title=cells[1], schedule=cells[2], state="recurring"
+                )
+            )
+        elif section == "once" and len(cells) >= 3:
+            jobs.append(ScheduledJob(job_id=cells[0], title=cells[1], fires=cells[2], state="once"))
+    return jobs
+
+
+def _job_cadences(schedule: str) -> list[str]:
+    """A Muse schedule as the cadence specs the reminder store understands. A weekly job
+    with two days ("weekly Wed,Fri 06:30") becomes two weekly routines."""
+    s = re.sub(r"\s+", " ", (schedule or "").strip().lower())
+    if not s:
+        return []
+    if s in ("hourly", "every hour"):
+        return ["every 1h"]
+    m = re.match(r"^every\s+(\d{1,4})\s*(h|hr|hour|m|min|minute)s?$", s)
+    if m:
+        unit = "h" if m.group(2).startswith("h") else "m"
+        return [f"every {m.group(1)}{unit}"]
+    m = re.match(r"^(daily|weekdays)(?:\s+at)?\s+(\d{1,2}):(\d{2})$", s)
+    if m:
+        return [f"{m.group(1)} {int(m.group(2)):02d}:{m.group(3)}"]
+    m = re.match(r"^weekly\s+([a-z,]+)\s+(\d{1,2}):(\d{2})$", s)
+    if m:
+        out = []
+        for day in m.group(1).split(","):
+            d = day.strip()[:3]
+            if d in _WEEKDAY_WORDS:
+                out.append(f"weekly {d} {int(m.group(2)):02d}:{m.group(3)}")
+        return out
+    m = re.match(r"^monthly\s+(\d{1,2})(?:st|nd|rd|th)?\s+(\d{1,2}):(\d{2})$", s)
+    if m:
+        return [f"monthly {int(m.group(1))} {int(m.group(2)):02d}:{m.group(3)}"]
+    return []
+
+
+_JOB_WHEN_FORMATS = (
+    "%b %d, %Y %H:%M",
+    "%b %d, %Y %I:%M %p",
+    "%B %d, %Y %H:%M",
+    "%B %d, %Y %I:%M %p",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%dT%H:%M",
+)
+
+
+def _job_when_local(fires: str) -> str:
+    """A one-time job's firing time as ``YYYY-MM-DD HH:MM`` in the machine's own zone (the
+    times in the cron list are local). "" when it does not parse."""
+    text = (fires or "").strip()
+    for fmt in _JOB_WHEN_FORMATS:
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        return parsed.strftime("%Y-%m-%d %H:%M")
+    return ""
+
+
+def _is_muse_plumbing(job: ScheduledJob) -> bool:
+    """Jobs that only maintain Muse's own machinery (the heartbeat, the archive auto-update
+    that builds the very export being imported): they would fire here as prompts about
+    machinery this app does not keep. Personal jobs always come through."""
+    jid = job.job_id.strip().lower()
+    title = job.title.strip().lower()
+    return jid == "heartbeat" or jid.startswith("minimuse-") or title in ("(heartbeat)", "heartbeat")
+
+
+def _read_jobs_entry(archive: zipfile.ZipFile, member: str, plan: ImportPlan) -> None:
+    with archive.open(member) as handle:
+        data = handle.read(MAX_TRANSCRIPT_CHARS)
+    text = _decode(data)
+    if text is None:
+        plan.skipped_files += 1
+        return
+    digest = hashlib.sha256(data).hexdigest()
+    plan.ledger_marks.append((digest, "jobs"))
+    if plan.ledger and plan.ledger.seen(digest, "jobs", plan.option_key):
+        # the same cron list landed before: every job it defines is already in place
+        plan.duplicates += 1
+        return
+    plan.scheduled_jobs = parse_scheduled_jobs(text)
+
+
+def _apply_scheduled_jobs(
+    svc: MuseService, plan: ImportPlan, stats: dict[str, Any], ledger: ImportLedger | None
+) -> None:
+    """Turn the archive's cron list into live routines and reminders here: enabled jobs are
+    created once (a later transfer adds new ones and re-schedules changed ones), a job Muse
+    disabled is cancelled, and one-time jobs that already fired are simply not made."""
+    store = getattr(getattr(svc, "app", None), "reminders", None)
+    if store is None:
+        return
+    _apply_jobs_to_store(store, plan.scheduled_jobs, stats, ledger, getattr(svc, "bus", None))
+
+
+def _apply_jobs_to_store(
+    store: Any,
+    jobs: list[ScheduledJob],
+    stats: dict[str, Any],
+    ledger: ImportLedger | None,
+    bus: Any = None,
+) -> None:
+    """The same logic as :func:`_apply_scheduled_jobs`, against a reminder store directly
+    (used by the importer and by the one-off backfill of an existing data folder alike)."""
+    created = updated = cancelled = skipped = 0
+    for job in jobs:
+        if job.state == "disabled":
+            rid = ledger.get_job(job.job_id) if ledger else None
+            if rid and store.cancel(rid) is not None:
+                cancelled += 1
+            continue
+        if _is_muse_plumbing(job):
+            skipped += 1
+            continue
+        if job.state == "recurring":
+            specs = _job_cadences(job.schedule)
+            if not specs:
+                skipped += 1
+                continue
+            for spec in specs:
+                key = job.job_id if len(specs) == 1 else f"{job.job_id}|{spec}"
+                existing = ledger.get_job(key) if ledger else None
+                current = store.get(existing) if existing else None
+                if current is not None:
+                    if current.status == "active" and (
+                        current.repeat != spec or current.text != job.title
+                    ):
+                        # the job changed in Muse: replace the old routine with the new one
+                        store.cancel(current.id)
+                        made = store.create(job.title, repeat=spec, kind="task")
+                        if ledger:
+                            ledger.remember_job(key, made.id)
+                        updated += 1
+                    continue
+                try:
+                    made = store.create(job.title, repeat=spec, kind="task")
+                except ValueError:
+                    skipped += 1
+                    continue
+                if ledger:
+                    ledger.remember_job(key, made.id)
+                created += 1
+        else:  # a one-time job Muse still has scheduled in the future
+            existing = ledger.get_job(job.job_id) if ledger else None
+            if existing and store.get(existing) is not None:
+                continue
+            at = _job_when_local(job.fires)
+            if not at:
+                skipped += 1
+                continue
+            try:
+                made = store.create(job.title, at=at, kind="remind")
+            except ValueError:
+                # the time already passed (Muse's list was older than this import)
+                skipped += 1
+                continue
+            if ledger:
+                ledger.remember_job(job.job_id, made.id)
+            created += 1
+    stats["tasks_created"] = created
+    stats["tasks_updated"] = updated
+    stats["tasks_cancelled"] = cancelled
+    if skipped:
+        stats["tasks_skipped"] = skipped
+    if created or updated or cancelled:
+        if bus is not None:
+            try:
+                bus.publish({"kind": "reminders"})
+            except Exception:
+                pass
 
 
 def _read_memory_entry(
@@ -2671,6 +3033,16 @@ _VERIFY_BUCKETS = (
 )
 
 
+def _transfer_code(plan: ImportPlan) -> str:
+    """The moment a person pastes above the prompt next time (``SINCE: <this>``) so the next
+    export is a small delta: when this archive was built when it says so, otherwise when it
+    was imported. Either way the next delta is everything after that point."""
+    moment = parse_timestamp(plan.archive_built_at) if plan.archive_built_at else ""
+    if not moment:
+        moment = datetime.now(UTC).isoformat(timespec="seconds")
+    return moment.replace("+00:00", "Z")
+
+
 def _verify_import(plan: ImportPlan, options: ImportOptions) -> dict[str, Any] | None:
     """The archive's own counts against what actually landed - the honest check behind
     the report file. A gap stays a gap: nothing is claimed complete when it is not."""
@@ -2719,6 +3091,17 @@ def _verify_import(plan: ImportPlan, options: ImportOptions) -> dict[str, Any] |
         lines.append(f"files the importer skipped (unreadable, unsupported, or too large): {plan.skipped_files}")
     if plan.duplicates:
         lines.append(f"identical files already present, not stored twice: {plan.duplicates}")
+    if plan.import_scope == "delta":
+        lines.append(
+            f"note: a delta update built against {plan.since_code or 'an unknown code'}; "
+            "the counts above describe the delta, not the whole archive"
+        )
+    for item in plan.excluded:
+        if not item.get("area"):
+            continue
+        count = f" ({item['count']})" if item.get("count") else ""
+        why = f" - {item['why']}" if item.get("why") else ""
+        lines.append(f"Muse could not include {item['area']}{count}{why}")
     return {"ok": ok, "lines": lines}
 
 
@@ -2813,6 +3196,16 @@ def apply_plan(svc: MuseService, plan: ImportPlan, options: ImportOptions) -> di
         "ui_preferences": plan.ui_prefs if plan.ui_prefs else None,
         "skipped_files": plan.skipped_files,
         "duplicates": plan.duplicates,
+        "attachments_linked": 0,
+        "tasks_created": 0,
+        "tasks_updated": 0,
+        "tasks_cancelled": 0,
+        # a delta transfer says what it is: scope "delta" plus the SINCE code it was built
+        # against, so the person can see the smaller update was understood as one
+        "scope": plan.import_scope or "full",
+        "since_code": plan.since_code or None,
+        # what Muse said the export could not include, named as it named it
+        "excluded": plan.excluded or None,
         "note": plan.note,
         # filled in by the caller when the uploaded file is kept under workspace/imports/
         "kept_copy": None,
@@ -2826,7 +3219,10 @@ def apply_plan(svc: MuseService, plan: ImportPlan, options: ImportOptions) -> di
     try:
         for conv in plan.conversations:
             if options.restore_chats:
-                thread_id = _apply_conversation(svc, conv, options, titles, stats, ledger=ledger)
+                thread_id = _apply_conversation(
+                    svc, conv, options, titles, stats, ledger=ledger,
+                    member_targets=plan.member_targets,
+                )
                 if thread_id:
                     # the next same-titled file merges into the chat this one just made
                     titles[normalize_title(conv.title)] = thread_id
@@ -2836,11 +3232,16 @@ def apply_plan(svc: MuseService, plan: ImportPlan, options: ImportOptions) -> di
                 thread_id = f"import:{slugify(conv.external_id or conv.title)}"
             if options.background_memory and thread_id:
                 stats["messages_indexed"] += index_conversation_turns(personal_db, thread_id, conv)
+        if plan.scheduled_jobs and options.continue_tasks:
+            _apply_scheduled_jobs(svc, plan, stats, ledger)
         for digest, kind in plan.ledger_marks:
             ledger.mark(digest, kind, plan.option_key, "import")
         ledger.commit()
     finally:
         ledger.close()
+    # the code the next delta transfer pastes above the prompt: the moment this archive was
+    # built (Muse's own exported_at / built_at), or now, when the archive does not say
+    stats["transfer_code"] = _transfer_code(plan)
     verify = _verify_import(plan, options)
     if verify is not None:
         stats["verify"] = verify
@@ -2861,6 +3262,29 @@ def _event_hash(ts: str, kind: str, text: str) -> str:
     return hashlib.sha256(f"{ts}|{kind}|{text}".encode()).hexdigest()[:16]
 
 
+def _link_turn_files(
+    turn: Turn, member_targets: dict[str, str]
+) -> list[dict[str, Any]]:
+    """Resolve a turn's manifest attachments onto the files this import staged. A file the
+    archive did not actually carry (Muse could not bundle it) is skipped, never faked; the
+    export's exclusions note, when present, says what stayed behind."""
+    out: list[dict[str, Any]] = []
+    for desc in turn.files:
+        target = member_targets.get(str(desc.get("bundled_file_path") or "").lower())
+        if not target:
+            continue
+        out.append(
+            {
+                "path": target,
+                "name": str(desc.get("name") or ""),
+                "size": int(desc.get("size") or 0),
+                "kind": str(desc.get("kind") or "other"),
+                "mime": str(desc.get("mime") or ""),
+            }
+        )
+    return out
+
+
 def _apply_conversation(
     svc: MuseService,
     conv: Conversation,
@@ -2868,6 +3292,7 @@ def _apply_conversation(
     titles: dict[str, str],
     stats: dict[str, Any],
     ledger: ImportLedger | None = None,
+    member_targets: dict[str, str] | None = None,
 ) -> str:
     """One conversation becomes (or merges into) a chat; the thread id is returned.
     Handles overlapping, edited, and newly added messages cleanly in place."""
@@ -2980,6 +3405,12 @@ def _apply_conversation(
                 timeline_modified = True
             else:
                 stats["duplicates"] += 1
+            if not target_ev.get("files"):
+                linked = _link_turn_files(turn, member_targets or {})
+                if linked:
+                    target_ev["files"] = linked
+                    stats["attachments_linked"] = stats.get("attachments_linked", 0) + len(linked)
+                    timeline_modified = True
             continue
         if full and oldest_kept and turn.ts <= oldest_kept:
             # already trimmed by the chat's own size limit: do not add it again
@@ -2990,6 +3421,10 @@ def _apply_conversation(
             ev_obj["final"] = True
         if turn.source_msg_id:
             ev_obj["source_msg_id"] = turn.source_msg_id
+        linked = _link_turn_files(turn, member_targets or {})
+        if linked:
+            ev_obj["files"] = linked
+            stats["attachments_linked"] = stats.get("attachments_linked", 0) + len(linked)
         events.append(ev_obj)
     if timeline_modified:
         thread.timeline.save()
