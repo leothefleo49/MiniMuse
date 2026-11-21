@@ -344,11 +344,20 @@ class SyncPeerStore:
                     rejected.append({"cid": cid, "reason": "main_exists", "cid_main": main["cid"]})
                     continue
                 row = c.execute(
-                    "SELECT seq, created_at, kind, title, deleted FROM sync_conversations WHERE cid=?",
+                    "SELECT seq, created_at, kind, title, deleted, deleted_at FROM sync_conversations WHERE cid=?",
                     (cid,),
                 ).fetchone()
                 conv_title = str(conv.get("title") or "")[:200]
                 is_deleted = bool(conv.get("deleted"))
+                in_updated = float(conv.get("updated_at") or 0.0)
+                if (
+                    row is not None
+                    and bool(row["deleted"])
+                    and not is_deleted
+                    and in_updated <= float(row["deleted_at"] or 0.0) + 1.0
+                ):
+                    # Tombstone wins: do not resurrect a deleted conversation from a stale peer
+                    continue
                 if (
                     row is not None
                     and row["kind"] == kind
@@ -495,36 +504,71 @@ class SyncPeerStore:
             self._working.pop(cid, None)
 
     # ------------------------------------------------------------------ delete
-    def delete_conversation(self, cid: str) -> dict[str, Any]:
+    def delete_conversation(
+        self, cid: str, *, create_if_missing: bool = False, kind: str = "side"
+    ) -> dict[str, Any]:
         with self._tx() as c:
             c.execute("BEGIN IMMEDIATE")
-            row = c.execute("SELECT cid FROM sync_conversations WHERE cid=?", (cid,)).fetchone()
-            if row is None:
-                c.commit()
-                raise HTTPException(404, "no_conversation")
+            row = c.execute("SELECT cid, deleted FROM sync_conversations WHERE cid=?", (cid,)).fetchone()
             now = _now()
-            seq = self._next_seq(c)
-            c.execute(
-                "UPDATE sync_conversations SET deleted=1, deleted_at=?, seq=? WHERE cid=?",
-                (now, seq, cid),
-            )
-            c.execute("UPDATE sync_messages SET deleted=1, deleted_at=? WHERE cid=?", (now, cid))
+            if row is None:
+                if not create_if_missing:
+                    c.commit()
+                    raise HTTPException(404, "no_conversation")
+                seq = self._next_seq(c)
+                c.execute(
+                    "INSERT INTO sync_conversations "
+                    "(cid, kind, title, device, seq, created_at, updated_at, deleted, deleted_at) "
+                    "VALUES (?, ?, '', '', ?, ?, ?, 1, ?)",
+                    (cid, kind if kind in KINDS else "side", seq, now, now, now),
+                )
+            elif not bool(row["deleted"]):
+                seq = self._next_seq(c)
+                c.execute(
+                    "UPDATE sync_conversations SET deleted=1, deleted_at=?, seq=? WHERE cid=?",
+                    (now, seq, cid),
+                )
+                c.execute(
+                    "UPDATE sync_messages SET deleted=1, deleted_at=? WHERE cid=?", (now, cid)
+                )
             cursor = self._cursor(c)
             c.commit()
         return {"cursor": cursor, "deleted": True}
 
-    def delete_message(self, cid: str, mid: str) -> dict[str, Any]:
+    def delete_message(
+        self, cid: str, mid: str, *, create_if_missing: bool = False, role: str = "user"
+    ) -> dict[str, Any]:
         with self._tx() as c:
             c.execute("BEGIN IMMEDIATE")
             now = _now()
-            seq = self._next_seq(c)
-            cur = c.execute(
-                "UPDATE sync_messages SET deleted=1, deleted_at=?, seq=? WHERE mid=? AND cid=?",
-                (now, seq, mid, cid),
-            )
+            existing = c.execute(
+                "SELECT mid, deleted FROM sync_messages WHERE mid=?", (mid,)
+            ).fetchone()
+            if existing is not None:
+                if bool(existing["deleted"]):
+                    cursor = self._cursor(c)
+                    c.commit()
+                    return {"cursor": cursor, "deleted": False}
+                seq = self._next_seq(c)
+                cur = c.execute(
+                    "UPDATE sync_messages SET deleted=1, deleted_at=?, seq=? WHERE mid=? AND cid=?",
+                    (now, seq, mid, cid),
+                )
+                deleted = cur.rowcount > 0
+            elif create_if_missing and _ID.match(mid) and _ID.match(cid):
+                seq = self._next_seq(c)
+                c.execute(
+                    "INSERT INTO sync_messages "
+                    "(mid, cid, role, text, attachments, device, seq, created_at, deleted, deleted_at) "
+                    "VALUES (?, ?, ?, '', '[]', '', ?, ?, 1, ?)",
+                    (mid, cid, role if role in ROLES else "user", seq, now, now),
+                )
+                deleted = True
+            else:
+                deleted = False
             cursor = self._cursor(c)
             c.commit()
-        return {"cursor": cursor, "deleted": cur.rowcount > 0}
+        return {"cursor": cursor, "deleted": deleted}
 
     def wipe(self) -> dict[str, Any]:
         with self._tx() as c:
@@ -646,6 +690,8 @@ def load_pairs(data_dir: str | Path) -> list[dict[str, Any]]:
                 entry["id"] = str(p["id"])
             if p.get("kind"):
                 entry["kind"] = str(p["kind"])
+            if p.get("cloud_key"):
+                entry["cloud_key"] = str(p["cloud_key"])
             raw_urls = p.get("urls")
             if isinstance(raw_urls, list):
                 clean_urls = [
@@ -682,6 +728,7 @@ def add_pair(
     device_id: str = "",
     kind: str = "",
     urls: list[str] | None = None,
+    cloud_secret: str = "",
 ) -> dict[str, Any]:
     """Record a peer: its token into the vault, its address and name into ``pairs.json``.
 
@@ -707,12 +754,21 @@ def add_pair(
         cu = str(u or "").strip().rstrip("/")
         if cu.startswith(("http://", "https://")) and cu not in merged_urls:
             merged_urls.append(cu)
+    preserved_cloud_key = ""
     for old in existing_pairs:
         if (did and old.get("id") == did) or old["name"] == name or old["url"] == url:
+            if old.get("cloud_key") and not preserved_cloud_key:
+                preserved_cloud_key = str(old["cloud_key"])
             for u in [old.get("url"), *(old.get("urls") or [])]:
                 cu = str(u or "").strip().rstrip("/")
                 if cu.startswith(("http://", "https://")) and cu not in merged_urls:
                     merged_urls.append(cu)
+    cloud_key_ref = preserved_cloud_key
+    clean_secret = str(cloud_secret or "").strip()
+    if clean_secret and "{{vault:" not in clean_secret:
+        cslot = f"CLOUD_{slot}"[:48]
+        vault.set(cslot, clean_secret)
+        cloud_key_ref = f"{{{{vault:{cslot}}}}}"
     pairs = [
         p
         for p in existing_pairs
@@ -732,6 +788,8 @@ def add_pair(
         entry["id"] = did
     if kind:
         entry["kind"] = str(kind).strip()[:20]
+    if cloud_key_ref:
+        entry["cloud_key"] = cloud_key_ref
     pairs.append(entry)
     save_pairs(data_dir, pairs)
     return entry

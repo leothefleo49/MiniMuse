@@ -9,6 +9,7 @@ import { DesktopRemoteHint } from "./components/DesktopRemoteHint";
 import { ChatsDrawer } from "./components/ChatsDrawer";
 import { ImportProgress } from "./components/ImportProgress";
 import { PairQrListener } from "./components/PairQrListener";
+import { PairRequestModal } from "./components/PairRequestModal";
 import { FileViewer } from "./components/FileViewer";
 import { FirstSignInSteps, useFirstSignIn } from "./components/FirstSignInSteps";
 import { Sidebar } from "./components/Sidebar";
@@ -387,6 +388,7 @@ export default function App() {
     return (
       <ErrorBoundary scope="sign-in">
         <SignInGate />
+        <PairRequestModal />
       </ErrorBoundary>
     );
   }
@@ -398,6 +400,7 @@ export default function App() {
           <Onboarding />
           {firstSteps}
         </Suspense>
+        <PairRequestModal />
       </ErrorBoundary>
     );
   }
@@ -520,6 +523,7 @@ export default function App() {
       <ChatsDrawer />
       <ImportProgress />
       <PairQrListener />
+      <PairRequestModal />
       <FileViewer path={state.viewer} onClose={() => openFile(null)} />
       {firstSteps}
       {lockPrompt}

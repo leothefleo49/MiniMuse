@@ -59,6 +59,7 @@ relay flips the local switch, ``bad_key`` pauses until the next sign-in."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
@@ -324,8 +325,25 @@ class ConversationSync:
             "peer_cursors": {},
             # direct peers: peer key -> the id of the store their cursor counts in
             "peer_stores": {},
-            "deleted_cids": [],
-            "deleted_mids": [],
+            # Tombstones so deleted chats, messages, memories, goals, reminders & apps never resurrect
+            "deleted_cids": {},  # cid -> deleted_at unix timestamp
+            "deleted_mids": [],  # legacy pending list
+            "deleted_mids_map": {},  # mid -> deleted_at unix timestamp
+            "tombstones": {
+                "memories": {},
+                "goals": {},
+                "reminders": {},
+                "apps": {},
+            },
+            "known_muse_ids": {
+                "memories": [],
+                "goals": [],
+                "reminders": [],
+                "apps": [],
+            },
+            # Automatic End-to-End Encrypted Cloud Link cursors & seen mailbox packets per peer
+            "cloud_seen_ids": {},  # peer_key -> [packet_id, ...]
+            "cloud_cursors": {},  # peer_key -> {"out_seq": int, "muse_digest": str, "last_sync_at": str}
             "device_overrides": {
                 "enabled": False,
                 "keep_local_appearance": False,
@@ -342,6 +360,7 @@ class ConversationSync:
         if self.peers:
             self.state["enabled"] = True  # a pair is the switch; no account needed
         self._peer_status: dict[str, dict[str, Any]] = {}
+        self._last_beacon_at: dict[str, tuple[float, tuple[str, ...]]] = {}
         self._push_task: asyncio.Task[None] | None = None
         self._pull_task: asyncio.Task[int] | None = None
         self._peer_task: asyncio.Task[None] | None = None
@@ -470,12 +489,52 @@ class ConversationSync:
                 self.state["peer_stores"] = {
                     str(k): str(v) for k, v in data["peer_stores"].items() if v
                 }
-            if isinstance(data.get("deleted_cids"), list):
-                self.state["deleted_cids"] = [str(c) for c in data["deleted_cids"] if c]
+            raw_del_cids = data.get("deleted_cids")
+            if isinstance(raw_del_cids, dict):
+                self.state["deleted_cids"] = {
+                    str(k): float(v or 0.0) for k, v in raw_del_cids.items() if k
+                }
+            elif isinstance(raw_del_cids, list):
+                now_ts = time.time()
+                self.state["deleted_cids"] = {str(c): now_ts for c in raw_del_cids if c}
             if isinstance(data.get("deleted_mids"), list):
                 self.state["deleted_mids"] = [
                     dict(m) for m in data["deleted_mids"] if isinstance(m, dict) and m.get("mid")
                 ]
+            if isinstance(data.get("deleted_mids_map"), dict):
+                self.state["deleted_mids_map"] = {
+                    str(k): float(v or 0.0) for k, v in data["deleted_mids_map"].items() if k
+                }
+            if isinstance(data.get("tombstones"), dict):
+                t_in = data["tombstones"]
+                for tk in ("memories", "goals", "reminders", "apps"):
+                    bucket = t_in.get(tk)
+                    if isinstance(bucket, dict):
+                        self.state["tombstones"][tk] = {
+                            str(k): float(v or 0.0) for k, v in bucket.items() if k
+                        }
+            if isinstance(data.get("known_muse_ids"), dict):
+                km_in = data["known_muse_ids"]
+                for tk in ("memories", "goals", "reminders", "apps"):
+                    bucket = km_in.get(tk)
+                    if isinstance(bucket, list):
+                        self.state["known_muse_ids"][tk] = [str(x) for x in bucket if x]
+            if isinstance(data.get("cloud_seen_ids"), dict):
+                self.state["cloud_seen_ids"] = {
+                    str(k): [str(x) for x in v if x][-400:]
+                    for k, v in data["cloud_seen_ids"].items()
+                    if isinstance(v, list)
+                }
+            if isinstance(data.get("cloud_cursors"), dict):
+                self.state["cloud_cursors"] = {
+                    str(k): dict(v)
+                    for k, v in data["cloud_cursors"].items()
+                    if isinstance(v, dict)
+                }
+            if isinstance(data.get("peer_muse_digests"), dict):
+                self.state["peer_muse_digests"] = {
+                    str(k): str(v) for k, v in data["peer_muse_digests"].items() if v
+                }
             if isinstance(data.get("device_overrides"), dict):
                 ov = data["device_overrides"]
                 self.state["device_overrides"] = {
@@ -554,6 +613,12 @@ class ConversationSync:
                 peer["token"] = "" if is_unresolved_placeholder(resolved) else resolved
             except Exception:
                 peer["token"] = ""
+            try:
+                raw_ck = str(peer.get("cloud_key") or "").strip()
+                resolved_ck = str(vault.resolve(raw_ck, strict=False) or "").strip() if raw_ck else ""
+                peer["cloud_secret"] = "" if is_unresolved_placeholder(resolved_ck) else resolved_ck
+            except Exception:
+                peer["cloud_secret"] = ""
             # Deprioritize poisoned raw public http://<carrier-ip>:8787 URLs behind valid HTTPS/Tailscale/LAN URLs
             raw_urls = [
                 str(u).strip().rstrip("/")
@@ -674,7 +739,8 @@ class ConversationSync:
             for u in peer_urls:
                 if u not in dedup_urls:
                     dedup_urls.append(u)
-            remote_ready = any(not _is_lan_only_url(u) for u in dedup_urls)
+            cloud_link_active = bool((p.get("cloud_secret") or "").strip())
+            remote_ready = cloud_link_active or any(not _is_lan_only_url(u) for u in dedup_urls)
             last_err = str(st.get("last_error") or "")
             auth_err = bool(
                 st.get("auth_error")
@@ -690,6 +756,8 @@ class ConversationSync:
                     "url": p.get("url") or "",
                     "urls": dedup_urls,
                     "remote_ready": remote_ready,
+                    "cloud_link": cloud_link_active,
+                    "via_cloud_link": bool(st.get("via_cloud_link", False)),
                     "online": bool(st.get("online", False)),
                     "last_sync_at": st.get("last_sync_at") or cur.get("last_sync_at") or None,
                     "last_error": last_err,
@@ -801,6 +869,8 @@ class ConversationSync:
             self.reload_peers()
             if self.peer_active and not self._stopped:
                 self.peer_sync_soon(delay=0.0)
+                with contextlib.suppress(Exception):
+                    await self.publish_cloud_beacons(force=False)
 
     def account_changed(self, account_id: str) -> None:
         """Signed in (again). A different account (C10 rule 4) starts from cursor 0 — a fresh
@@ -1115,15 +1185,73 @@ class ConversationSync:
                 if self._status_queue is q:
                     self._status_queue = None
 
+    def _deleted_cids_map(self) -> dict[str, float]:
+        raw = self.state.get("deleted_cids")
+        if isinstance(raw, dict):
+            return raw
+        migrated: dict[str, float] = {}
+        if isinstance(raw, list):
+            now_ts = time.time()
+            for c in raw:
+                if c:
+                    migrated[str(c)] = now_ts
+        self.state["deleted_cids"] = migrated
+        return migrated
+
+    def _deleted_mids_map(self) -> dict[str, float]:
+        raw = self.state.get("deleted_mids_map")
+        if isinstance(raw, dict):
+            return raw
+        self.state["deleted_mids_map"] = {}
+        return self.state["deleted_mids_map"]
+
+    def _tombstones_bucket(self, kind: str) -> dict[str, float]:
+        tomb = self.state.setdefault("tombstones", {})
+        if not isinstance(tomb, dict):
+            tomb = {}
+            self.state["tombstones"] = tomb
+        bucket = tomb.get(kind)
+        if not isinstance(bucket, dict):
+            bucket = {}
+            tomb[kind] = bucket
+        return bucket
+
+    def _prune_tombstones(self, max_age_days: float = 90.0) -> None:
+        cutoff = time.time() - max_age_days * 86400.0
+        dc = self._deleted_cids_map()
+        for k in [k for k, v in dc.items() if float(v or 0.0) and float(v) < cutoff]:
+            dc.pop(k, None)
+        dm = self._deleted_mids_map()
+        for k in [k for k, v in dm.items() if float(v or 0.0) and float(v) < cutoff]:
+            dm.pop(k, None)
+        for kind in ("memories", "goals", "reminders", "apps"):
+            bucket = self._tombstones_bucket(kind)
+            for k in [k for k, v in bucket.items() if float(v or 0.0) and float(v) < cutoff]:
+                bucket.pop(k, None)
+
+    def note_deleted(self, kind: str, item_id: str) -> None:
+        """Record a deletion tombstone for a memory, goal, reminder, or workspace/custom app so
+        it propagates to paired devices and never resurrects from stale peers."""
+        clean_id = str(item_id or "").strip()
+        if not clean_id or kind not in ("memories", "goals", "reminders", "apps") or self._applying:
+            return
+        self._tombstones_bucket(kind)[clean_id] = time.time()
+        known = self.state.setdefault("known_muse_ids", {}).get(kind)
+        if isinstance(known, list) and clean_id in known:
+            self.state["known_muse_ids"][kind] = [x for x in known if x != clean_id]
+        self._save()
+        if self.peer_active and not self._stopped:
+            self.peer_sync_soon(delay=0.2)
+
     def thread_changed(self, thread: Thread) -> None:
         """Created, renamed, or restored: mirror locally and push now."""
         if self._applying:
             return
         if self.peers or (self.enabled and not self.svc.hub.signed_in):
             cid = self.cid_of(thread.id) or self._cid_for_local(thread)
-            deleted = self.state.get("deleted_cids", [])
+            deleted = self._deleted_cids_map()
             if cid in deleted:
-                self.state["deleted_cids"] = [c for c in deleted if c != cid]
+                deleted.pop(cid, None)
                 self._save()
             self.mirror_local_now()
         if self.cloud_active and self._eligible(thread):
@@ -1141,14 +1269,14 @@ class ConversationSync:
         for c in [c for c, w in self.working.items() if w.get("thread") == thread_id]:
             del self.working[c]
         self._announced.pop(thread_id, None)
-        if cid and not self._applying and (self.side_chats or thread_id == _main_thread()):
-            # Record tombstone locally so offline/disconnected peers receive it on reconnect
+        if cid and not self._applying:
+            # Always record tombstone locally (even if side_chats is temporarily off) so deleted
+            # threads NEVER leak or resurrect when synced later.
             try:
-                self.local_store.delete_conversation(cid)
+                self.local_store.delete_conversation(cid, create_if_missing=True)
             except Exception:
                 pass
-            if cid not in self.state.setdefault("deleted_cids", []):
-                self.state["deleted_cids"].append(cid)
+            self._deleted_cids_map()[cid] = time.time()
         self._save()
         if (
             cid
@@ -1165,6 +1293,31 @@ class ConversationSync:
         if cid and self.peer_active and not self._stopped and not self._applying:
             self.peer_sync_soon(delay=0.1)
 
+    def thread_cleared(self, thread_id: str, mids: list[str] | None = None) -> None:
+        """All messages cleared from a thread: tombstone every cleared mid so they never resurrect."""
+        if self._applying:
+            return
+        cid = self.cid_of(thread_id)
+        if not cid:
+            return
+        now_ts = time.time()
+        dm = self._deleted_mids_map()
+        any_deleted = False
+        for raw_mid in mids or []:
+            mid = str(raw_mid or "").strip()
+            if not mid:
+                continue
+            dm[mid] = now_ts
+            try:
+                self.local_store.delete_message(cid, mid, create_if_missing=True)
+            except Exception:
+                pass
+            any_deleted = True
+        if any_deleted:
+            self._save()
+            if self.peer_active and not self._stopped:
+                self.peer_sync_soon(delay=0.1)
+
     def event_deleted(self, thread: Thread, ev: dict[str, Any]) -> None:
         """One message removed from timeline: tombstone locally and push to peers."""
         if self._applying:
@@ -1175,14 +1328,16 @@ class ConversationSync:
         mid = str(ev.get("mid") or "")
         if not mid:
             return
-        self.local_store.delete_message(cid, mid)
+        role = str(ev.get("type") or "user")
+        self.local_store.delete_message(cid, mid, create_if_missing=True, role=role)
+        self._deleted_mids_map()[mid] = time.time()
         pending = self.state.setdefault("deleted_mids", [])
         if not any(m.get("mid") == mid for m in pending):
             pending.append(
                 {
                     "mid": mid,
                     "cid": cid,
-                    "role": str(ev.get("type") or "user"),
+                    "role": role,
                     "created_at": _unix(ev.get("ts")),
                 }
             )
@@ -1561,7 +1716,12 @@ class ConversationSync:
             # another account's conversation happens to carry this id: not ours to touch
             return
         if row.get("deleted"):
+            del_ts = float(row.get("deleted_at") or row.get("updated_at") or time.time())
+            self._deleted_cids_map()[cid] = max(del_ts, float(self._deleted_cids_map().get(cid) or 0.0))
+            with contextlib.suppress(Exception):
+                self.local_store.delete_conversation(cid, create_if_missing=True, kind=kind)
             if thread is None:
+                self._save()
                 return
             if thread.id == _main_thread():
                 # the main chat is never deleted here; it starts over on the relay with a new id
@@ -1572,6 +1732,13 @@ class ConversationSync:
                 return
             self.svc.delete_thread(thread.id)
             return
+        # Never resurrect a conversation that was deleted locally unless genuinely restored later
+        local_del_at = float(self._deleted_cids_map().get(cid) or 0.0)
+        if local_del_at > 0.0 and kind != "main":
+            in_upd = float(row.get("updated_at") or 0.0)
+            if in_upd <= local_del_at + 1.0:
+                return
+            self._deleted_cids_map().pop(cid, None)
         title = str(row.get("title") or "").strip()
         if kind == "main":
             main = self.svc.threads.get(_main_thread())
@@ -1629,6 +1796,12 @@ class ConversationSync:
             return
         existing = self._find_event(thread, mid)
         if row.get("deleted"):
+            self._deleted_mids_map()[mid] = max(
+                float(row.get("deleted_at") or time.time()),
+                float(self._deleted_mids_map().get(mid) or 0.0),
+            )
+            with contextlib.suppress(Exception):
+                self.local_store.delete_message(cid, mid, create_if_missing=True)
             if existing is not None:
                 thread.timeline.remove(existing["id"])
                 thread.timeline.flush()
@@ -1647,6 +1820,8 @@ class ConversationSync:
                     {"kind": "event_removed", "thread": thread.id, "id": existing["id"]}
                 )
                 self.svc.bus.publish({"kind": "thread", "thread": thread.meta()})
+            return
+        if mid in self._deleted_mids_map() or cid in self._deleted_cids_map():
             return
         if existing is not None:
             return
@@ -1709,26 +1884,54 @@ class ConversationSync:
     # ------------------------------------------------------------------ Cloud-free direct peer sync & offline merge
     def mirror_local_now(self) -> int:
         """Persist local eligible threads, messages, renames, and deletions into local_store
-        so paired devices can pull and merge them cleanly once reconnected."""
+        so paired devices can pull and merge them cleanly once reconnected.
+
+        Also reconciles any orphaned live rows in ``sync-peer.db`` (``seq <= local_cursor``)
+        that were deleted locally in an earlier version, via trash, or while side_chats was off,
+        so deleted chats/messages NEVER leak to newly synced devices."""
         device = self.svc.hub.device_id
         self.local_store.set_enabled(True)
+        local_cursor = int(self.state.get("local_cursor") or 0)
+        deleted_cids = self._deleted_cids_map()
+        deleted_mids = self._deleted_mids_map()
+
         existing_mids: set[str] = set()
-        existing_cids: dict[str, tuple[str, int]] = {}
+        existing_live_msgs_by_cid: dict[str, list[tuple[str, int]]] = {}
+        existing_cids: dict[str, tuple[str, int, str, int]] = {}
         try:
             with self.local_store._tx() as c:
-                for r in c.execute("SELECT mid FROM sync_messages").fetchall():
-                    existing_mids.add(str(r["mid"]))
-                for r in c.execute("SELECT cid, title, deleted FROM sync_conversations").fetchall():
-                    existing_cids[str(r["cid"])] = (str(r["title"] or ""), int(r["deleted"] or 0))
+                for r in c.execute("SELECT mid, cid, seq, deleted FROM sync_messages").fetchall():
+                    mid_s = str(r["mid"])
+                    existing_mids.add(mid_s)
+                    if not int(r["deleted"] or 0):
+                        existing_live_msgs_by_cid.setdefault(str(r["cid"]), []).append(
+                            (mid_s, int(r["seq"] or 0))
+                        )
+                for r in c.execute(
+                    "SELECT cid, title, deleted, kind, seq FROM sync_conversations"
+                ).fetchall():
+                    existing_cids[str(r["cid"])] = (
+                        str(r["title"] or ""),
+                        int(r["deleted"] or 0),
+                        str(r["kind"] or "side"),
+                        int(r["seq"] or 0),
+                    )
         except sqlite3.Error:
             pass
+
         convs: list[dict[str, Any]] = []
         msgs: list[dict[str, Any]] = []
         changed_threads: list[Thread] = []
+        live_cids: set[str] = set()
+        live_mids_by_cid: dict[str, set[str]] = {}
+
         for thread in list(self.svc.threads.values()):
             if not self._eligible_for_local_sync(thread):
                 continue
             cid = self._cid_for_local(thread)
+            live_cids.add(cid)
+            mids_here: set[str] = set()
+            live_mids_by_cid[cid] = mids_here
             prev_row = existing_cids.get(cid)
             if prev_row is None or prev_row[0] != thread.title or prev_row[1] == 1:
                 convs.append(
@@ -1758,6 +1961,7 @@ class ConversationSync:
                     mid = new_cid()
                     ev["mid"] = mid
                     t_dirty = True
+                mids_here.add(mid)
                 if mid in existing_mids:
                     continue
                 existing_mids.add(mid)
@@ -1775,16 +1979,41 @@ class ConversationSync:
                 )
             if t_dirty:
                 changed_threads.append(thread)
+
+        # Reconcile orphaned rows in local_store that no longer exist in live threads
+        reconciled = 0
+        now_ts = time.time()
+        for cid, (_title, is_del, ckind, cseq) in existing_cids.items():
+            if is_del == 1:
+                continue
+            if cid in deleted_cids or (ckind != "main" and cid not in live_cids and cseq <= local_cursor):
+                try:
+                    self.local_store.delete_conversation(cid, create_if_missing=True, kind=ckind)
+                    deleted_cids[cid] = max(now_ts, float(deleted_cids.get(cid) or 0.0))
+                    reconciled += 1
+                except Exception:
+                    pass
+        for cid, live_mids in live_mids_by_cid.items():
+            for mid_s, mseq in existing_live_msgs_by_cid.get(cid, ()):
+                if mid_s in deleted_mids or (mid_s not in live_mids and mseq <= local_cursor):
+                    try:
+                        self.local_store.delete_message(cid, mid_s)
+                        deleted_mids[mid_s] = max(now_ts, float(deleted_mids.get(mid_s) or 0.0))
+                        reconciled += 1
+                    except Exception:
+                        pass
+
         for thread in changed_threads:
             thread.timeline.save()
-        count = 0
+        count = reconciled
         if convs or msgs:
             for i in range(0, max(1, len(msgs)), 180):
                 batch_msgs = msgs[i : i + 180]
                 batch_convs = convs if i == 0 else []
                 res = self.local_store.push(device, batch_convs, batch_msgs)
                 count += int(res.get("accepted") or 0)
-            # Advance local ingest cursor past our own local push so we do not re-apply our own writes
+        if convs or msgs or reconciled:
+            # Advance local ingest cursor past our own local push/reconcile so we do not re-apply our own writes
             cur_after = int(self.local_store.state().get("cursor") or 0)
             self.state["local_cursor"] = max(int(self.state.get("local_cursor") or 0), cur_after)
             self._save()
@@ -1828,31 +2057,46 @@ class ConversationSync:
     ) -> None:
         if not convs and not msgs:
             return
-        clean_convs = [
-            {
-                "cid": c.get("cid"),
-                "kind": c.get("kind") or "side",
-                "title": c.get("title") or "",
-                "device": c.get("device") or "",
-                "created_at": c.get("created_at") or 0.0,
-                "updated_at": c.get("updated_at") or 0.0,
-                "deleted": bool(c.get("deleted")),
-            }
-            for c in convs
-        ]
-        clean_msgs = [
-            {
-                "mid": m.get("mid"),
-                "cid": m.get("cid"),
-                "role": m.get("role") or "user",
-                "text": m.get("text") or "",
-                "device": m.get("device") or "",
-                "created_at": m.get("created_at") or 0.0,
-                "attachments": m.get("attachments") or [],
-                "deleted": bool(m.get("deleted")),
-            }
-            for m in msgs
-        ]
+        del_cids = self._deleted_cids_map()
+        del_mids = self._deleted_mids_map()
+        clean_convs: list[dict[str, Any]] = []
+        for c in convs:
+            cid = str(c.get("cid") or "")
+            is_del = bool(c.get("deleted"))
+            if not is_del and cid in del_cids and float(c.get("updated_at") or 0.0) <= float(del_cids[cid]) + 1.0:
+                continue
+            clean_convs.append(
+                {
+                    "cid": cid,
+                    "kind": c.get("kind") or "side",
+                    "title": c.get("title") or "",
+                    "device": c.get("device") or "",
+                    "created_at": c.get("created_at") or 0.0,
+                    "updated_at": c.get("updated_at") or 0.0,
+                    "deleted": is_del,
+                }
+            )
+        clean_msgs: list[dict[str, Any]] = []
+        for m in msgs:
+            mid = str(m.get("mid") or "")
+            cid = str(m.get("cid") or "")
+            is_del = bool(m.get("deleted"))
+            if not is_del and (mid in del_mids or cid in del_cids):
+                continue
+            clean_msgs.append(
+                {
+                    "mid": mid,
+                    "cid": cid,
+                    "role": m.get("role") or "user",
+                    "text": m.get("text") or "",
+                    "device": m.get("device") or "",
+                    "created_at": m.get("created_at") or 0.0,
+                    "attachments": m.get("attachments") or [],
+                    "deleted": is_del,
+                }
+            )
+        if not clean_convs and not clean_msgs:
+            return
         for i in range(0, max(1, len(clean_msgs)), 180):
             self.local_store.push(
                 self.svc.hub.device_id,
@@ -2037,6 +2281,227 @@ class ConversationSync:
         )
         return self._refresh_peer_urls()
 
+    def _ensure_peer_cloud_secret(self, peer: dict[str, Any]) -> str:
+        """Return this peer's shared E2E Cloud Link secret, minting and persisting one in the
+        vault if missing so existing paired devices auto-upgrade without re-pairing."""
+        from nanomuse.sync.cloud_link import is_valid_sync_secret, new_sync_secret
+        from nanomuse.sync.peer import _pair_slot, save_pairs
+        from nanomuse.vault.vault import CredentialVault
+
+        existing = str(peer.get("cloud_secret") or "").strip()
+        if is_valid_sync_secret(existing):
+            return existing
+        secret = new_sync_secret()
+        stored = load_pairs(self.svc.data_dir)
+        pid = str(peer.get("id") or "").strip()
+        purl = str(peer.get("url") or "").strip().rstrip("/")
+        pname = str(peer.get("name") or "").strip()
+        matched = None
+        for item in stored:
+            if (pid and item.get("id") == pid) or (purl and str(item.get("url") or "").rstrip("/") == purl) or (pname and item.get("name") == pname):
+                matched = item
+                break
+        if matched is not None:
+            slot = _pair_slot(pid or str(matched.get("name") or "peer"))
+            cslot = f"CLOUD_{slot}"[:48]
+            try:
+                vault = CredentialVault(self.svc.data_dir / "vault.enc", self.svc.data_dir / "vault.key")
+                vault.set(cslot, secret)
+                matched["cloud_key"] = f"{{{{vault:{cslot}}}}}"
+                save_pairs(self.svc.data_dir, stored)
+                peer["cloud_key"] = matched["cloud_key"]
+                peer["cloud_secret"] = secret
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("could not persist peer cloud_secret: {}", exc)
+                return ""
+        return secret
+
+    async def publish_cloud_beacons(self, *, force: bool = False) -> int:
+        """Broadcast this device's encrypted live URLs (Cloudflare Tunnel / Tailscale / LAN) to
+        each paired device's Cloud Link rendezvous beacon so phones away from home ALWAYS find
+        this machine's latest address after reboots or network changes."""
+        from nanomuse.sync.cloud_link import cloud_link_disabled, is_valid_sync_secret, publish_beacon
+
+        if cloud_link_disabled() or self._stopped:
+            return 0
+        my_urls = self._my_reachable_urls()
+        if not my_urls:
+            return 0
+        urls_sig = tuple(my_urls[:8])
+        now = time.time()
+        sent = 0
+        for peer in list(self.peers):
+            secret = str(peer.get("cloud_secret") or "").strip()
+            if not is_valid_sync_secret(secret):
+                continue
+            pkey = self._peer_key_of(peer)
+            prev = self._last_beacon_at.get(pkey)
+            # Repost immediately when URLs change (e.g. new trycloudflare.com URL), else every 15 min
+            if not force and prev is not None and prev[1] == urls_sig and (now - prev[0]) < 900.0:
+                continue
+            ok = await publish_beacon(
+                secret,
+                device_id=self.svc.hub.device_id,
+                name=self.svc.hub.device_name,
+                kind=self._local_kind(),
+                urls=my_urls,
+            )
+            if ok:
+                self._last_beacon_at[pkey] = (now, urls_sig)
+                sent += 1
+        return sent
+
+    async def _drain_cloud_mailbox(self, peer: dict[str, Any]) -> int:
+        """Pull & apply any pending encrypted Cloud Link mailbox packets from ``peer``."""
+        from nanomuse.sync.cloud_link import cloud_link_disabled, fetch_mailbox, is_valid_sync_secret
+
+        secret = str(peer.get("cloud_secret") or "").strip()
+        if cloud_link_disabled() or not is_valid_sync_secret(secret):
+            return 0
+        pkey = self._peer_key_of(peer)
+        seen_map = self.state.setdefault("cloud_seen_ids", {})
+        seen_list = list(seen_map.get(pkey) or [])
+        packets, new_ids = await fetch_mailbox(
+            secret,
+            exclude_device_id=self.svc.hub.device_id,
+            seen_ids=set(seen_list),
+        )
+        if not packets and not new_ids:
+            return 0
+        applied = 0
+        for pkt in packets:
+            convs = [c for c in (pkt.get("conversations") or []) if isinstance(c, dict)]
+            msgs = [m for m in (pkt.get("messages") or []) if isinstance(m, dict)]
+            if convs or msgs:
+                self._applying = True
+                try:
+                    for row in convs:
+                        self._apply_conversation(row)
+                        applied += 1
+                    for row in msgs:
+                        self._apply_message(row)
+                        applied += 1
+                finally:
+                    self._applying = False
+                self._mirror_pulled_into_local_store(convs, msgs)
+            muse_delta = pkt.get("muse_data")
+            if isinstance(muse_delta, dict) and muse_delta:
+                res = self.apply_muse_data(muse_delta)
+                counts = res.get("counts") or {}
+                if any(counts.values()):
+                    applied += 1
+        if new_ids:
+            seen_map[pkey] = (seen_list + new_ids)[-400:]
+            self._save()
+        return applied
+
+    async def _sync_via_cloud_link(self, peer: dict[str, Any]) -> tuple[int, int]:
+        """Asynchronous end-to-end encrypted Cloud Link fallback when the paired device is
+        currently offline/asleep: pulls anything the peer dropped while we were offline, and
+        drops our own new chats, deletions, and Muse data deltas so the peer catches up the
+        moment it comes online (even if we are offline by then)."""
+        import hashlib
+        from nanomuse.sync.cloud_link import cloud_link_disabled, is_valid_sync_secret, publish_mailbox
+
+        secret = str(peer.get("cloud_secret") or "").strip()
+        if cloud_link_disabled() or not is_valid_sync_secret(secret):
+            return 0, 0
+
+        # Also refresh our own beacon so when the peer wakes up it finds our latest URL immediately
+        with contextlib.suppress(Exception):
+            await self.publish_cloud_beacons(force=False)
+
+        applied = await self._drain_cloud_mailbox(peer)
+        pushed = 0
+        pkey = self._peer_key_of(peer)
+        cc_map = self.state.setdefault("cloud_cursors", {})
+        cc = cc_map.setdefault(pkey, {"out_seq": 0, "muse_digest": "", "last_sync_at": ""})
+        pcur = self.state.get("peer_cursors", {}).get(pkey, {})
+        # Never re-push changes already delivered directly to the peer
+        out_seq = max(int(cc.get("out_seq") or 0), int(pcur.get("out") or 0))
+        self.mirror_local_now()
+        delta = self.local_store.changes(out_seq, 80, scope=self.scope)
+        convs_all = [c for c in (delta.get("conversations") or []) if isinstance(c, dict)]
+        msgs_all = [m for m in (delta.get("messages") or []) if isinstance(m, dict)]
+        device_id = self.svc.hub.device_id
+        batch_convs = [
+            {
+                "cid": c["cid"],
+                "kind": c["kind"],
+                "title": c.get("title") or "",
+                "device": c.get("device") or device_id,
+                "created_at": c.get("created_at") or 0.0,
+                "updated_at": c.get("updated_at") or 0.0,
+                "deleted": bool(c.get("deleted")),
+            }
+            for c in convs_all
+        ]
+        batch_msgs = [
+            {
+                "mid": m["mid"],
+                "cid": m["cid"],
+                "role": m["role"],
+                "text": str(m.get("text") or "")[:4000],
+                "device": m.get("device") or device_id,
+                "created_at": m.get("created_at") or 0.0,
+                "attachments": m.get("attachments") or [],
+                "deleted": bool(m.get("deleted")),
+            }
+            for m in msgs_all
+        ]
+
+        # Lightweight portable Muse data snapshot (NEVER includes vault secrets, API keys, or binary media)
+        full_muse = self.export_muse_data()
+        slim_muse = {
+            "device_id": device_id,
+            "device_name": self.svc.hub.device_name,
+            "device_kind": self._local_kind(),
+            "reachable_urls": self._my_reachable_urls(),
+            "profile": full_muse.get("profile") or {},
+            "memories": (full_muse.get("memories") or [])[-200:],
+            "goals": (full_muse.get("goals") or [])[-100:],
+            "goal_steps": (full_muse.get("goal_steps") or [])[-300:],
+            "reminders": (full_muse.get("reminders") or [])[-100:],
+            "tombstones": full_muse.get("tombstones") or {},
+            "deleted_cids": full_muse.get("deleted_cids") or {},
+        }
+        muse_digest = hashlib.sha256(
+            json.dumps(slim_muse, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:16]
+        include_muse = muse_digest != str(cc.get("muse_digest") or "")
+
+        if batch_convs or batch_msgs or include_muse:
+            pkt: dict[str, Any] = {
+                "type": "delta",
+                "device_id": device_id,
+                "device_name": self.svc.hub.device_name,
+                "conversations": batch_convs,
+                "messages": batch_msgs,
+            }
+            if include_muse:
+                pkt["muse_data"] = slim_muse
+            ok = await publish_mailbox(secret, pkt)
+            if ok:
+                max_seq = max(
+                    [out_seq]
+                    + [int(c.get("seq") or 0) for c in convs_all]
+                    + [int(m.get("seq") or 0) for m in msgs_all]
+                )
+                cc["out_seq"] = max_seq
+                if include_muse:
+                    cc["muse_digest"] = muse_digest
+                pushed = len(batch_convs) + len(batch_msgs) + (1 if include_muse else 0)
+        now_str = _now_iso()
+        cc["last_sync_at"] = now_str
+        self._peer_status[pkey] = {
+            "online": True,
+            "via_cloud_link": True,
+            "last_sync_at": now_str,
+            "last_error": "",
+        }
+        self._save()
+        return applied, pushed
+
     async def sync_peers(self) -> dict[str, Any]:
         """Bidirectionally pull, merge, and push with every paired device in pairs.json."""
         self._refresh_peer_urls()
@@ -2044,6 +2509,8 @@ class ConversationSync:
         self.mirror_local_now()
         if not self.enabled or not self.peers:
             return {"applied": 0, "pushed": 0, "peers": self.peers_view()}
+        with contextlib.suppress(Exception):
+            await self.publish_cloud_beacons(force=False)
         total_applied = 0
         total_pushed = 0
         async with self._peer_lock:
@@ -2057,6 +2524,7 @@ class ConversationSync:
                     prev = self._peer_status.get(pkey, {})
                     self._peer_status[pkey] = {
                         "online": False,
+                        "via_cloud_link": False,
                         "last_sync_at": prev.get("last_sync_at"),
                         "last_error": str(exc)[:120],
                     }
@@ -2073,6 +2541,10 @@ class ConversationSync:
         Personal Cloud / Tailscale / Tunnel / LAN URLs so stale names, IPs, or away-from-home
         addresses heal automatically across any Wi-Fi or cellular network.
 
+        When stored URLs fail (e.g. PC rebooted and got a fresh trycloudflare.com URL while the
+        phone is away on cellular), automatically queries the pair's end-to-end encrypted Cloud
+        Link rendezvous beacon to discover the peer's live address in <1s.
+
         Returns True when at least one candidate URL responded, False otherwise."""
         import httpx
 
@@ -2087,9 +2559,6 @@ class ConversationSync:
         ts_guess = _derive_tailscale_peer_url(str(peer.get("name") or ""), base, my_port)
         if ts_guess and ts_guess not in candidates:
             candidates.append(ts_guess)
-        # Prefer remote HTTPS/Tailscale URLs first only if the primary failed; keep base first when local
-        if not candidates:
-            return False
         my_kind = self._local_kind()
         my_urls = self._my_reachable_urls()
         headers = {
@@ -2101,7 +2570,7 @@ class ConversationSync:
         }
         info: dict[str, Any] | None = None
         working_url = ""
-        async with httpx.AsyncClient(timeout=3.0) as hc:
+        async with httpx.AsyncClient(timeout=3.5) as hc:
             for cand in candidates:
                 try:
                     r = await hc.get(cand + "/v1/sync/hello", headers=headers)
@@ -2114,7 +2583,44 @@ class ConversationSync:
                 except Exception:
                     continue
         if info is None:
-            # Peer unreachable at all stored URLs: scan current Wi-Fi / hotspot subnet
+            # Query the pair's encrypted Cloud Link beacon for fresh remote Tunnel / Tailscale URLs!
+            secret = str(peer.get("cloud_secret") or "").strip()
+            if secret:
+                from nanomuse.sync.cloud_link import fetch_beacons
+
+                beacons = await fetch_beacons(secret, exclude_device_id=self.svc.hub.device_id)
+                pid = str(peer.get("id") or "").strip()
+                beacon = beacons.get(pid) if pid else None
+                if beacon is None and beacons:
+                    beacon = max(beacons.values(), key=lambda b: float(b.get("ts") or 0.0))
+                if isinstance(beacon, dict):
+                    fresh_urls = [
+                        u
+                        for u in (beacon.get("urls") or [])
+                        if isinstance(u, str)
+                        and u.startswith(("http://", "https://"))
+                        and not _is_raw_public_http_ip(u)
+                        and u not in candidates
+                    ]
+                    if fresh_urls:
+                        # Prefer HTTPS / remote URLs first since cached LAN already failed
+                        remote_first = [u for u in fresh_urls if not _is_lan_only_url(u)] + [
+                            u for u in fresh_urls if _is_lan_only_url(u)
+                        ]
+                        async with httpx.AsyncClient(timeout=6.0) as hc:
+                            for cand in remote_first:
+                                try:
+                                    r = await hc.get(cand + "/v1/sync/hello", headers=headers)
+                                    if r.status_code == 200:
+                                        data = r.json()
+                                        if isinstance(data, dict):
+                                            info = data
+                                            working_url = cand
+                                            break
+                                except Exception:
+                                    continue
+        if info is None:
+            # Peer unreachable at stored & beacon URLs: scan current Wi-Fi / hotspot subnet
             await self.discovery.active_wifi_scan(port=my_port)
             if self._refresh_peer_urls():
                 pid = str(peer.get("id") or "")
@@ -2189,6 +2695,15 @@ class ConversationSync:
     async def _sync_one_peer(self, peer: dict[str, Any]) -> tuple[int, int]:
         reachable = await self._refresh_peer_identity(peer)
         if reachable is False:
+            # Peer is currently offline/asleep or unreachable directly: sync asynchronously via
+            # the pair's end-to-end encrypted Cloud Link mailbox if configured!
+            from nanomuse.sync.cloud_link import cloud_link_disabled, is_valid_sync_secret
+
+            if not cloud_link_disabled() and is_valid_sync_secret(peer.get("cloud_secret")):
+                try:
+                    return await self._sync_via_cloud_link(peer)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("cloud link fallback failed: {}", exc)
             all_urls = [
                 str(u).strip()
                 for u in [peer.get("url"), *(peer.get("urls") or [])]
@@ -2400,10 +2915,19 @@ class ConversationSync:
         except Exception as exc:  # noqa: BLE001
             logger.debug("peer muse-data sync skipped/failed for {}: {}", peer_name, exc)
 
+        # 4. Also drain any pending encrypted Cloud Link mailbox packets dropped while we slept
+        with contextlib.suppress(Exception):
+            applied += await self._drain_cloud_mailbox(peer)
+            cc = self.state.setdefault("cloud_cursors", {}).setdefault(
+                pkey, {"out_seq": 0, "muse_digest": "", "last_sync_at": ""}
+            )
+            cc["out_seq"] = max(int(cc.get("out_seq") or 0), out_seq)
+
         now_str = _now_iso()
         cur["last_sync_at"] = now_str
         self._peer_status[pkey] = {
             "online": True,
+            "via_cloud_link": False,
             "last_sync_at": now_str,
             "last_error": "",
         }
@@ -2658,6 +3182,45 @@ class ConversationSync:
             if k not in DEVICE_LOCAL_SETTINGS_KEYS
         }
 
+        # Auto-detect items that previously existed locally and were deleted (e.g. via agent tools,
+        # memory tidy, or manual file cleanup) so deletions propagate as tombstones and never resurrect.
+        self._prune_tombstones()
+        known_map = self.state.setdefault(
+            "known_muse_ids", {"memories": [], "goals": [], "reminders": [], "apps": []}
+        )
+        cur_ids = {
+            "memories": {str(m.get("id") or "").strip() for m in memories if m.get("id")},
+            "goals": {str(g.get("id") or "").strip() for g in goals if g.get("id")},
+            "reminders": {str(r.get("id") or "").strip() for r in reminders if r.get("id")},
+            "apps": (
+                {str(a.get("rel") or "").strip() for a in workspace_apps if a.get("rel")}
+                | {str(a.get("slug") or "").strip() for a in custom_apps if a.get("slug")}
+                | {str(a.get("rel") or "").strip() for a in apps_manifest if a.get("rel")}
+            ),
+        }
+        now_ts = time.time()
+        known_dirty = False
+        for tk, live_set in cur_ids.items():
+            prev_list = list(known_map.get(tk) or [])
+            prev_set = set(prev_list)
+            bucket = self._tombstones_bucket(tk)
+            # Only record disappearance when DB/store actually had previously known IDs
+            for gone_id in prev_set - live_set:
+                if gone_id and gone_id not in bucket:
+                    bucket[gone_id] = now_ts
+                    known_dirty = True
+            # If an item came back (restored/recreated), clear its tombstone only if newly added
+            if live_set != prev_set:
+                known_map[tk] = sorted(live_set)
+                known_dirty = True
+        if known_dirty:
+            self._save()
+
+        tombstones_out = {
+            tk: dict(self._tombstones_bucket(tk))
+            for tk in ("memories", "goals", "reminders", "apps")
+        }
+
         return {
             "device_id": self.svc.hub.device_id,
             "device_name": self.svc.hub.device_name,
@@ -2676,6 +3239,8 @@ class ConversationSync:
             "ui_preferences": self._load_ui_prefs(),
             "app_settings": portable_settings,
             "workspace_apps": workspace_apps,
+            "tombstones": tombstones_out,
+            "deleted_cids": dict(self._deleted_cids_map()),
         }
 
     def _apply_peer_sync_info(self, payload: dict[str, Any]) -> bool:
@@ -2704,8 +3269,10 @@ class ConversationSync:
             if isinstance(u, str) and str(u).strip().startswith(("http://", "https://"))
         ]
         return_tok = str(info.get("return_token") or "").strip()
+        in_cloud_secret = str(info.get("cloud_secret") or "").strip()
         remote_name = str(info.get("name") or "").strip()
         remote_kind = str(info.get("kind") or "").strip().lower()
+        from nanomuse.sync.cloud_link import is_valid_sync_secret
         from nanomuse.sync.peer import _pair_slot, save_pairs
         from nanomuse.vault.vault import CredentialVault
 
@@ -2759,6 +3326,23 @@ class ConversationSync:
                         changed = True
                 except Exception:
                     pass
+            if is_valid_sync_secret(in_cloud_secret):
+                # Deterministically converge on the same Cloud Link secret even if both already-paired
+                # devices minted one simultaneously: lexicographically smaller device_id wins.
+                ck_ref = str(matched.get("cloud_key") or "")
+                cslot = ck_ref[8:-2] if (ck_ref.startswith("{{vault:") and ck_ref.endswith("}}")) else ""
+                if not cslot:
+                    cslot = f"CLOUD_{_pair_slot(remote_id or str(matched.get('name') or 'peer'))}"[:48]
+                try:
+                    vault = CredentialVault(self.svc.data_dir / "vault.enc", self.svc.data_dir / "vault.key")
+                    cur_cs = str(vault.get(cslot) or "").strip()
+                    remote_wins = (not is_valid_sync_secret(cur_cs)) or (remote_id < self.svc.hub.device_id)
+                    if remote_wins and cur_cs != in_cloud_secret:
+                        vault.set(cslot, in_cloud_secret)
+                        matched["cloud_key"] = f"{{{{vault:{cslot}}}}}"
+                        changed = True
+                except Exception:
+                    pass
             if changed:
                 save_pairs(self.svc.data_dir, stored)
                 self.reload_peers()
@@ -2778,6 +3362,7 @@ class ConversationSync:
                     device_id=remote_id,
                     kind=remote_kind,
                     urls=raw_urls,
+                    cloud_secret=in_cloud_secret if is_valid_sync_secret(in_cloud_secret) else "",
                 )
                 self.reload_peers()
                 changed = True
@@ -2795,6 +3380,141 @@ class ConversationSync:
             self._apply_peer_sync_info(payload)
         except Exception as exc:  # noqa: BLE001
             logger.debug("apply_muse_data peer_sync_info: {}", exc)
+
+        # 0. Apply incoming tombstones & deleted conversations FIRST so deleted items propagate
+        # cleanly and are NEVER resurrected from stale state!
+        in_del_cids = payload.get("deleted_cids")
+        if isinstance(in_del_cids, dict) and in_del_cids:
+            dc_map = self._deleted_cids_map()
+            dc_changed = False
+            for raw_cid, raw_ts in in_del_cids.items():
+                cid = str(raw_cid or "").strip()
+                if not cid:
+                    continue
+                del_ts = float(raw_ts or time.time())
+                if del_ts > float(dc_map.get(cid) or 0.0):
+                    dc_map[cid] = del_ts
+                    dc_changed = True
+                with contextlib.suppress(Exception):
+                    self.local_store.delete_conversation(cid, create_if_missing=True)
+                th = self.thread_of(cid)
+                if th is not None and th.id != _main_thread():
+                    th_upd = float(_unix(th.updated_at))
+                    if th_upd <= del_ts + 1.0:
+                        prev_app = self._applying
+                        self._applying = True
+                        try:
+                            self.svc.delete_thread(th.id)
+                        finally:
+                            self._applying = prev_app
+            if dc_changed:
+                self._save()
+
+        in_tombs = payload.get("tombstones")
+        if isinstance(in_tombs, dict):
+            tomb_changed = False
+            for tk in ("memories", "goals", "reminders", "apps"):
+                in_b = in_tombs.get(tk)
+                if not isinstance(in_b, dict):
+                    continue
+                bucket = self._tombstones_bucket(tk)
+                for raw_id, raw_ts in in_b.items():
+                    iid = str(raw_id or "").strip()
+                    if not iid:
+                        continue
+                    dts = float(raw_ts or time.time())
+                    if dts > float(bucket.get(iid) or 0.0):
+                        bucket[iid] = dts
+                        tomb_changed = True
+            if tomb_changed:
+                self._save()
+            # Execute local deletions for merged tombstones
+            mem_t = self._tombstones_bucket("memories")
+            if mem_t:
+                mem_db = self.svc.data_dir / "memory.db"
+                if mem_db.is_file():
+                    try:
+                        conn = sqlite3.connect(str(mem_db))
+                        conn.row_factory = sqlite3.Row
+                        cols = {r["name"] for r in conn.execute("PRAGMA table_info(memories)")}
+                        for mid, dts in list(mem_t.items()):
+                            row = conn.execute(
+                                f"SELECT id, created_at{', updated_at' if 'updated_at' in cols else ''} FROM memories WHERE id=?",
+                                (mid,),
+                            ).fetchone()
+                            if row is not None:
+                                r_upd = float(_unix(row["updated_at"] if "updated_at" in cols else row["created_at"]))
+                                if r_upd <= dts + 1.0:
+                                    conn.execute("DELETE FROM memories WHERE id=?", (mid,))
+                                    counts["memories"] += 1
+                        conn.commit()
+                        conn.close()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("apply_muse_data memory tombstones: {}", exc)
+            goal_t = self._tombstones_bucket("goals")
+            if goal_t:
+                goals_db = self.svc.data_dir / "goals.db"
+                if goals_db.is_file():
+                    try:
+                        conn = sqlite3.connect(str(goals_db))
+                        conn.row_factory = sqlite3.Row
+                        for gid, dts in list(goal_t.items()):
+                            row = conn.execute(
+                                "SELECT id, updated_at, created_at FROM goals WHERE id=?", (gid,)
+                            ).fetchone()
+                            if row is not None:
+                                r_upd = float(_unix(row["updated_at"] or row["created_at"]))
+                                if r_upd <= dts + 1.0:
+                                    conn.execute("DELETE FROM steps WHERE goal_id=?", (gid,))
+                                    conn.execute("DELETE FROM goals WHERE id=?", (gid,))
+                                    counts["goals"] += 1
+                        conn.commit()
+                        conn.close()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("apply_muse_data goal tombstones: {}", exc)
+            rem_t = self._tombstones_bucket("reminders")
+            if rem_t:
+                rem_db = self.svc.data_dir / "reminders.db"
+                if rem_db.is_file():
+                    try:
+                        conn = sqlite3.connect(str(rem_db))
+                        for rid in list(rem_t.keys()):
+                            cur = conn.execute("DELETE FROM reminders WHERE id=?", (rid,))
+                            if cur.rowcount:
+                                counts["reminders"] += 1
+                        conn.commit()
+                        conn.close()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("apply_muse_data reminder tombstones: {}", exc)
+            app_t = self._tombstones_bucket("apps")
+            if app_t:
+                ws = self.svc.workspace()
+                personal_db = self.svc.data_dir / "personal.db"
+                for aid, dts in list(app_t.items()):
+                    if personal_db.is_file():
+                        with contextlib.suppress(Exception):
+                            conn = sqlite3.connect(str(personal_db))
+                            cur = conn.execute("DELETE FROM custom_apps WHERE slug=? OR file_path=?", (aid, aid))
+                            if cur.rowcount:
+                                counts["apps"] += 1
+                            conn.commit()
+                            conn.close()
+                    parts = [p for p in aid.replace("\\", "/").strip("/").split("/") if p and p not in (".", "..")]
+                    if parts and (
+                        (len(parts) == 1 and parts[0].lower().endswith((".html", ".htm")))
+                        or (len(parts) > 1 and parts[0] in ("apps", "spaces"))
+                    ):
+                        target = ws.joinpath(*parts)
+                        if target.is_file():
+                            with contextlib.suppress(OSError):
+                                if target.stat().st_mtime <= dts + 1.0:
+                                    target.unlink()
+                                    counts["apps"] += 1
+
+        mem_tomb = self._tombstones_bucket("memories")
+        goal_tomb = self._tombstones_bucket("goals")
+        rem_tomb = self._tombstones_bucket("reminders")
+        app_tomb = self._tombstones_bucket("apps")
         overrides = dict(
             self.state.get("device_overrides")
             or {
@@ -2920,6 +3640,8 @@ class ConversationSync:
                         created_at = str(m.get("created_at") or _now_iso())
                         source = str(m.get("source") or "sync")
                         updated_at = str(m.get("updated_at") or created_at)
+                        if mid in mem_tomb and float(_unix(updated_at)) <= float(mem_tomb[mid]) + 1.0:
+                            continue
                         if mid in existing_by_id:
                             if updated_at > existing_by_id[mid]:
                                 if "updated_at" in cols:
@@ -2974,6 +3696,8 @@ class ConversationSync:
                         if not gid or not title:
                             continue
                         in_upd = str(g.get("updated_at") or g.get("created_at") or "")
+                        if gid in goal_tomb and float(_unix(in_upd)) <= float(goal_tomb[gid]) + 1.0:
+                            continue
                         if gid not in existing_goals or in_upd > existing_goals[gid]:
                             use_cols = [c for c in g_cols if c in g]
                             placeholders = ", ".join("?" for _ in use_cols)
@@ -3026,8 +3750,17 @@ class ConversationSync:
                         rid = str(rm.get("id") or "").strip()
                         if not rid or not str(rm.get("text") or "").strip():
                             continue
+                        if rid in rem_tomb:
+                            continue
                         in_fired = str(rm.get("last_fired_at") or "")
-                        if rid not in existing_rems or in_fired > existing_rems[rid][0]:
+                        in_status = str(rm.get("status") or "")
+                        status_changed = (
+                            rid in existing_rems
+                            and in_status
+                            and in_status != existing_rems[rid][1]
+                            and in_status != "active"
+                        )
+                        if rid not in existing_rems or in_fired > existing_rems[rid][0] or status_changed:
                             use_cols = [c for c in r_cols if c in rm]
                             placeholders = ", ".join("?" for _ in use_cols)
                             conn.execute(
@@ -3067,12 +3800,14 @@ class ConversationSync:
                 content = app_item.get("content")
                 if not rel or not rel.endswith(".html") or not isinstance(content, str):
                     continue
+                in_mtime = float(app_item.get("mtime") or 0.0)
+                if rel in app_tomb and in_mtime <= float(app_tomb[rel]) + 1.0:
+                    continue
                 parts = [p for p in rel.split("/") if p and p not in (".", "..")]
                 if not parts:
                     continue
                 dest = ws.joinpath(*parts)
                 try:
-                    in_mtime = float(app_item.get("mtime") or 0.0)
                     if not dest.exists() or in_mtime > dest.stat().st_mtime + 1.0:
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         dest.write_text(content, encoding="utf-8")
@@ -3106,6 +3841,8 @@ class ConversationSync:
                     title = str(row.get("title") or slug).strip()
                     fp = str(row.get("file_path") or "").strip()
                     if not slug or not fp:
+                        continue
+                    if slug in app_tomb or fp in app_tomb:
                         continue
                     conn.execute(
                         """
@@ -3183,6 +3920,13 @@ class ConversationSync:
 
                     # Download missing or newer workspace app files (apps/**, spaces/**, *.html)
                     # so every PC app slides cleanly over to paired phones & devices!
+                    # Skip any file tombstoned locally or by the peer so deleted apps never come back.
+                    app_tomb_merged = dict(self._tombstones_bucket("apps"))
+                    in_tomb_apps = (remote_data.get("tombstones") or {}).get("apps") if isinstance(remote_data.get("tombstones"), dict) else None
+                    if isinstance(in_tomb_apps, dict):
+                        for ak, av in in_tomb_apps.items():
+                            if ak:
+                                app_tomb_merged[str(ak)] = max(float(av or 0.0), float(app_tomb_merged.get(str(ak)) or 0.0))
                     apps_manifest = remote_data.get("apps_manifest") or []
                     ws_root = self.svc.workspace()
                     apps_downloaded = 0
@@ -3193,6 +3937,8 @@ class ConversationSync:
                         expected_sz = int(item.get("size") or 0)
                         remote_mt = float(item.get("mtime") or 0.0)
                         if not rel or ".." in rel:
+                            continue
+                        if rel in app_tomb_merged and remote_mt <= float(app_tomb_merged[rel]) + 1.0:
                             continue
                         parts = [p for p in rel.split("/") if p and p not in (".", "..")]
                         if not parts:
@@ -3277,30 +4023,41 @@ class ConversationSync:
                         except Exception:
                             pass
 
-            # 2. Push our Muse data + latest Personal Cloud URLs + valid return token to the peer
+            # 2. Push our Muse data + latest Personal Cloud URLs + valid return token + Cloud Link secret
             local_data = self.export_muse_data()
             peer_id = str(peer.get("id") or "").strip()
             peer_name = str(peer.get("name") or "").strip()
             my_urls = self._my_reachable_urls()
             return_tok = self._get_or_mint_return_token(peer_id, peer_name) if peer_id else ""
+            cloud_sec = self._ensure_peer_cloud_secret(peer)
             local_data["peer_sync_info"] = {
                 "device_id": self.svc.hub.device_id,
                 "name": self.svc.hub.device_name,
                 "kind": self._local_kind(),
                 "urls": my_urls,
                 "return_token": return_tok,
+                "cloud_secret": cloud_sec,
             }
             digest_src = json.dumps(
                 {
                     "profile": local_data.get("profile"),
                     "urls": my_urls,
                     "ret_sig": return_tok[-8:] if return_tok else "",
-                    "m": len(local_data.get("memories") or []),
-                    "g": len(local_data.get("goals") or []),
-                    "r": len(local_data.get("reminders") or []),
+                    "cloud_sig": cloud_sec[-8:] if cloud_sec else "",
+                    "m": sorted(str(x.get("id") or "") for x in (local_data.get("memories") or [])),
+                    "g": sorted(
+                        (str(x.get("id") or ""), str(x.get("updated_at") or ""))
+                        for x in (local_data.get("goals") or [])
+                    ),
+                    "r": sorted(
+                        (str(x.get("id") or ""), str(x.get("status") or ""), str(x.get("last_fired_at") or ""))
+                        for x in (local_data.get("reminders") or [])
+                    ),
                     "a": len(local_data.get("avatar_manifest") or []),
                     "app_files": len(local_data.get("apps_manifest") or []),
                     "apps": [(x.get("rel"), x.get("mtime")) for x in (local_data.get("workspace_apps") or [])],
+                    "tomb": local_data.get("tombstones") or {},
+                    "del_cids": sorted(list((local_data.get("deleted_cids") or {}).keys())),
                 },
                 sort_keys=True,
             ).encode("utf-8")
@@ -3641,7 +4398,10 @@ class ConversationSync:
         return_token: str = "",
         client_ip: str = "",
         remote_kind: str = "",
+        cloud_secret: str = "",
     ) -> tuple[bool, dict[str, Any], int]:
+        from nanomuse.sync.cloud_link import is_valid_sync_secret, new_sync_secret
+
         ok, err = self.pairing.claim_code(code, client_ip=client_ip)
         if not ok:
             status = 429 if "many attempts" in err else 401
@@ -3651,6 +4411,11 @@ class ConversationSync:
         )
         clean_name = _clean_peer_name(remote_name, client_ip or remote_id, clean_kind)
         peer_tok = self.pairing.mint_inbound_token(remote_id, clean_name)
+        shared_secret = (
+            str(cloud_secret).strip()
+            if is_valid_sync_secret(cloud_secret)
+            else new_sync_secret()
+        )
         my_urls = self._my_reachable_urls()
         # If the caller also exposed URLs + a return token, record mutual peer automatically!
         if remote_urls and return_token:
@@ -3665,6 +4430,7 @@ class ConversationSync:
                         device_id=remote_id,
                         kind=clean_kind,
                         urls=reachable,
+                        cloud_secret=shared_secret,
                     )
                     break
                 except ValueError:
@@ -3676,6 +4442,13 @@ class ConversationSync:
             self.reload_peers()
             self.mirror_local_now()
             self.peer_sync_soon(delay=0.2)
+            # Kick off Personal Cloud remote tunnel + encrypted beacon so away-from-home sync works automatically
+            pc = getattr(self.svc, "personal_cloud", None)
+            if pc is not None and hasattr(pc, "ensure_remote_background"):
+                pc.ensure_remote_background(auto_install=True)
+            with contextlib.suppress(RuntimeError):
+                loop = asyncio.get_running_loop()
+                self._keep(loop.create_task(self.publish_cloud_beacons(force=True), name="cloud-beacon-pair"))
         if getattr(self.svc, "bus", None):
             self.svc.bus.publish({"kind": "sync", "sync": self.view()})
             self.svc.bus.publish({"kind": "paired", "name": clean_name or "A device"})
@@ -3687,6 +4460,7 @@ class ConversationSync:
                 "name": self.svc.hub.device_name,
                 "kind": self._local_kind(),
                 "peer_token": peer_tok,
+                "cloud_secret": shared_secret,
                 "urls": my_urls,
                 "setup_bundle": self.export_setup_bundle(),
             },
@@ -3712,9 +4486,12 @@ class ConversationSync:
             raise ValueError("Enter the other device's address, QR link, or pick a nearby device")
         my_urls = self._my_reachable_urls()
         if norm_code:
+            from nanomuse.sync.cloud_link import is_valid_sync_secret, new_sync_secret
+
             return_token = self.pairing.mint_inbound_token(
                 str(parsed.get("id") or ""), name or str(parsed.get("name") or "")
             )
+            proposed_cloud_secret = new_sync_secret()
             payload = {
                 "code": norm_code,
                 "device_id": self.svc.hub.device_id,
@@ -3722,6 +4499,7 @@ class ConversationSync:
                 "kind": self._local_kind(),
                 "urls": my_urls,
                 "peer_token": return_token,
+                "cloud_secret": proposed_cloud_secret,
             }
             # Try private LAN URLs fast first (2.5s), then remote HTTPS/Tailscale URLs (15s)
             # so pairing works instantaneously on Wi-Fi AND reliably from anywhere on cellular!
@@ -3759,6 +4537,9 @@ class ConversationSync:
                             ]
                             if not peer_tok:
                                 raise ValueError("Peer did not return a pairing token")
+                            agreed_secret = str(data.get("cloud_secret") or "").strip()
+                            if not is_valid_sync_secret(agreed_secret):
+                                agreed_secret = proposed_cloud_secret
                             add_pair(
                                 self.svc.data_dir,
                                 base,
@@ -3767,6 +4548,7 @@ class ConversationSync:
                                 device_id=r_id,
                                 kind=r_kind,
                                 urls=[base, *r_urls, *[u for u in ordered_urls if not _is_raw_public_http_ip(u)]],
+                                cloud_secret=agreed_secret,
                             )
                             self.state["enabled"] = True
                             if sync_side_chats and not self.state.get("side_chats_set"):
@@ -3776,6 +4558,12 @@ class ConversationSync:
                             if isinstance(data.get("setup_bundle"), dict):
                                 bundle_res = self.apply_setup_bundle(data["setup_bundle"])
                             self.reload_peers()
+                            pc = getattr(self.svc, "personal_cloud", None)
+                            if pc is not None and hasattr(pc, "ensure_remote_background"):
+                                pc.ensure_remote_background(auto_install=True)
+                            with contextlib.suppress(RuntimeError):
+                                loop = asyncio.get_running_loop()
+                                self._keep(loop.create_task(self.publish_cloud_beacons(force=True), name="cloud-beacon-claim"))
                             # Clear any previous auth error on this peer
                             for p_item in self.peers:
                                 if (r_id and p_item.get("id") == r_id) or p_item.get("url") == base.rstrip("/"):

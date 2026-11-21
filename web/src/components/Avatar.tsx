@@ -72,18 +72,50 @@ function drawObjectCover(
   const side = Math.min(sw, sh);
   const sx = (sw - side) / 2;
   const sy = (sh - side) / 2;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   ctx.drawImage(source, sx, sy, side, side, 0, 0, dim, dim);
   return true;
 }
 
+/** Reusable scratch buffers per canvas dimension so 30fps video keying allocates zero garbage. */
+const keyScratchCache = new Map<
+  number,
+  {
+    distMap: Uint8Array;
+    queue: Int32Array;
+    band1: Int32Array;
+    band2: Int32Array;
+    orig: Uint8ClampedArray;
+  }
+>();
+
+function getKeyScratch(dim: number) {
+  let buf = keyScratchCache.get(dim);
+  if (!buf) {
+    const total = dim * dim;
+    buf = {
+      distMap: new Uint8Array(total),
+      queue: new Int32Array(total),
+      band1: new Int32Array(total),
+      band2: new Int32Array(total),
+      orig: new Uint8ClampedArray(total * 4),
+    };
+    if (keyScratchCache.size > 6) keyScratchCache.clear();
+    keyScratchCache.set(dim, buf);
+  }
+  return buf;
+}
+
 /**
- * High-quality, flicker-free studio & chroma backdrop keyer.
- * - Samples a 9-point exterior border ring to detect white studio, black/dark studio,
- *   green-screen, blue-screen, or any solid uniform studio backdrop via median RGB.
- * - Uses connected exterior flood-fill (from top/left/right border edges) so interior character
- *   details (white eyes, white kanji badge, dark belt, green garments) are NEVER punched out.
- * - Computes perceptual color distance with a smoothstep alpha matte + 2px edge feathering
- *   + color despill / fringe un-premultiplication so there is zero jagged halo or color bleed.
+ * Studio-grade VFX backdrop keyer with analytical alpha & inward color decontamination.
+ * - Samples 13 exterior border points to detect white studio, black/dark studio,
+ *   green-screen, blue-screen, or uniform solid studio backdrops via median RGB.
+ * - Uses 4-edge exterior flood-fill (including studio floor shadows in the bottom zone)
+ *   so interior character details (white belly, white eyes, clothes) are NEVER punched out.
+ * - Solves C = alpha * F + (1 - alpha) * B along the 2px silhouette boundary using clean
+ *   interior foreground color F, replacing halo RGB with F so white/green/black edge fringes
+ *   are completely eliminated even on 1x DPR desktop monitors.
  */
 function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean {
   let imgData: ImageData;
@@ -100,8 +132,8 @@ function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean 
     return false;
   }
 
-  // Sample 9 exterior border points (top arc + upper/mid sides; avoid bottom body edge)
-  const pad = Math.max(2, Math.min(4, Math.floor(dim * 0.025)));
+  // Sample 13 exterior ring points (top, upper/mid/lower sides, bottom corners)
+  const pad = Math.max(2, Math.min(5, Math.floor(dim * 0.02)));
   const q1 = Math.floor(dim * 0.25);
   const mid = dim >> 1;
   const q3 = Math.floor(dim * 0.75);
@@ -115,6 +147,10 @@ function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean 
     [dim - 1 - pad, q1],
     [pad, mid],
     [dim - 1 - pad, mid],
+    [pad, q3],
+    [dim - 1 - pad, q3],
+    [pad, dim - 1 - pad],
+    [dim - 1 - pad, dim - 1 - pad],
   ];
 
   const rs: number[] = [];
@@ -131,10 +167,10 @@ function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean 
     gs.push(data[idx + 1]);
     bs.push(data[idx + 2]);
   }
-  if (transparentBorder >= 3) {
+  if (transparentBorder >= 4) {
     return true; // already alpha-transparent PNG/WebP
   }
-  if (rs.length < 5) {
+  if (rs.length < 6) {
     return false;
   }
   const median = (arr: number[]) => {
@@ -145,15 +181,13 @@ function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean 
   const bgG = median(gs);
   const bgB = median(bs);
 
-  // Perceptual RGB distance (weighted luma + chroma sensitivity)
   const colorDist = (r: number, g: number, b: number): number => {
     const dr = r - bgR;
     const dg = g - bgG;
     const db = b - bgB;
     const w = Math.sqrt(0.30 * dr * dr + 0.59 * dg * dg + 0.11 * db * db);
-    // Also factor max-channel diff so saturated aura strokes against neutral studio aren't eaten
     const maxDiff = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db));
-    return w * 0.72 + maxDiff * 0.28;
+    return w * 0.70 + maxDiff * 0.30;
   };
 
   // Verify the border really is a uniform studio / chroma backdrop (not a rich photo/scene)
@@ -172,153 +206,266 @@ function keyStudioBackdrop(ctx: CanvasRenderingContext2D, dim: number): boolean 
   const isBlackStudio = bgMax <= 34 && bgChroma <= 24;
   const isGreenScreen = bgG >= 95 && bgG - Math.max(bgR, bgB) >= 28;
   const isBlueScreen = bgB >= 95 && bgB - Math.max(bgR, bgG) >= 28;
-  // Require white studio, black studio, green/blue screen, or very clean solid studio backdrop
   if (!isWhiteStudio && !isBlackStudio && !isGreenScreen && !isBlueScreen && uniformCount < rs.length - 1) {
     return false;
   }
 
-  // Tune tolerance thresholds by backdrop family (tight inner clear, soft feathered ramp)
-  const innerTol = isGreenScreen || isBlueScreen ? 28 : isBlackStudio ? 16 : 18;
-  const outerTol = isGreenScreen || isBlueScreen ? 76 : isBlackStudio ? 46 : 54;
-  const chromaGuard = isWhiteStudio ? 34 : isBlackStudio ? 28 : 999;
-
   const total = dim * dim;
-  const visited = new Uint8Array(total); // 0=unvisited, 1=exterior bg, 2=silhouette edge-1, 3=edge-2
-  const queue = new Int32Array(total);
+  const { distMap, queue, band1, band2, orig } = getKeyScratch(dim);
+  distMap.fill(255); // 0=exterior bg, 1=silhouette edge-1, 2=edge-2, 255=deep interior
   let head = 0;
   let tail = 0;
+  const floorY = Math.floor(dim * 0.78);
 
-  const isBgCandidate = (p: number): boolean => {
+  const isClearBg = (p: number): boolean => {
     const i = p * 4;
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
     const d = colorDist(r, g, b);
-    if (d > outerTol) return false;
-    if (isWhiteStudio || isBlackStudio) {
+    if (isWhiteStudio) {
       const ch = Math.max(r, g, b) - Math.min(r, g, b);
-      if (ch > chromaGuard + (d < innerTol ? 10 : 0)) return false;
-    } else if (isGreenScreen) {
-      if (g < Math.max(r, b) + 6) return false;
-    } else if (isBlueScreen) {
-      if (b < Math.max(r, g) + 6) return false;
+      if (d <= 20 && ch <= 20) return true;
+      if (d <= 52 && ch <= 14 && Math.min(r, g, b) >= bgMin - 65) return true;
+      const y = (p / dim) | 0;
+      if (y >= floorY && d <= 102 && ch <= 20 && Math.min(r, g, b) >= 118) return true;
+      return false;
     }
-    return true;
+    if (isBlackStudio) {
+      const ch = Math.max(r, g, b) - Math.min(r, g, b);
+      return d <= 22 && ch <= 20;
+    }
+    if (isGreenScreen) {
+      return d <= 52 && g >= Math.max(r, b) + 14;
+    }
+    if (isBlueScreen) {
+      return d <= 52 && b >= Math.max(r, g) + 14;
+    }
+    return d <= 26;
   };
 
-  const tryEnqueue = (p: number) => {
-    if (visited[p] !== 0) return;
-    if (isBgCandidate(p)) {
-      visited[p] = 1;
+  const trySeed = (p: number) => {
+    if (distMap[p] === 0) return;
+    if (isClearBg(p)) {
+      distMap[p] = 0;
       queue[tail++] = p;
-    } else {
-      visited[p] = 2;
     }
   };
 
-  // Seed top, left, and right edges (plus bottom-left/bottom-right corners, never bottom center)
-  for (let x = 0; x < dim; x++) {
-    tryEnqueue(x);
-  }
-  for (let y = 1; y < dim; y++) {
-    tryEnqueue(y * dim);
-    tryEnqueue(y * dim + (dim - 1));
-  }
-  const bottomEdgeSpan = Math.max(4, Math.floor(dim * 0.14));
+  // Seed all 4 edges wherever border pixels clearly match the studio backdrop
   const lastRow = (dim - 1) * dim;
-  for (let x = 0; x < bottomEdgeSpan; x++) {
-    tryEnqueue(lastRow + x);
-    tryEnqueue(lastRow + (dim - 1 - x));
+  for (let x = 0; x < dim; x++) {
+    trySeed(x);
+    trySeed(lastRow + x);
   }
+  for (let y = 1; y < dim - 1; y++) {
+    trySeed(y * dim);
+    trySeed(y * dim + (dim - 1));
+  }
+
+  // Pass 1: Exterior flood-fill
+  while (head < tail) {
+    const p = queue[head++];
+    const x = p % dim;
+    const y = (p - x) / dim;
+    if (x > 0 && distMap[p - 1] === 255 && isClearBg(p - 1)) {
+      distMap[p - 1] = 0;
+      queue[tail++] = p - 1;
+    }
+    if (x < dim - 1 && distMap[p + 1] === 255 && isClearBg(p + 1)) {
+      distMap[p + 1] = 0;
+      queue[tail++] = p + 1;
+    }
+    if (y > 0 && distMap[p - dim] === 255 && isClearBg(p - dim)) {
+      distMap[p - dim] = 0;
+      queue[tail++] = p - dim;
+    }
+    if (y < dim - 1 && distMap[p + dim] === 255 && isClearBg(p + dim)) {
+      distMap[p + dim] = 0;
+      queue[tail++] = p + dim;
+    }
+  }
+
+  // Clear exterior background & identify 8-connected silhouette band 1
+  let b1Len = 0;
+  for (let p = 0; p < total; p++) {
+    if (distMap[p] === 0) {
+      data[p * 4 + 3] = 0;
+      continue;
+    }
+    const x = p % dim;
+    const y = (p - x) / dim;
+    let touchesBg = false;
+    const y0 = y > 0 ? y - 1 : 0;
+    const y1 = y < dim - 1 ? y + 1 : dim - 1;
+    const x0 = x > 0 ? x - 1 : 0;
+    const x1 = x < dim - 1 ? x + 1 : dim - 1;
+    for (let ny = y0; ny <= y1 && !touchesBg; ny++) {
+      const row = ny * dim;
+      for (let nx = x0; nx <= x1; nx++) {
+        if (distMap[row + nx] === 0) {
+          touchesBg = true;
+          break;
+        }
+      }
+    }
+    if (touchesBg) {
+      distMap[p] = 1;
+      band1[b1Len++] = p;
+    }
+  }
+
+  // Identify band 2 (1px deeper into foreground — catches H.264 4:2:0 / bilinear fringe)
+  let b2Len = 0;
+  for (let k = 0; k < b1Len; k++) {
+    const p = band1[k];
+    const x = p % dim;
+    const y = (p - x) / dim;
+    const y0 = y > 0 ? y - 1 : 0;
+    const y1 = y < dim - 1 ? y + 1 : dim - 1;
+    const x0 = x > 0 ? x - 1 : 0;
+    const x1 = x < dim - 1 ? x + 1 : dim - 1;
+    for (let ny = y0; ny <= y1; ny++) {
+      const row = ny * dim;
+      for (let nx = x0; nx <= x1; nx++) {
+        const np = row + nx;
+        if (distMap[np] === 255) {
+          distMap[np] = 2;
+          band2[b2Len++] = np;
+        }
+      }
+    }
+  }
+
+  // Snapshot original RGB so neighbor foreground sampling is clean and order-independent
+  orig.set(data);
 
   const smoothstep = (t: number) => {
-    const c = Math.max(0, Math.min(1, t));
+    const c = t < 0 ? 0 : t > 1 ? 1 : t;
     return c * c * (3 - 2 * c);
   };
 
-  // Despill & un-premultiply backdrop tint from semi-transparent edge pixels
-  const cleanEdgeColor = (i: number, keepAlpha: number) => {
-    let r = data[i];
-    let g = data[i + 1];
-    let b = data[i + 2];
-    if (isGreenScreen) {
-      const rbMax = Math.max(r, b);
-      if (g > rbMax) {
-        const spill = g - rbMax;
-        g = Math.round(g - spill * (1 - keepAlpha * 0.35));
+  let fgR = 0;
+  let fgG = 0;
+  let fgB = 0;
+  const sampleInteriorFg = (p: number, minDist: number): boolean => {
+    const x = p % dim;
+    const y = (p - x) / dim;
+    let sr = 0;
+    let sg = 0;
+    let sb = 0;
+    let cnt = 0;
+    for (let rad = 2; rad <= 3; rad++) {
+      const y0 = y - rad > 0 ? y - rad : 0;
+      const y1 = y + rad < dim ? y + rad : dim - 1;
+      const x0 = x - rad > 0 ? x - rad : 0;
+      const x1 = x + rad < dim ? x + rad : dim - 1;
+      for (let ny = y0; ny <= y1; ny++) {
+        const row = ny * dim;
+        for (let nx = x0; nx <= x1; nx++) {
+          const np = row + nx;
+          if (distMap[np] >= minDist) {
+            const ni = np * 4;
+            sr += orig[ni];
+            sg += orig[ni + 1];
+            sb += orig[ni + 2];
+            cnt++;
+          }
+        }
       }
-    } else if (isBlueScreen) {
-      const rgMax = Math.max(r, g);
-      if (b > rgMax) {
-        const spill = b - rgMax;
-        b = Math.round(b - spill * (1 - keepAlpha * 0.35));
-      }
-    } else if (keepAlpha > 0.08 && keepAlpha < 0.96) {
-      // Un-blend studio white/black contamination: C_fg = (C - (1 - a) * C_bg) / a
-      const bgMix = (1 - keepAlpha) * 0.78;
-      const denom = Math.max(0.22, 1 - bgMix);
-      r = Math.max(0, Math.min(255, Math.round((r - bgMix * bgR) / denom)));
-      g = Math.max(0, Math.min(255, Math.round((g - bgMix * bgG) / denom)));
-      b = Math.max(0, Math.min(255, Math.round((b - bgMix * bgB) / denom)));
+      if (cnt >= 3) break;
     }
-    data[i] = r;
-    data[i + 1] = g;
-    data[i + 2] = b;
+    if (cnt === 0) return false;
+    fgR = sr / cnt;
+    fgG = sg / cnt;
+    fgB = sb / cnt;
+    return true;
   };
 
-  while (head < tail) {
-    const p = queue[head++];
+  const despillChroma = (r: number, g: number, b: number, strength: number): [number, number, number] => {
+    if (isGreenScreen) {
+      const rbMax = r > b ? r : b;
+      if (g > rbMax) g = Math.round(g - (g - rbMax) * strength);
+    } else if (isBlueScreen) {
+      const rgMax = r > g ? r : g;
+      if (b > rgMax) b = Math.round(b - (b - rgMax) * strength);
+    }
+    return [r, g, b];
+  };
+
+  // Pass 2: Decontaminate band 2 pixels pulled toward backdrop (H.264 / bilinear bleed)
+  for (let k = 0; k < b2Len; k++) {
+    const p = band2[k];
+    if (!sampleInteriorFg(p, 255)) continue;
     const i = p * 4;
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    const d = colorDist(r, g, b);
-
-    let keep = smoothstep((d - innerTol) / Math.max(1, outerTol - innerTol));
-    if (isWhiteStudio || isBlackStudio) {
-      const ch = Math.max(r, g, b) - Math.min(r, g, b);
-      const chKeep = smoothstep((ch - 14) / 24);
-      keep = Math.max(keep, chKeep * 0.9);
+    const r = orig[i];
+    const g = orig[i + 1];
+    const b = orig[i + 2];
+    const vx = fgR - bgR;
+    const vy = fgG - bgG;
+    const vz = fgB - bgB;
+    const denom = vx * vx + vy * vy + vz * vz;
+    if (denom < 180) continue;
+    const proj = ((r - bgR) * vx + (g - bgG) * vy + (b - bgB) * vz) / denom;
+    if (proj < 0.88) {
+      const a = smoothstep((proj - 0.12) / 0.78);
+      if (a < 0.06) {
+        data[i + 3] = 0;
+      } else {
+        const mixFg = Math.min(1, (1 - proj) * 1.15);
+        const nr = Math.max(0, Math.min(255, Math.round(r + (fgR - r) * mixFg)));
+        const ng = Math.max(0, Math.min(255, Math.round(g + (fgG - g) * mixFg)));
+        const nb = Math.max(0, Math.min(255, Math.round(b + (fgB - b) * mixFg)));
+        const [dr, dg, db] = despillChroma(nr, ng, nb, 0.75);
+        data[i] = dr;
+        data[i + 1] = dg;
+        data[i + 2] = db;
+        data[i + 3] = Math.round(Math.max(0.25, a) * 255);
+      }
+    } else if (isGreenScreen || isBlueScreen) {
+      const [dr, dg, db] = despillChroma(r, g, b, 0.65);
+      data[i] = dr;
+      data[i + 1] = dg;
+      data[i + 2] = db;
     }
-    if (keep < 0.04) {
-      data[i + 3] = 0;
-    } else {
-      cleanEdgeColor(i, keep);
-      data[i + 3] = Math.round(keep * 255);
-    }
-
-    const x = p % dim;
-    const y = (p - x) / dim;
-    if (x > 0) tryEnqueue(p - 1);
-    if (x < dim - 1) tryEnqueue(p + 1);
-    if (y > 0) tryEnqueue(p - dim);
-    if (y < dim - 1) tryEnqueue(p + dim);
   }
 
-  // Pass 2: Gently feather & despill 1px immediate silhouette boundary so transitions are silky smooth
-  for (let p = 0; p < total; p++) {
-    if (visited[p] !== 2) continue;
+  // Pass 3: Analytical alpha + full color decontamination along band 1 silhouette
+  for (let k = 0; k < b1Len; k++) {
+    const p = band1[k];
     const i = p * 4;
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    const d = colorDist(r, g, b);
-    // Count how many 4-neighbors were keyed background
-    const x = p % dim;
-    const y = (p - x) / dim;
-    let bgNeighbors = 0;
-    if (x > 0 && visited[p - 1] === 1) bgNeighbors++;
-    if (x < dim - 1 && visited[p + 1] === 1) bgNeighbors++;
-    if (y > 0 && visited[p - dim] === 1) bgNeighbors++;
-    if (y < dim - 1 && visited[p + dim] === 1) bgNeighbors++;
-
-    if (d < outerTol * 1.45) {
-      const distFactor = smoothstep((d - innerTol * 0.9) / Math.max(1, outerTol * 1.35 - innerTol * 0.9));
-      const feather = Math.max(0.45, Math.min(1, distFactor * (bgNeighbors >= 2 ? 0.88 : 0.96)));
-      cleanEdgeColor(i, feather);
-      data[i + 3] = Math.round(data[i + 3] * feather);
-    } else if (isGreenScreen || isBlueScreen) {
-      cleanEdgeColor(i, 0.85);
+    const r = orig[i];
+    const g = orig[i + 1];
+    const b = orig[i + 2];
+    if (!sampleInteriorFg(p, 255) && !sampleInteriorFg(p, 2)) {
+      data[i + 3] = 0;
+      continue;
+    }
+    const vx = fgR - bgR;
+    const vy = fgG - bgG;
+    const vz = fgB - bgB;
+    const denom = vx * vx + vy * vy + vz * vz;
+    if (denom < 140) {
+      const d = colorDist(r, g, b);
+      const a = smoothstep((d - 14) / 30);
+      data[i + 3] = Math.round(a * 255);
+      continue;
+    }
+    const proj = ((r - bgR) * vx + (g - bgG) * vy + (b - bgB) * vz) / denom;
+    const a = smoothstep((proj - 0.14) / 0.78);
+    if (a < 0.05) {
+      data[i + 3] = 0;
+    } else {
+      const [dr, dg, db] = despillChroma(
+        Math.max(0, Math.min(255, Math.round(fgR))),
+        Math.max(0, Math.min(255, Math.round(fgG))),
+        Math.max(0, Math.min(255, Math.round(fgB))),
+        0.92,
+      );
+      data[i] = dr;
+      data[i + 1] = dg;
+      data[i + 2] = db;
+      data[i + 3] = Math.round(a * 255);
     }
   }
 
@@ -488,8 +635,11 @@ export function Avatar({
   const videoPoster = customClipActive ? undefined : stillUrl || undefined;
 
   const shouldKeyBackdrop = (dragon || studio) && bgMode !== "default" && !canvasDisabled;
-  const dpr = typeof window !== "undefined" ? Math.min(2, window.devicePixelRatio || 1.5) : 1.5;
-  const canvasDim = Math.min(288, Math.max(96, Math.round(size * dpr)));
+  const dpr = typeof window !== "undefined" ? Math.min(3, Math.max(1, window.devicePixelRatio || 1)) : 2;
+  // Supersample keying on 1x/1.25x PC monitors so edges are razor-sharp and never blocky
+  const canvasDim = clip
+    ? Math.min(384, Math.max(224, Math.round(size * Math.max(2, dpr))))
+    : Math.min(512, Math.max(256, Math.round(size * Math.max(2.5, dpr))));
 
   // Preload custom background image when bgMode === "image"
   useEffect(() => {
@@ -533,6 +683,8 @@ export function Avatar({
           return;
         }
         // Composite chosen opaque backdrop + keyed character onto the visible canvas in one shot
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
         ctx.clearRect(0, 0, canvasDim, canvasDim);
         paintBackdrop(ctx, canvasDim, bgMode, bgColor, isDark, bgImgRef.current);
         ctx.drawImage(off, 0, 0);
@@ -724,7 +876,11 @@ export function Avatar({
 
   const discStyle: CSSProperties = (() => {
     let base: CSSProperties;
-    if (!dragon && !studio) {
+    if (shouldKeyBackdrop && canvasReady) {
+      // Canvas paints its own full-bleed backdrop; keep container transparent so Chromium/Windows
+      // subpixel border-radius antialiasing never bleeds a white rim around the circle.
+      base = { background: "transparent" };
+    } else if (!dragon && !studio) {
       if (bgMode === "image" && bgImageUrl) {
         base = {
           backgroundImage: `url("${bgImageUrl}")`,
@@ -754,9 +910,15 @@ export function Avatar({
           : "radial-gradient(circle at 50% 38%, #ffffff, #eae6df)",
       };
     } else {
-      base = { background: "#f1efeb" };
+      base = { background: isDark ? "#121318" : "#f1efeb" };
     }
-    return { ...base, ...outerGlowStyle };
+    return {
+      ...base,
+      // Force GPU-composited circular clipping without subpixel white-edge bleed on Windows DPI scaling
+      clipPath: "circle(50% at 50% 50%)",
+      WebkitMaskImage: "-webkit-radial-gradient(white, black)",
+      transform: "translateZ(0)",
+    };
   })();
 
   const rejectPortraitIfNonCall = useCallback(
@@ -841,7 +1003,7 @@ export function Avatar({
                 window.setTimeout(() => bump((n) => n + 1), NO_CLIP_TTL_MS + 100);
               }
             }}
-            className="pointer-events-none relative z-0 h-full w-full object-cover"
+            className="pointer-events-none absolute -inset-[1px] z-0 h-[calc(100%+2px)] w-[calc(100%+2px)] max-w-none object-cover"
           />
         ) : dragon || studio ? (
           <img
@@ -853,7 +1015,7 @@ export function Avatar({
               if (shouldKeyBackdrop) paintKeyedSource(e.currentTarget);
             }}
             style={{ opacity: shouldKeyBackdrop && canvasReady ? 0 : 1 }}
-            className="relative z-0 h-full w-full object-cover"
+            className="absolute -inset-[1px] z-0 h-[calc(100%+2px)] w-[calc(100%+2px)] max-w-none object-cover"
           />
         ) : (
           <span className="flex h-full w-full items-center justify-center leading-none drop-shadow-sm" style={{ fontSize: size * 0.5 }}>
@@ -866,7 +1028,7 @@ export function Avatar({
             width={canvasDim}
             height={canvasDim}
             style={{ opacity: canvasReady ? 1 : 0 }}
-            className="pointer-events-none absolute inset-0 z-10 h-full w-full rounded-full"
+            className="pointer-events-none absolute -inset-[1px] z-10 h-[calc(100%+2px)] w-[calc(100%+2px)] max-w-none"
           />
         )}
         {innerFeatherGlowStyle && (
@@ -900,14 +1062,14 @@ export function Avatar({
         onClick={onClick}
         aria-label={label}
         className={box}
-        style={{ width: size, height: size }}
+        style={{ width: size, height: size, ...outerGlowStyle }}
       >
         {face}
       </button>
     );
   }
   return (
-    <span role="img" aria-label={label} className={box} style={{ width: size, height: size }}>
+    <span role="img" aria-label={label} className={box} style={{ width: size, height: size, ...outerGlowStyle }}>
       {face}
     </span>
   );

@@ -878,6 +878,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
     const ws = connectWs({
       onMessage: (msg) => {
+        if (typeof window !== "undefined") {
+          if (msg.kind === "pair_request") {
+            window.dispatchEvent(new CustomEvent("nanomuse:pair-request", { detail: msg }));
+          } else if (msg.kind === "personal_cloud") {
+            window.dispatchEvent(new CustomEvent("nanomuse:personal-cloud", { detail: msg }));
+          } else if (msg.kind === "paired") {
+            window.dispatchEvent(new CustomEvent("nanomuse:peer-paired", { detail: msg }));
+          }
+        }
         const last = queue[queue.length - 1];
         if (
           last &&

@@ -2322,6 +2322,7 @@ class MuseService:
         thread = self.threads.get(thread_id)
         if thread is None or thread.busy:
             return False
+        old_mids = [str(ev.get("mid") or "") for ev in thread.timeline.events if ev.get("mid")]
         if self._visible_message_count(thread.timeline.events) > 0:
             snap_id = "t_" + uuid.uuid4().hex[:8]
             self._move_thread_to_trash(
@@ -2335,6 +2336,8 @@ class MuseService:
         self.app.sentinel.end_conversation(thread_id)
         self.bus.publish({"kind": "thread_cleared", "thread": thread_id})
         self._publish_trash()
+        if old_mids:
+            self.sync.thread_cleared(thread_id, old_mids)
         return True
 
     def delete_event(self, thread_id: str, event_id: str) -> None:

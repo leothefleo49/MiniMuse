@@ -362,6 +362,11 @@ export const api = {
       scan ? "/api/sync/discover?scan=true" : "/api/sync/discover",
     ),
   syncPairCode: () => request<PairCodeInfo>("/api/sync/pair/code", json({})),
+  syncPairRequest: (body: { target?: string; peer_id?: string; urls?: string[] }) =>
+    request<{ ok: boolean; prompted: boolean; device_name?: string; url?: string; urls?: string[]; detail?: string }>(
+      "/api/sync/pair/request",
+      json(body),
+    ),
   syncPairClaim: (body: { target: string; code?: string; token?: string; name?: string; sync_side_chats?: boolean }) =>
     request<{
       ok: boolean;

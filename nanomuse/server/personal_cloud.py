@@ -232,26 +232,47 @@ class PersonalCloudManager:
     data_dir: Path | None = None
     _proc: asyncio.subprocess.Process | None = None
     _reader_task: asyncio.Task[None] | None = None
+    _watchdog_task: asyncio.Task[None] | None = None
+    _bg_start_task: asyncio.Task[None] | None = None
+    _want_tunnel: bool = False
     _tunnel_url: str = ""
     _tunnel_error: str = ""
     _tunnel_starting: bool = False
     _installing: bool = False
     _ready_event: asyncio.Event = field(default_factory=asyncio.Event)
+    _url_callbacks: list[Any] = field(default_factory=list)
+
+    def add_url_callback(self, fn: Any) -> None:
+        if fn not in self._url_callbacks:
+            self._url_callbacks.append(fn)
+
+    def _notify_url_change(self, url: str) -> None:
+        for fn in list(self._url_callbacks):
+            try:
+                res = fn(url)
+                if asyncio.iscoroutine(res):
+                    asyncio.create_task(res, name="personal-cloud-url-cb")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("personal cloud url callback error: {}", exc)
 
     def _prefs_path(self) -> Path | None:
         return (Path(self.data_dir) / "personal-cloud.json") if self.data_dir is not None else None
 
-    def get_auto_tunnel(self) -> bool:
+    def get_auto_tunnel_explicit(self) -> bool | None:
         p = self._prefs_path()
         if p is None or not p.is_file():
-            return False
+            return None
         try:
             raw = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                return bool(raw.get("auto_tunnel", False))
+            if isinstance(raw, dict) and "auto_tunnel" in raw:
+                return bool(raw.get("auto_tunnel"))
         except Exception:  # noqa: BLE001
             pass
-        return False
+        return None
+
+    def get_auto_tunnel(self, default: bool = False) -> bool:
+        explicit = self.get_auto_tunnel_explicit()
+        return default if explicit is None else explicit
 
     def set_auto_tunnel(self, enabled: bool) -> bool:
         p = self._prefs_path()
@@ -271,16 +292,46 @@ class PersonalCloudManager:
             pass
         return bool(enabled)
 
-    async def maybe_auto_start(self) -> None:
-        """Start Cloudflare Quick Tunnel automatically at boot if the user opted in and binary exists."""
-        if not self.get_auto_tunnel():
+    @staticmethod
+    def _is_android() -> bool:
+        return os.environ.get("NANOMUSE_DEVICE", "").strip().lower() == "android"
+
+    async def maybe_auto_start(self, *, has_peers: bool = False) -> None:
+        """Start Cloudflare Quick Tunnel automatically at boot when opted in, OR automatically on
+        desktop/PC whenever this device has paired peers and the user did not explicitly disable it."""
+        if os.environ.get("PYTEST_CURRENT_TEST"):
             return
-        if cloudflared_bin(self.data_dir) is None:
+        explicit = self.get_auto_tunnel_explicit()
+        if explicit is False:
+            return
+        should_start = bool(explicit is True or (has_peers and not self._is_android()))
+        if not should_start:
             return
         try:
-            await self.start_tunnel(timeout_s=20.0, auto_install=False)
+            await self.start_tunnel(timeout_s=25.0, auto_install=not self._is_android())
         except Exception as exc:  # noqa: BLE001
             logger.debug("personal cloud auto_tunnel start skipped: {}", exc)
+
+    def ensure_remote_background(self, *, auto_install: bool = True) -> None:
+        """Ensure the remote tunnel is installing/starting in the background without blocking."""
+        if os.environ.get("PYTEST_CURRENT_TEST") or self._is_android():
+            return
+        if self.get_auto_tunnel_explicit() is False:
+            return
+        if self._proc is not None and self._proc.returncode is None and self._tunnel_url:
+            return
+        if self._bg_start_task is not None and not self._bg_start_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _go() -> None:
+            with contextlib.suppress(Exception):
+                await self.start_tunnel(timeout_s=25.0, auto_install=auto_install)
+
+        self._bg_start_task = loop.create_task(_go(), name="personal-cloud-ensure-remote")
 
     def lan_urls(self) -> list[str]:
         return [f"http://{ip}:{self.port}" for ip in local_ipv4_addrs()]
@@ -359,7 +410,8 @@ class PersonalCloudManager:
             finally:
                 self._installing = False
 
-        await self.stop_tunnel()
+        await self._stop_proc_only()
+        self._want_tunnel = True
         self._tunnel_error = ""
         self._tunnel_url = ""
         self._tunnel_starting = True
@@ -383,6 +435,13 @@ class PersonalCloudManager:
 
         self._proc = proc
         self._reader_task = asyncio.create_task(self._read_tunnel_output(proc))
+        if (
+            not os.environ.get("PYTEST_CURRENT_TEST")
+            and (self._watchdog_task is None or self._watchdog_task.done())
+        ):
+            self._watchdog_task = asyncio.create_task(
+                self._supervise_tunnel(), name="personal-cloud-watchdog"
+            )
         try:
             await asyncio.wait_for(self._ready_event.wait(), timeout=timeout_s)
         except TimeoutError:
@@ -393,6 +452,35 @@ class PersonalCloudManager:
         finally:
             self._tunnel_starting = False
         return self.status(probe_tailscale=True)
+
+    async def _supervise_tunnel(self) -> None:
+        """Keep the Cloudflare Quick Tunnel alive across sleep/wake and network changes."""
+        backoff = 6.0
+        try:
+            while self._want_tunnel:
+                proc = self._proc
+                if proc is None:
+                    await asyncio.sleep(backoff)
+                else:
+                    await proc.wait()
+                    if not self._want_tunnel:
+                        return
+                    logger.info("cloudflared exited (rc={}); restarting in {:.0f}s", proc.returncode, backoff)
+                    self._tunnel_url = ""
+                    await asyncio.sleep(backoff)
+                if not self._want_tunnel:
+                    return
+                try:
+                    await self.start_tunnel(timeout_s=25.0, auto_install=False)
+                    if self._tunnel_url:
+                        backoff = 6.0
+                    else:
+                        backoff = min(60.0, backoff * 2.0)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("cloudflared restart failed: {}", exc)
+                    backoff = min(60.0, backoff * 2.0)
+        except asyncio.CancelledError:
+            return
 
     async def _read_tunnel_output(self, proc: asyncio.subprocess.Process) -> None:
         stream = proc.stdout
@@ -405,9 +493,12 @@ class PersonalCloudManager:
                     break
                 text = line.decode("utf-8", errors="replace").strip()
                 m = _TRYCF_RE.search(text)
-                if m and not self._tunnel_url:
-                    self._tunnel_url = m.group(0)
-                    self._ready_event.set()
+                if m:
+                    found_url = m.group(0).rstrip("/")
+                    if found_url != self._tunnel_url:
+                        self._tunnel_url = found_url
+                        self._ready_event.set()
+                        self._notify_url_change(found_url)
                 elif "failed" in text.lower() or "error" in text.lower():
                     if not self._tunnel_url:
                         self._tunnel_error = text[:200]
@@ -416,7 +507,7 @@ class PersonalCloudManager:
         finally:
             self._ready_event.set()
 
-    async def stop_tunnel(self) -> dict[str, Any]:
+    async def _stop_proc_only(self) -> None:
         task = self._reader_task
         self._reader_task = None
         if task is not None and not task.done():
@@ -435,6 +526,22 @@ class PersonalCloudManager:
                     await proc.wait()
         self._tunnel_url = ""
         self._tunnel_starting = False
+
+    async def stop_tunnel(self) -> dict[str, Any]:
+        self._want_tunnel = False
+        wd = self._watchdog_task
+        self._watchdog_task = None
+        if wd is not None and not wd.done():
+            wd.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await wd
+        bg = self._bg_start_task
+        self._bg_start_task = None
+        if bg is not None and not bg.done():
+            bg.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await bg
+        await self._stop_proc_only()
         return self.status(probe_tailscale=True)
 
 

@@ -254,7 +254,22 @@ export function SignInGate() {
                         <button
                           key={peer.device_id}
                           type="button"
-                          onClick={() => setPairTarget(peer.urls[0] ?? "")}
+                          onClick={() => {
+                            const u = peer.urls[0] ?? "";
+                            setPairTarget(u);
+                            void api
+                              .syncPairRequest({ target: u, urls: peer.urls })
+                              .then((res) => {
+                                if (res.prompted) {
+                                  toast(
+                                    t("Code & QR popped up on {name} — enter the 6-character code or scan its QR.", {
+                                      name: res.device_name || peer.name,
+                                    }),
+                                  );
+                                }
+                              })
+                              .catch(() => undefined);
+                          }}
                           className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 text-[11.5px] font-medium text-accent"
                         >
                           <RefreshCw size={11} /> {peer.name} ({peer.urls[0]})

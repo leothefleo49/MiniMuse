@@ -746,12 +746,26 @@ class UnpairBody(BaseModel):
 
 
 class PeerClaimBody(BaseModel):
-    code: str = Field(min_length=4, max_length=32)
+    code: str = Field(default="", max_length=32)
     device_id: str = Field(default="", max_length=120)
     name: str = Field(default="", max_length=60)
     kind: str = Field(default="", max_length=20)
     urls: list[str] = Field(default_factory=list)
     peer_token: str = Field(default="", max_length=512)
+    cloud_secret: str = Field(default="", max_length=256)
+
+
+class PairRequestBody(BaseModel):
+    target: str = Field(default="", max_length=2000)
+    peer_id: str = Field(default="", max_length=120)
+    urls: list[str] = Field(default_factory=list)
+
+
+class PeerPairRequestBody(BaseModel):
+    device_id: str = Field(default="", max_length=120)
+    name: str = Field(default="", max_length=60)
+    kind: str = Field(default="", max_length=20)
+    urls: list[str] = Field(default_factory=list)
 
 
 class WatchAskBody(SendBody):
@@ -828,6 +842,23 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     personal_cloud = PersonalCloudManager(port=svc.settings.server.port, data_dir=svc.data_dir)
     svc.personal_cloud = personal_cloud
     svc.sync.set_personal_cloud_urls_provider(lambda: personal_cloud.all_urls())
+    pair_prompt_rate: dict[str, list[float]] = {}
+
+    async def _on_personal_cloud_url(new_url: str) -> None:
+        with contextlib.suppress(Exception):
+            svc.bus.publish(
+                {
+                    "kind": "personal_cloud",
+                    "url": new_url,
+                    "status": personal_cloud.status(probe_tailscale=False),
+                }
+            )
+        with contextlib.suppress(Exception):
+            await svc.sync.publish_cloud_beacons(force=True)
+        with contextlib.suppress(Exception):
+            svc.sync.peer_sync_soon(delay=0.5)
+
+    personal_cloud.add_url_callback(_on_personal_cloud_url)
     watch_codes: dict[str, float] = {}
     # what the background watch finder last saw (shown in the Devices screen)
     watch_auto: dict[str, Any] = {"last_check": 0.0, "last_result": "not checked yet", "watch_online": False}
@@ -967,7 +998,10 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         tunnel_boot_task = (
             None
             if os.environ.get("PYTEST_CURRENT_TEST")
-            else asyncio.create_task(personal_cloud.maybe_auto_start(), name="personal-cloud-boot")
+            else asyncio.create_task(
+                personal_cloud.maybe_auto_start(has_peers=bool(svc.sync.peers)),
+                name="personal-cloud-boot",
+            )
         )
         on_ready = getattr(app.state, "on_ready", None)
         if callable(on_ready):
@@ -1704,6 +1738,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     async def delete_goal(goal_id: str) -> dict[str, Any]:
         if not svc.app.goals.delete(goal_id):
             raise HTTPException(404, "no such goal")
+        svc.sync.note_deleted("goals", goal_id)
         svc.bus.publish({"kind": "goals"})
         return {"ok": True}
 
@@ -1740,6 +1775,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             if svc.app.reminders.get(reminder_id) is None:
                 raise HTTPException(404, "no such reminder")
             raise HTTPException(409, "already finished")
+        svc.sync.note_deleted("reminders", reminder_id)
         return item.to_dict()
 
     # ------------------------------------------------------------------ triggers
@@ -1844,6 +1880,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     async def forget_memory(memory_id: str) -> dict[str, Any]:
         if svc.app.memory is None or not svc.app.memory.forget(memory_id):
             raise HTTPException(404, "no such memory")
+        svc.sync.note_deleted("memories", memory_id)
         svc.bus.publish({"kind": "memory"})
         return {"ok": True}
 
@@ -3217,28 +3254,28 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             "urls": svc.sync.view().get("urls", []),
         }
 
-    @app.post("/api/sync/pair/code", dependencies=dep)
-    async def sync_pair_code(ensure_remote: bool = Query(True)) -> dict[str, Any]:
-        """Generate a short-lived 6-character pairing code & QR link for another device.
-        Automatically ensures the Free Cloudflare Quick Tunnel is running (when cloudflared is
-        installed and no Tailscale/HTTPS remote address is active yet) so the generated QR & link
-        work from anywhere over Wi-Fi or cellular data."""
+    async def _build_pair_code_info(ensure_remote: bool = True) -> dict[str, Any]:
         from nanomuse.server.channels_api import _qr_png
         from nanomuse.server.personal_cloud import cloudflared_bin
 
         cf_installed = bool(cloudflared_bin(svc.data_dir))
-        if ensure_remote and cf_installed and not os.environ.get("PYTEST_CURRENT_TEST"):
+        if ensure_remote and not os.environ.get("PYTEST_CURRENT_TEST"):
             cur_urls = svc.sync._my_reachable_urls()
             has_remote = any(
                 u.startswith("https://") or ".ts.net" in u or "trycloudflare.com" in u
                 for u in cur_urls
             )
             if not has_remote:
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(
-                        personal_cloud.start_tunnel(auto_install=False),
-                        timeout=8.0,
-                    )
+                if cf_installed:
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(
+                            personal_cloud.start_tunnel(auto_install=False),
+                            timeout=8.0,
+                        )
+                else:
+                    # Auto-install cloudflared + start tunnel in background on desktop/PC so the
+                    # popup QR upgrades automatically to a works-anywhere link in a few seconds!
+                    personal_cloud.ensure_remote_background(auto_install=True)
 
         info = svc.sync.issue_pair_code()
         uri = str(info.get("pair_uri") or "")
@@ -3257,7 +3294,121 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             "remote_ready": bool(remote_url),
             "remote_url": remote_url,
             "cloudflared_installed": cf_installed,
+            "tunnel_starting": bool(
+                getattr(personal_cloud, "_tunnel_starting", False)
+                or getattr(personal_cloud, "_installing", False)
+                or (
+                    getattr(personal_cloud, "_bg_start_task", None) is not None
+                    and not personal_cloud._bg_start_task.done()
+                )
+            ),
         }
+
+    def _publish_pair_popup(
+        pair_info: dict[str, Any],
+        *,
+        from_id: str = "",
+        from_name: str = "",
+        from_kind: str = "",
+    ) -> None:
+        svc.bus.publish(
+            {
+                "kind": "pair_request",
+                "from_id": str(from_id or "").strip(),
+                "from_name": str(from_name or "").strip(),
+                "from_kind": str(from_kind or "").strip(),
+                **pair_info,
+            }
+        )
+
+    @app.post("/api/sync/pair/code", dependencies=dep)
+    async def sync_pair_code(ensure_remote: bool = Query(True)) -> dict[str, Any]:
+        """Generate a short-lived 6-character pairing code & QR link for another device.
+        Automatically ensures the Free Cloudflare Quick Tunnel is running so the generated QR &
+        link work from anywhere over Wi-Fi or cellular data."""
+        return await _build_pair_code_info(ensure_remote=ensure_remote)
+
+    @app.post("/api/sync/pair/request", dependencies=dep)
+    async def sync_pair_request_remote(body: PairRequestBody) -> dict[str, Any]:
+        """Ask another MiniMuse device to immediately pop up its 6-character pairing code & QR
+        modal right on its screen so the user never has to navigate into Settings."""
+        import httpx
+        from nanomuse.sync.discovery import parse_pair_payload
+
+        candidates: list[str] = []
+
+        def _add_url(u: str) -> None:
+            cu = str(u or "").strip().rstrip("/")
+            if cu.startswith(("http://", "https://")) and cu not in candidates:
+                candidates.append(cu)
+
+        if body.target.strip():
+            parsed = parse_pair_payload(body.target.strip())
+            for u in parsed.get("urls") or []:
+                _add_url(u)
+            if not candidates:
+                raw_t = body.target.strip()
+                if raw_t.startswith(("http://", "https://")):
+                    _add_url(raw_t)
+                elif "." in raw_t or ":" in raw_t:
+                    _add_url(("https://" if "trycloudflare.com" in raw_t else "http://") + raw_t)
+        for u in body.urls:
+            _add_url(u)
+        # Also resolve from paired peers (and their encrypted Cloud Link beacon!) or nearby LAN list
+        ident = (body.peer_id or body.target or "").strip()
+        if ident:
+            for p in svc.sync.peers:
+                if ident in (p.get("id"), p.get("name"), p.get("url")):
+                    _add_url(str(p.get("url") or ""))
+                    for u in p.get("urls") or []:
+                        _add_url(u)
+                    secret = str(p.get("cloud_secret") or "").strip()
+                    if secret:
+                        from nanomuse.sync.cloud_link import fetch_beacons
+
+                        beacons = await fetch_beacons(
+                            secret, exclude_device_id=svc.hub.device_id
+                        )
+                        b = beacons.get(str(p.get("id") or "")) or (
+                            max(beacons.values(), key=lambda x: float(x.get("ts") or 0.0))
+                            if beacons
+                            else None
+                        )
+                        if isinstance(b, dict):
+                            for u in b.get("urls") or []:
+                                _add_url(u)
+            for np in svc.sync.discovery.list_nearby():
+                if ident in (np.get("device_id"), np.get("id"), np.get("name")):
+                    for u in np.get("urls") or []:
+                        _add_url(u)
+
+        if not candidates:
+            raise HTTPException(400, "No reachable address for that device")
+
+        req_payload = {
+            "device_id": svc.hub.device_id,
+            "name": svc.hub.device_name,
+            "kind": svc.sync._local_kind(),
+            "urls": svc.sync._my_reachable_urls(),
+        }
+        last_err = "no answer"
+        async with httpx.AsyncClient(timeout=8.0) as hc:
+            for base in candidates:
+                try:
+                    r = await hc.post(base + "/v1/sync/pair/request", json=req_payload)
+                    if r.status_code == 200:
+                        data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+                        return {
+                            "ok": True,
+                            "prompted": True,
+                            "device_name": str(data.get("device_name") or ""),
+                            "url": base,
+                            "urls": data.get("urls") or [base],
+                        }
+                    last_err = f"HTTP {r.status_code}"
+                except Exception as exc:  # noqa: BLE001
+                    last_err = str(exc) or exc.__class__.__name__
+        return {"ok": False, "prompted": False, "detail": last_err}
 
     @app.post("/api/sync/pair/claim", dependencies=dep)
     async def sync_pair_with(body: PairWithBody) -> dict[str, Any]:
@@ -6237,9 +6388,63 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             "urls": svc.sync._my_reachable_urls(),
         }
 
+    @app.post("/v1/sync/pair/request")
+    async def peer_pair_request(body: PeerPairRequestBody, request: Request) -> JSONResponse:
+        """Called by another MiniMuse device when the user wants to pair with this device:
+        generates a fresh 6-character code & QR and pops it up directly over whatever screen is
+        open (never exposing the secret code in the HTTP response)."""
+        ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        hits = [t for t in pair_prompt_rate.get(ip, []) if now - t < 60.0]
+        if len(hits) >= 8:
+            return JSONResponse({"ok": False, "detail": "Too many pairing prompts; wait a moment."}, status_code=429)
+        hits.append(now)
+        pair_prompt_rate[ip] = hits
+
+        pair_info = await _build_pair_code_info(ensure_remote=True)
+        _publish_pair_popup(
+            pair_info,
+            from_id=body.device_id,
+            from_name=body.name or ip,
+            from_kind=body.kind,
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "prompted": True,
+                "device_id": svc.hub.device_id,
+                "device_name": svc.hub.device_name,
+                "urls": pair_info.get("urls") or [],
+            }
+        )
+
     @app.post("/v1/sync/pair/claim")
     async def peer_claim(body: PeerClaimBody, request: Request) -> JSONResponse:
         ip = request.client.host if request.client else ""
+        # If the user tried to pair before opening a code on this device, pop the code & QR up
+        # automatically right on screen so they don't have to hunt in Settings!
+        if not body.code.strip() or not svc.sync.pairing.pair_ready:
+            now = time.time()
+            hits = [t for t in pair_prompt_rate.get(ip or "unknown", []) if now - t < 60.0]
+            if len(hits) < 8:
+                hits.append(now)
+                pair_prompt_rate[ip or "unknown"] = hits
+                pair_info = await _build_pair_code_info(ensure_remote=True)
+                _publish_pair_popup(
+                    pair_info,
+                    from_id=body.device_id,
+                    from_name=body.name or ip,
+                    from_kind=body.kind,
+                )
+            host_name = svc.hub.device_name or "your other device"
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "prompted": True,
+                    "detail": f"Pairing code & QR just popped up on {host_name} — enter that 6-character code or scan its QR.",
+                },
+                status_code=401,
+            )
         ok, payload, status = svc.sync.accept_inbound_claim(
             code=body.code,
             remote_id=body.device_id,
@@ -6248,6 +6453,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             return_token=body.peer_token,
             client_ip=ip,
             remote_kind=body.kind,
+            cloud_secret=body.cloud_secret,
         )
         return JSONResponse(payload, status_code=status)
 

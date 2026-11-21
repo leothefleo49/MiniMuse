@@ -671,15 +671,37 @@ def swap_and_restart(exe: Path, new: Path) -> None:
         pass
     pid = os.getpid()
     if os.name == "nt":
+        # Perform atomic NTFS in-place swap in Python first (renaming a running .exe to .exe.old
+        # succeeds on NTFS while the process is still alive, avoiding locked-file retry loops).
+        old = exe.with_name(exe.name + ".old")
+        swapped_inline = False
+        if frozen() and exe.exists() and new.exists():
+            try:
+                old.unlink(missing_ok=True)
+                exe.rename(old)
+                new.rename(exe)
+                swapped_inline = True
+            except OSError:
+                if not exe.exists() and old.exists():
+                    try:
+                        old.rename(exe)
+                    except OSError:
+                        pass
         cmdline = subprocess.list2cmdline(extra_args) if extra_args else ""
         launch = f'start "" "{exe}" {cmdline}'.strip()
         bat = exe.with_name(exe.name + "-swap.cmd")
         bat.write_text(
             "@echo off\r\n"
-            "set \"SWAPPED=0\"\r\n"
+            f'set "SWAPPED={"1" if swapped_inline else "0"}"\r\n'
+            'if "%SWAPPED%"=="1" goto :launch\r\n'
+            f'if not exist "{new}" (\r\n'
+            '  set "SWAPPED=1"\r\n'
+            "  goto :launch\r\n"
+            ")\r\n"
             "for /L %%i in (1,1,45) do (\r\n"
-            "  ping 127.0.0.1 -n 2 >nul\r\n"
+            "  timeout /t 1 /nobreak >nul 2>&1\r\n"
             f"  if %%i==8 taskkill /F /PID {pid} >nul 2>&1\r\n"
+            f'  move /y "{exe}" "{old}" >nul 2>&1\r\n'
             f'  move /y "{new}" "{exe}" >nul 2>&1 && (\r\n'
             '    set "SWAPPED=1"\r\n'
             "    goto :launch\r\n"
@@ -695,18 +717,17 @@ def swap_and_restart(exe: Path, new: Path) -> None:
         )
         from nanomuse.win_proc import hidden_subprocess_kwargs
 
-        flags = (
-            getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        )
+        # Never combine CREATE_NO_WINDOW (0x08000000) with DETACHED_PROCESS (0x00000008):
+        # MSDN documents them as mutually exclusive, and combining them causes console child
+        # processes (timeout/ping/taskkill) to crash with 0xc0000142 (STATUS_DLL_INIT_FAILED).
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         env = dict(os.environ)
         env["MINIMUSE_CANONICAL_RELAUNCH"] = "1"
         subprocess.Popen(
             ["cmd", "/c", str(bat)],
             close_fds=True,
             env=env,
-            **hidden_subprocess_kwargs(creationflags=flags),
+            **hidden_subprocess_kwargs(hide_window=False, creationflags=flags),
         )
     else:
         quoted = " ".join(shlex.quote(a) for a in extra_args)

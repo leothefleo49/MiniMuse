@@ -440,6 +440,8 @@ export interface SyncPeerInfo {
   url: string;
   urls?: string[];
   remote_ready?: boolean;
+  cloud_link?: boolean;
+  via_cloud_link?: boolean;
   online: boolean;
   last_sync_at: string | null;
   last_error: string;
@@ -468,8 +470,15 @@ export interface PairCodeInfo {
   remote_ready?: boolean;
   remote_url?: string;
   cloudflared_installed?: boolean;
+  tunnel_starting?: boolean;
   /** set when no other device could actually reach this one (loopback-only or no network) */
   warning?: string;
+}
+
+export interface PairRequestEvent extends PairCodeInfo {
+  from_id?: string;
+  from_name?: string;
+  from_kind?: string;
 }
 
 export interface AppEntry {
@@ -2385,6 +2394,8 @@ export type WsMessage =
   | { kind: "sync"; sync: SyncState }
   | { kind: "sync_progress"; peer: string; applied: number; done: boolean }
   | { kind: "paired"; name: string }
+  | ({ kind: "pair_request" } & PairRequestEvent)
+  | { kind: "personal_cloud"; url?: string; status?: PersonalCloudStatus }
   | { kind: "chrome_state"; connected: boolean; attached: boolean; tab_id: number | null; url: string; title: string }
   | { kind: "app_update"; update: AppUpdateLiveState }
   | { kind: "error"; error: string }

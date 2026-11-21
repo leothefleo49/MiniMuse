@@ -197,7 +197,7 @@ function PersonalCloudSection() {
   return (
     <Section title={t("Your Private Cloud (Hosted Only By You — $0)")}>
       <p className="text-[13.5px] text-muted leading-relaxed">
-        {t("MiniMuse creates a private cloud for you on your own devices — not hosted by anyone else. Uses direct Wi-Fi P2P sync, your Tailscale mesh IP, a free Cloudflare Quick Tunnel, or your own self-hosted sync server.")}
+        {t("MiniMuse automatically creates an end-to-end encrypted Cloud Link when your devices pair ($0, no account needed) alongside direct Wi-Fi sync, automatic Cloudflare Quick Tunnel, and Tailscale — so your devices sync from anywhere, even when off home Wi-Fi or when one device is asleep.")}
       </p>
       {status && (
         <div className="space-y-2.5 text-[13px]">

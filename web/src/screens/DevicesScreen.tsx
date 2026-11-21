@@ -340,12 +340,16 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
                             <span
                               className={cx(
                                 "rounded-full px-2 py-0.5 text-[10.5px] font-medium",
-                                remoteReady
+                                remoteReady || peer.cloud_link
                                   ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300"
                                   : "bg-amber-500/12 text-amber-700 dark:text-amber-300",
                               )}
                             >
-                              {remoteReady ? t("Works anywhere") : t("Home Wi-Fi only")}
+                              {peer.cloud_link
+                                ? t("Cloud Link · Works anywhere")
+                                : remoteReady
+                                  ? t("Works anywhere")
+                                  : t("Home Wi-Fi only")}
                             </span>
                             <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-muted">
                               {kind === "phone" ? t("Phone") : t("Computer")}
@@ -356,11 +360,15 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
                         <p className="mt-1 break-words [overflow-wrap:anywhere] text-[12.5px] leading-snug text-muted">
                           {peer.last_error
                             ? t("Not syncing: {error}", { error: peer.last_error })
-                            : peer.last_sync_at
-                              ? t("Synced · {when}", { when: relativeTime(peer.last_sync_at) })
-                              : peer.online
-                                ? t("Connected · syncing directly")
-                                : t("Paired · catches up automatically when online")}
+                            : peer.via_cloud_link
+                              ? peer.last_sync_at
+                                ? t("Synced via encrypted Cloud Link · {when}", { when: relativeTime(peer.last_sync_at) })
+                                : t("Connected via encrypted Cloud Link")
+                              : peer.last_sync_at
+                                ? t("Synced · {when}", { when: relativeTime(peer.last_sync_at) })
+                                : peer.online
+                                  ? t("Connected · syncing directly")
+                                  : t("Paired · catches up automatically when online")}
                         </p>
                         <div className="mt-2.5 flex flex-wrap gap-2">
                           <button
@@ -384,6 +392,19 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
                               });
                               setRemoteUrlDraft("");
                               setRemoteCodeDraft("");
+                              // Automatically pop up the 6-character code & QR on the other device if reachable!
+                              void api
+                                .syncPairRequest({ peer_id: pIdent, target: peer.url, urls: peer.urls })
+                                .then((res) => {
+                                  if (res.prompted) {
+                                    toast(
+                                      t("Code & QR popped up on {name} — enter the 6-character code or scan its QR.", {
+                                        name: res.device_name || displayName,
+                                      }),
+                                    );
+                                  }
+                                })
+                                .catch(() => undefined);
                             }}
                             className={cx(
                               "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[12px] font-medium transition",
@@ -502,6 +523,33 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
                 />
               )}
               <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void api
+                      .syncPairRequest({
+                        peer_id: remoteModalPeer.ident,
+                        target: remoteUrlDraft.trim() || remoteModalPeer.currentHost,
+                      })
+                      .then((res) => {
+                        if (res.prompted) {
+                          toast(
+                            t("Code & QR popped up on {name} — enter the 6-character code or scan its QR.", {
+                              name: res.device_name || remoteModalPeer.name,
+                            }),
+                          );
+                        } else {
+                          toast(t("Could not reach {name} right now to pop up the code.", { name: remoteModalPeer.name }));
+                        }
+                      })
+                      .catch(() =>
+                        toast(t("Could not reach {name} right now to pop up the code.", { name: remoteModalPeer.name })),
+                      );
+                  }}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-full border border-border px-3.5 text-[12.5px] font-medium hover:bg-surface-2"
+                >
+                  <QrCode size={14} /> {t("Pop up code on {name}", { name: remoteModalPeer.name })}
+                </button>
                 <button
                   type="button"
                   onClick={() => {

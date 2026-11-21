@@ -336,12 +336,40 @@ export function SyncControls({
     try {
       const info = await api.syncPairCode();
       setPairCode(info);
+      window.dispatchEvent(new CustomEvent("nanomuse:open-pair-code", { detail: info }));
     } catch (e) {
       toast((e as Error).message);
     } finally {
       setPairing(false);
     }
   };
+
+  const [promptingRemote, setPromptingRemote] = useState(false);
+
+  const requestRemotePopup = useCallback(
+    async (rawTarget: string, urls?: string[], peerName = "") => {
+      const clean = rawTarget.trim();
+      if (!clean && !(urls && urls.length)) return;
+      setPromptingRemote(true);
+      try {
+        const res = await api.syncPairRequest({ target: clean, urls });
+        if (res.prompted) {
+          toast(
+            t("Code & QR popped up on {name} — enter the 6-character code or scan its QR.", {
+              name: res.device_name || peerName || t("your other device"),
+            }),
+          );
+        } else {
+          toast(t("Enter the 6-character code shown on {name}.", { name: peerName || t("your other device") }));
+        }
+      } catch {
+        toast(t("Enter the 6-character code shown on {name}.", { name: peerName || t("your other device") }));
+      } finally {
+        setPromptingRemote(false);
+      }
+    },
+    [t, toast],
+  );
 
   const copyPairLink = async () => {
     if (!pairCode?.pair_uri) return;
@@ -595,7 +623,7 @@ export function SyncControls({
                       setSelectedNearbyName(chosenName);
                       setShowManual(true);
                       setTarget(chosenUrl);
-                      toast(t("Enter the 6-character code shown on {name}.", { name: chosenName }));
+                      void requestRemotePopup(chosenUrl, np.urls, chosenName);
                       window.requestAnimationFrame(() => {
                         manualFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
                         codeInputRef.current?.focus();
@@ -645,25 +673,49 @@ export function SyncControls({
                   className="w-full rounded-xl bg-surface px-3 py-2 font-mono text-[14px] tracking-widest outline-none focus:ring-2 focus:ring-accent/40"
                 />
               </label>
-              <div className="flex justify-end gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowManual(false);
-                    setSelectedNearbyName("");
-                  }}
-                  className="rounded-full border border-border px-3 py-1.5 text-[12.5px] text-muted"
-                >
-                  {t("Cancel")}
-                </button>
-                <button
-                  type="submit"
-                  disabled={pairing || !target.trim()}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-accent px-4 py-1.5 text-[12.5px] font-medium text-accent-fg disabled:opacity-45"
-                >
-                  {pairing && <Loader2 size={13} className="animate-spin" />}
-                  {t("Pair devices")}
-                </button>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {target.trim() && !target.toLowerCase().includes("code=") && (
+                    <button
+                      type="button"
+                      disabled={promptingRemote}
+                      onClick={() => void requestRemotePopup(target, undefined, selectedNearbyName)}
+                      className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-[12px] font-medium text-fg hover:bg-surface disabled:opacity-50"
+                    >
+                      {promptingRemote ? <Loader2 size={12} className="animate-spin" /> : <QrCode size={12} />}
+                      {t("Pop up code on other device")}
+                    </button>
+                  )}
+                  {phone && typeof phone.scanToPair === "function" && (
+                    <button
+                      type="button"
+                      onClick={() => phone.scanToPair?.()}
+                      className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-[12px] font-medium text-fg hover:bg-surface"
+                    >
+                      <QrCode size={12} /> {t("Scan QR")}
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowManual(false);
+                      setSelectedNearbyName("");
+                    }}
+                    className="rounded-full border border-border px-3 py-1.5 text-[12.5px] text-muted"
+                  >
+                    {t("Cancel")}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={pairing || !target.trim()}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-accent px-4 py-1.5 text-[12.5px] font-medium text-accent-fg disabled:opacity-45"
+                  >
+                    {pairing && <Loader2 size={13} className="animate-spin" />}
+                    {t("Pair devices")}
+                  </button>
+                </div>
               </div>
             </form>
           )}
