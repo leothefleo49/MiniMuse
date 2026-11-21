@@ -252,6 +252,79 @@ data class WatchUpdateInfo(
 )
 
 class WatchClient(private val config: WatchConfig) {
+
+    /** The wear shell this app was built with; the server compares it to decide whether a
+     *  new APK really is needed (routine updates arrive as server-side content). */
+    fun shellVersion(): String = BuildConfig.SHELL_VERSION
+
+    fun appVersion(): String = BuildConfig.VERSION_NAME
+
+    /** The unguessable ntfy topic this server announces its live URL on. Both sides derive
+     *  it the same way, from the watch token, so no secret travels and nobody else can
+     *  guess the name. */
+    fun beaconTopic(): String {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(
+            javax.crypto.spec.SecretKeySpec(
+                config.token.ifBlank { "watch" }.toByteArray(Charsets.UTF_8),
+                "HmacSHA256",
+            )
+        )
+        val digest = mac.doFinal("minimuse-watch-beacon".toByteArray(Charsets.UTF_8))
+        val hex = StringBuilder(digest.size * 2)
+        for (b in digest) {
+            hex.append(String.format(Locale.ROOT, "%02x", b))
+        }
+        return "nmw-" + hex.substring(0, 20)
+    }
+
+    /** Ask the beacon for the server's current address. Works from any network with
+     *  internet, after the tunnel URL changed and every saved and scanned address went
+     *  stale. One poll, no subscription: the watch asks only when it has run out of
+     *  addresses to try. */
+    suspend fun fetchBeaconUrl(): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("https://ntfy.sh/${beaconTopic()}/json?poll=1")
+                .get()
+                .build()
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IllegalStateException("beacon HTTP ${resp.code}"))
+                }
+                val body = resp.body?.string().orEmpty()
+                var freshest: String = ""
+                var freshestTime = -1L
+                for (line in body.lines()) {
+                    if (line.isBlank()) continue
+                    val ev = JSONObject(line)
+                    if (ev.optString("event") != "message") continue
+                    val t = ev.optLong("time", 0L)
+                    if (t <= freshestTime) continue
+                    val inner = runCatching { JSONObject(ev.optString("message")) }.getOrNull() ?: continue
+                    val urls = inner.optJSONArray("urls") ?: continue
+                    var pick = ""
+                    for (i in 0 until urls.length()) {
+                        val u = urls.optString(i, "")
+                        if (u.startsWith("https://")) { pick = u; break }
+                        if (u.isNotBlank() && pick.isBlank()) pick = u
+                    }
+                    if (pick.isNotBlank()) {
+                        freshest = pick
+                        freshestTime = t
+                    }
+                }
+                if (freshest.isBlank()) {
+                    Result.failure(IllegalStateException("beacon has no address"))
+                } else {
+                    Result.success(freshest)
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -366,9 +439,15 @@ class WatchClient(private val config: WatchConfig) {
         }
         try {
             val tid = threadId.trim().ifBlank { "main" }
-            val query = if (tid == "main") "" else "?thread=${java.net.URLEncoder.encode(tid, "UTF-8")}"
+            // the shell and app version ride along so the server knows whether the wear
+            // APK really needs replacing, instead of reinstalling it on every release
+            val parts = mutableListOf(
+                "shell=${java.net.URLEncoder.encode(shellVersion(), "UTF-8")}",
+                "device_version=${java.net.URLEncoder.encode(appVersion(), "UTF-8")}",
+            )
+            if (tid != "main") parts.add("thread=${java.net.URLEncoder.encode(tid, "UTF-8")}")
             val req = Request.Builder()
-                .url("$baseUrl/api/watch/state$query")
+                .url("$baseUrl/api/watch/state?${parts.joinToString("&")}")
                 .header("Authorization", "Bearer $token")
                 .get()
                 .build()

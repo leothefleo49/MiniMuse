@@ -542,6 +542,15 @@ class AvatarStudio:
 
     def view(self) -> dict[str, Any]:
         ep = self.endpoint()
+        # ``host`` names where the pictures come from; the clips can live at another
+        # provider entirely (the [video] slot), so their own host is named beside it
+        video_host = ""
+        if ep is not None and ep.clips:
+            video_host = (
+                ep.video_base_url.split("//", 1)[-1].split("/", 1)[0]
+                if ep.video_base_url
+                else ep.base_url.split("//", 1)[-1].split("/", 1)[0]
+            )
         return {
             "available": ep is not None,
             "unavailable": "" if ep is not None else self.unavailable_message(),
@@ -550,6 +559,7 @@ class AvatarStudio:
             "video_model": ep.video_model if ep and ep.clips else "",
             "cloud": bool(ep and ep.cloud),
             "host": ep.base_url.split("//", 1)[-1].split("/", 1)[0] if ep else "",
+            "video_host": video_host,
             "current": self.current.view() if self.current else None,
             "face": self.face_info(),
         }

@@ -176,3 +176,40 @@ def test_usage_endpoint_works_signed_out(settings: Settings) -> None:
         body = r.json()
         assert body["days"] == 7 and body["turns"] == 0
         assert body["per_model"] == [] and body["activities"] == {}
+
+
+def test_summary_attributes_each_feature_its_share_of_the_cost(tmp_path: Path) -> None:
+    ledger = UsageLedger(tmp_path / "usage.jsonl")
+    # one turn that only drew pictures, one that only browsed: each feature's cost is that
+    # turn's whole cost, split by count when a turn does several things
+    ledger.record_turn(
+        ts="2026-11-10T12:00:00+00:00",
+        thread="main",
+        model="deepseek-flash",
+        source="person",
+        trace={"prompt_tokens": 20000, "cache_tokens": 18000, "completion_tokens": 900},
+        artifacts=[{"path": "poster.png", "action": "write"}],
+    )
+    ledger.record_turn(
+        ts="2026-11-11T12:00:00+00:00",
+        thread="main",
+        model="deepseek-flash",
+        source="person",
+        trace={
+            "prompt_tokens": 10000,
+            "cache_tokens": 0,
+            "completion_tokens": 500,
+            "tool_names": ["web_search"],
+        },
+    )
+    s = ledger.summary(days=30)
+    assert s["cost_usd"] > 0
+    # the picture turn's whole cost lands on image_generation
+    assert s["media_costs"]["image_generation"] > 0
+    # the browsing turn's whole cost lands on web_browsing
+    assert s["activity_costs"]["web_browsing"] > 0
+    # together they account for everything the two turns spent
+    spent = s["media_costs"]["image_generation"] + s["activity_costs"]["web_browsing"]
+    assert abs(spent - s["cost_usd"]) < 0.01
+    # a chat-only turn costs the headline, not a feature
+    assert "reading" not in s["activity_costs"] or s["activity_costs"]["reading"] == 0

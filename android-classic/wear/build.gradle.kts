@@ -23,7 +23,7 @@ android {
         targetSdk = 36
         versionCode = 151
         versionName = "1.2.23"
-        buildConfigField("String", "SHELL_VERSION", "\"1.0.25\"")
+        buildConfigField("String", "SHELL_VERSION", "\"1.0.26\"")
     }
 
     signingConfigs {

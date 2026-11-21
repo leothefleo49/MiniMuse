@@ -71,6 +71,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -865,11 +867,50 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             )
         with contextlib.suppress(Exception):
             await svc.sync.publish_cloud_beacons(force=True)
+        # the server moved: tell the watch too, so a watch on another Wi-Fi heals itself
+        with contextlib.suppress(Exception):
+            await _publish_watch_beacon()
         with contextlib.suppress(Exception):
             svc.sync.peer_sync_soon(delay=0.5)
 
     personal_cloud.add_url_callback(_on_personal_cloud_url)
     watch_codes: dict[str, float] = {}
+    # the Wear shell version the wear APK this server ships was built with (keep in
+    # lockstep with SHELL_VERSION in android-classic/wear/build.gradle.kts). Routine
+    # updates reach the watch as server-side content; a new APK is pushed only when this
+    # number moves, so an update is no longer "a new app installed" every release
+    WEAR_SHELL_VERSION = "1.0.26"
+    # the shell version the watch itself last reported while polling ("" = never seen)
+    watch_report: dict[str, Any] = {"shell": "", "version": "", "at": 0.0}
+
+    def _watch_beacon_topic() -> str:
+        """The ntfy topic where this server's live URL is announced for its watch: derived
+        from the server token, so the watch (which knows the token) can compute the same
+        unguessable name and find the server again from any network, even after the
+        tunnel URL changed and the saved address went stale."""
+        digest = hmac.new(
+            (svc.token or "watch").encode("utf-8"), b"minimuse-watch-beacon", hashlib.sha256
+        ).hexdigest()
+        return f"nmw-{digest[:20]}"
+
+    async def _publish_watch_beacon() -> None:
+        """Announce the freshest URL(s) on the watch beacon topic: a tiny best-effort POST,
+        retried by the autodetect loop, so a watch on another Wi-Fi can heal its address."""
+        import httpx
+
+        st = personal_cloud.status(probe_tailscale=False)
+        urls = [u for u in ([st.get("best_url")] + (st.get("lan_urls") or [])) if u]
+        if not urls:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                await client.post(
+                    f"https://ntfy.sh/{_watch_beacon_topic()}",
+                    json={"urls": urls[:3], "ts": datetime.now(UTC).isoformat(timespec="seconds")},
+                )
+        except Exception:
+            logger.debug("watch beacon publish failed", exc_info=True)
+
     # what the background watch finder last saw (shown in the Devices screen)
     watch_auto: dict[str, Any] = {"last_check": 0.0, "last_result": "not checked yet", "watch_online": False}
     self_update = SelfUpdate(update_check, svc.settings.server.update_repo)
@@ -1890,7 +1931,8 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     async def list_memory() -> list[dict[str, Any]]:
         if svc.app.memory is None:
             return []
-        return [m.__dict__ for m in svc.app.memory.all()]
+        # the memory screen shows the whole saved-facts list, not a silent first thousand
+        return [m.__dict__ for m in svc.app.memory.all(10000)]
 
     @app.post("/api/memory", dependencies=dep)
     async def add_memory(body: MemoryBody) -> dict[str, Any]:
@@ -1947,7 +1989,10 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         return target, "/".join(parts)
 
     @app.get("/api/memory/files", dependencies=dep)
-    async def list_memory_files(q: str = Query(default="", max_length=200)) -> dict[str, Any]:
+    async def list_memory_files(
+        q: str = Query(default="", max_length=200),
+        limit: int = Query(default=500, ge=1, le=20000),
+    ) -> dict[str, Any]:
         """List Muse-imported memory documents under ``data/muse_memory/`` (with search & snippets)."""
         root = svc.data_dir / "muse_memory"
         query = q.strip().lower()
@@ -1994,7 +2039,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                 )
         items.sort(key=lambda x: x["updated_at"], reverse=True)
         return {
-            "files": items[:500],
+            "files": items[:limit],
             "total": len(items),
             "folders": sorted(folders),
             "total_bytes": total_bytes,
@@ -4494,8 +4539,18 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         }
 
     @app.get("/api/watch/state", dependencies=dep)
-    async def watch_state(thread: str = Query(MAIN_THREAD, max_length=120)) -> dict[str, Any]:
-        """Compact state snapshot tailored for Wear OS watches (home hero, chats, watch apps)."""
+    async def watch_state(
+        thread: str = Query(MAIN_THREAD, max_length=120),
+        shell: str = Query("", max_length=20),
+        device_version: str = Query("", max_length=20),
+    ) -> dict[str, Any]:
+        """Compact state snapshot tailored for Wear OS watches (home hero, chats, watch apps).
+        The watch passes its own shell and app version so the server can decide whether the
+        wear APK really needs replacing, instead of reinstalling it on every release."""
+        if shell or device_version:
+            watch_report["shell"] = shell.strip()
+            watch_report["version"] = device_version.strip()
+            watch_report["at"] = time.time()
         st = svc.state()
         target_tid = (thread or MAIN_THREAD).strip() or MAIN_THREAD
         active_thread = svc.threads.get(target_tid) or svc.threads.get(MAIN_THREAD)
@@ -4652,14 +4707,16 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             ],
             "update": {
                 "version": __version__,
-                "shell_version": "1.2.13",
+                "shell_version": WEAR_SHELL_VERSION,
                 "apk_url": "/api/watch/apk",
             },
         }
 
     @app.get("/api/watch/version", dependencies=dep)
     async def watch_version() -> dict[str, Any]:
-        """Return latest Wear OS companion version and downloadable APK status."""
+        """Return latest Wear OS companion version and downloadable APK status. The shell
+        version moves only when the wear APK itself changed, so the watch's own updater
+        downloads a new app only then and takes routine updates from the server."""
         from nanomuse import __version__
 
         apk = _find_watch_apk()
@@ -4667,7 +4724,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             asyncio.create_task(_ensure_watch_apk(), name="watch-apk-prefetch")
         return {
             "version": __version__,
-            "shell_version": "1.2.13",
+            "shell_version": WEAR_SHELL_VERSION,
             "apk_ready": apk is not None,
             "apk_url": "/api/watch/apk",
         }
@@ -4747,8 +4804,9 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         urls_to_try: list[str] = [
             f"https://github.com/{repo}/releases/download/v{__version__}/MiniMuse-{__version__}-wear.apk",
             f"https://github.com/{repo}/releases/download/v{__version__}/MiniMuse-wear-{__version__}.apk",
+            # release assets are version-named, so this last one is built from the actual
+            # latest tag rather than a name that does not exist and always 404s
             f"https://github.com/{repo}/releases/latest/download/MiniMuse-{__version__}-wear.apk",
-            f"https://github.com/{repo}/releases/latest/download/MiniMuse-wear.apk",
         ]
         with contextlib.suppress(Exception):
             assets = await self_update._release_assets(__version__)
@@ -5374,7 +5432,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
 
         return await asyncio.to_thread(_install)
 
-    @app.get("/api/watch/apk", dependencies=dep)
+    @app.get("/api/watch/apk", dependencies=dep_or_signed)
     async def download_watch_apk() -> FileResponse:
         apk = await _ensure_watch_apk()
         if apk is None or not apk.is_file():
@@ -5432,6 +5490,17 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             f"https://github.com/{repo}/releases/download/v{__version__}/MiniMuse-{__version__}-arm64.apk",
             f"https://github.com/{repo}/releases/download/v{__version__}/MiniMuse-v{__version__}-quest-vr.apk",
         ]
+        # the installed version is not always a tagged release: fall back to the release
+        # assets themselves (quest first, then the arm64 phone shell, which is the same app)
+        with contextlib.suppress(Exception):
+            assets = await self_update._release_assets(__version__)
+            for want in ("quest", "arm64", "android"):
+                for asset in assets:
+                    name = str(asset.get("name") or "")
+                    dl = str(asset.get("browser_download_url") or "")
+                    if want in name.lower() and name.lower().endswith(".apk") and dl:
+                        candidate_urls.append(dl)
+                        break
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=180.0) as hc:
                 for u in candidate_urls:
@@ -5736,7 +5805,17 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             )
             m = _re.search(r"versionName=([^\s]+)", proc.stdout or "")
             installed_ver = m.group(1) if m else ""
-            if installed_ver and _parse_ver_tuple(installed_ver) >= _parse_ver_tuple(__version__):
+            # the wear app is a shell: a new APK goes in only when the shell itself moved
+            # (the watch reports its shell while polling), never just because the server's
+            # runtime version did - routine updates reach the watch as server-side content
+            reported_shell = str(watch_report.get("shell") or "")
+            if reported_shell and reported_shell == WEAR_SHELL_VERSION:
+                return f"wear shell {reported_shell} is current ({installed_ver}); no reinstall"
+            if (
+                not reported_shell
+                and installed_ver
+                and _parse_ver_tuple(installed_ver) >= _parse_ver_tuple(__version__)
+            ):
                 return f"watch is up to date ({installed_ver})"
             res = subprocess.run(
                 [adb, "-s", target, "install", "-r", "-g", str(apk)],
@@ -5747,8 +5826,12 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                 **hidden_subprocess_kwargs(),
             )
             if res.returncode == 0:
-                logger.info("Auto-updated paired watch {} to {}", target, __version__)
-                return f"updated the watch to {__version__}"
+                logger.info(
+                    "Auto-updated paired watch {} (wear shell {})",
+                    target,
+                    WEAR_SHELL_VERSION,
+                )
+                return f"updated the wear shell to {WEAR_SHELL_VERSION}"
             return f"update failed: {(res.stdout or res.stderr or '').strip()[:160]}"
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug("watch auto-push skipped: {}", exc)
@@ -5782,17 +5865,24 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
 
         Every couple of minutes while the watch is around (every five when it is not): find it by
         its serial, reconnect, and update it when this server is newer. Wireless-debugging ports
-        and addresses change; the loop does not care.
+        and addresses change; the loop does not care. The loop also re-announces this server's
+        live URL on the watch beacon topic every quarter hour, so a watch on another network
+        can always find its way back without re-pairing.
         """
         if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("NANOMUSE_NO_WATCH_AUTODETECT"):
             return
         await asyncio.sleep(float(os.environ.get("NANOMUSE_WATCH_FIRST_CHECK_S") or 20.0))
+        last_beacon = 0.0
         while True:
             delay = 300.0
             try:
                 if svc.auto_update_enabled() and _load_saved_watch():
                     await _autodetect_once()
                     delay = 120.0 if watch_auto["watch_online"] else 300.0
+                now = time.time()
+                if now - last_beacon > 900.0:
+                    last_beacon = now
+                    await _publish_watch_beacon()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -5956,10 +6046,11 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         apps: str = Query("both"),
         main_chat: str = Query("side"),
         keep_copy: bool = Query(True),
+        continue_tasks: bool = Query(True),
         background: bool = Query(False),
     ) -> dict[str, Any]:
         """Import one file (a Muse export zip, a nanoMuse export zip, or a transcript):
-        the bytes as the request body (no multipart), the file name in ``name``. The four
+            the bytes as the request body (no multipart), the file name in ``name``. The four
         switches are the Import & export screen's; the reply says what was found and done.
         ``keep_copy`` moves the upload itself to ``workspace/imports/`` instead of
         deleting it after the transfer, so the original can be re-checked later.
@@ -5971,6 +6062,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                 apps=apps,
                 main_chat=main_chat,
                 keep_copy=keep_copy,
+                continue_tasks=continue_tasks,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -6127,6 +6219,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         background_memory: bool = Query(True),
         apps: str = Query("both"),
         main_chat: str = Query("side"),
+        continue_tasks: bool = Query(True),
     ) -> dict[str, Any]:
         """Import pasted text: the text itself as the request body. The switches work as
         for ``/api/data/import``; ``apps`` and ``main_chat`` simply do not apply."""
@@ -6136,6 +6229,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
                 background_memory=background_memory,
                 apps=apps,
                 main_chat=main_chat,
+                continue_tasks=continue_tasks,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc

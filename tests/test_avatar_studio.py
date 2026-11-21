@@ -170,6 +170,7 @@ def test_chat_request_becomes_a_card_and_the_agent_stays_out(studio_server) -> N
         "video_model": "",
         "cloud": False,
         "host": "images.example.test",
+        "video_host": "",
         "current": None,
         "face": None,
     }

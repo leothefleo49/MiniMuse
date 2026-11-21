@@ -590,8 +590,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Find the same server at a new address and keep using it (a stale IP is the usual
-     *  reason a paired watch sits on "Connecting..." forever). Also probes loopback (127.0.0.1)
-     *  for Bluetooth/ADB-bridged phone links when watch Wi-Fi is off. */
+     *  reason a paired watch sits on "Connecting..." forever). Probes loopback (127.0.0.1)
+     *  for Bluetooth/ADB-bridged phone links when watch Wi-Fi is off, and finally asks the
+     *  beacon for the server's live tunnel address, which works from any network. */
     private fun maybeHealAddress() {
         val now = System.currentTimeMillis()
         if (now - healAttemptAtMs < 30_000L) return
@@ -602,6 +603,9 @@ class MainActivity : AppCompatActivity() {
             val candidates = LinkedHashSet<String>()
             found.forEach { candidates.add(WatchConfig.normalizeUrl(it.url)) }
             candidates.add("http://127.0.0.1:8787")
+            // nothing on this network: the beacon knows the server's live address even
+            // when the watch sits on a completely different Wi-Fi
+            client.fetchBeaconUrl().getOrNull()?.let { candidates.add(WatchConfig.normalizeUrl(it)) }
             for (url in candidates) {
                 if (url.isBlank() || url == saved) continue
                 val previous = config.serverUrl

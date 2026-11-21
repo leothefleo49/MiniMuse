@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import heapq
 import json
 import mimetypes
 import re
@@ -4407,10 +4408,15 @@ class MuseService:
 
     def list_files(self, limit: int = 200) -> list[dict[str, Any]]:
         ws = self.workspace()
-        out: list[dict[str, Any]] = []
         if not ws.exists():
-            return out
+            return []
         skip_dirs = {"node_modules", ".bun-cache", "__pycache__", ".git", ".venv", "venv", "harness"}
+        # keep only the newest `keep` files seen so far: the answer is the same however the
+        # walk meets them (an early break used to drop the newest file of a big workspace),
+        # and a workspace of any size costs no list of that size
+        keep = max(min(limit, 10000), 1000)
+        newest: list[tuple[float, int, dict[str, Any]]] = []
+        seq = 0
         for p in ws.rglob("*"):
             if not p.is_file():
                 continue
@@ -4421,7 +4427,9 @@ class MuseService:
                 st = p.stat()
             except OSError:
                 continue
-            out.append(
+            entry = (
+                st.st_mtime,
+                seq,
                 {
                     "path": p.relative_to(ws).as_posix(),
                     "name": p.name,
@@ -4429,12 +4437,15 @@ class MuseService:
                     "modified": datetime.fromtimestamp(st.st_mtime, UTC).isoformat(
                         timespec="seconds"
                     ),
-                }
+                },
             )
-            if len(out) >= 5000:
-                break
-        out.sort(key=lambda f: f["modified"], reverse=True)
-        return out[:limit]
+            seq += 1
+            if len(newest) < keep:
+                heapq.heappush(newest, entry)
+            elif st.st_mtime > newest[0][0]:
+                heapq.heapreplace(newest, entry)
+        newest.sort(key=lambda e: (e[0], e[1]), reverse=True)
+        return [entry for _, _, entry in newest][:limit]
 
     def list_apps(self) -> list[dict[str, Any]]:
         """Discover runnable web apps in the workspace (folder apps, spaces, standalone HTML,

@@ -201,6 +201,10 @@ class UsageLedger:
         per_model: dict[str, dict[str, Any]] = {}
         activities: dict[str, int] = defaultdict(int)
         media: dict[str, int] = defaultdict(int)
+        # each feature's share of the money: a turn's cost is split across what the turn
+        # did, by count, so "what it cost" sits beside "how often" on the Usage screen
+        activity_costs: dict[str, float] = defaultdict(float)
+        media_costs: dict[str, float] = defaultdict(float)
         total_cost = 0.0
         total_prompt = total_cached = total_reasoning = total_completion = 0
         total_duration = 0.0
@@ -258,6 +262,18 @@ class UsageLedger:
             for k, v in (e.get("media") or {}).items():
                 if v:
                     media[k] += v
+            cost = float(e.get("cost_usd") or 0)
+            if cost:
+                weights = {("a", k): int(v) for k, v in (e.get("activities") or {}).items() if v}
+                weights.update({("m", k): int(v) for k, v in (e.get("media") or {}).items() if v})
+                wsum = sum(weights.values())
+                if wsum:
+                    for (kind, k), v in weights.items():
+                        share = cost * v / wsum
+                        if kind == "a":
+                            activity_costs[k] += share
+                        else:
+                            media_costs[k] += share
             if len(recent) < 12:
                 recent.append(
                     {
@@ -286,6 +302,12 @@ class UsageLedger:
             "per_model": sorted(per_model.values(), key=lambda m: -m["cost_usd"]),
             "activities": dict(sorted(activities.items(), key=lambda kv: -kv[1])),
             "media": dict(sorted(media.items(), key=lambda kv: -kv[1])),
+            "activity_costs": {
+                k: round(v, 4) for k, v in sorted(activity_costs.items(), key=lambda kv: -kv[1])
+            },
+            "media_costs": {
+                k: round(v, 4) for k, v in sorted(media_costs.items(), key=lambda kv: -kv[1])
+            },
             "recent": list(reversed(recent)),
         }
 
