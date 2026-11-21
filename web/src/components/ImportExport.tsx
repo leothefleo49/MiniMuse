@@ -75,6 +75,7 @@ ONE ARCHIVE FOLDER. Build everything inside a single folder named minimuse-archi
 - Preferences and standing instructions, including proactive and notification settings
 - Custom skills and connector docs, with credentials removed
 - Scheduled and recurring jobs: name, schedule, what each does, where it delivers
+- Write system/scheduled-jobs.md as your real cron list: a table of enabled recurring jobs (Job ID | Title | Schedule | Owner) with schedules like "daily 07:42", "weekdays 08:00", "weekly mon 09:00", "every 1h", "monthly 1 09:00"; a table of enabled one-time future jobs (Job ID | Title | Fires); then a line listing the disabled job ids
 - Anything else that shapes how you work for me
 
 7. MANIFEST.md at the archive root
@@ -100,11 +101,13 @@ UPDATES ONLY, when I paste a transfer code
 - If my message contains a line like SINCE: 2026-11-18T17:42:03Z, this is an update, not a rebuild.
 - Include only what is new or changed since that time: chats with newer messages, and notes, goals, documents, files and app folders whose files changed after it. Use message timestamps and file modification times, and add a 10 minute safety margin.
 - Set "scope": "delta" and "since_code": "<the code>" in profile/muse-profile.json, and make the counts block describe only this delta.
+- If there is anything the export cannot include (photos or media that only live in the chat store, files too large to bundle, anything unreadable), list it in profile/muse-profile.json under "excluded": [{"area": "...", "count": 0, "why": "..."}] and say it in the MANIFEST and your report. Never leave me believing something transferred when it did not.
 - Paths, header formats, the MANIFEST fields and everything else stay exactly the same. Files that did not change are not re-sent.
 
 REPORT BACK
 - Paste a muse-profile JSON block with the profile fields and the counts.
 - List what you created or updated, with the verified totals per section, plus every gap and redaction.
+- Name anything from the "excluded" list out loud, so I know what did not make it into the zip.
 - Confirm everything is saved inside your exportable workspace.
 - Tell me how to send it: Muse Settings -> Data controls -> Export data, download the .zip file, then upload it in MiniMuse under Settings -> Import & export.`;
 
@@ -153,6 +156,9 @@ function ChoiceRow<T extends string>({
 
 export function summaryOf(result: ImportResult, t: (key: string, vars?: Record<string, string | number>) => string) {
   const bits: string[] = [];
+  if (result.scope === "delta" && result.since_code) {
+    bits.push(t("update since {code}", { code: result.since_code }));
+  }
   if (result.profile_updated) bits.push(t("AI profile & user details linked"));
   if (result.avatar_files) bits.push(t("{n} avatar icons & animations", { n: String(result.avatar_files) }));
   if (result.avatar_moods) bits.push(t("{n} avatar moods ready", { n: String(result.avatar_moods) }));
@@ -162,6 +168,10 @@ export function summaryOf(result: ImportResult, t: (key: string, vars?: Record<s
   if (result.events_updated) bits.push(t("{n} messages updated", { n: String(result.events_updated) }));
   if (result.messages_indexed) bits.push(t("{n} messages in background memory", { n: String(result.messages_indexed) }));
   if (result.memory_files) bits.push(t("{n} memory files", { n: String(result.memory_files) }));
+  if (result.attachments_linked) bits.push(t("{n} photos & files attached to their messages", { n: String(result.attachments_linked) }));
+  if (result.tasks_created) bits.push(t("{n} of Muse's scheduled tasks now run here", { n: String(result.tasks_created) }));
+  if (result.tasks_updated) bits.push(t("{n} rescheduled", { n: String(result.tasks_updated) }));
+  if (result.tasks_cancelled) bits.push(t("{n} cancelled because Muse turned them off", { n: String(result.tasks_cancelled) }));
   if (result.files_updated) bits.push(t("{n} files updated in place", { n: String(result.files_updated) }));
   if (result.apps_saved) bits.push(t("{n} apps saved", { n: String(result.apps_saved) }));
   if (result.apps_registered) bits.push(t("{n} apps restored", { n: String(result.apps_registered) }));
@@ -186,12 +196,14 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
   const [apps, setApps] = useState<AppsChoice>("both");
   const [mainChat, setMainChat] = useState<MainChoice>("side");
   const [keepCopy, setKeepCopy] = useState(true);
+  const [continueTasks, setContinueTasks] = useState(true);
   const [busy, setBusy] = useState<"file" | "text" | "export" | "bundle" | "">("");
   const [result, setResult] = useState<ImportResult | null>(null);
   const [copies, setCopies] = useState<KeptCopy[]>([]);
   const [removing, setRemoving] = useState("");
   const [uploadPct, setUploadPct] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [copiedSince, setCopiedSince] = useState(false);
   const [copiedBundle, setCopiedBundle] = useState(false);
   const prompt = MUSE_PROMPT;
 
@@ -201,6 +213,7 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
     apps,
     main_chat: mainChat,
     keep_copy: keepCopy,
+    continue_tasks: continueTasks,
   });
 
   // the originals kept from earlier transfers: listed so they can be read again or deleted
@@ -384,6 +397,12 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
           {t("A side chat is the safe pick. Becomes the main chat sets the current main chat aside as a side chat, untouched. Merges into the main chat interleaves both histories by message time.")}
         </MuseCaption>
         <MuseDivider inset={52} />
+        <MuseSwitchRow label={t("Continue Muse's scheduled tasks")} checked={continueTasks} onChange={setContinueTasks} />
+        <MuseDivider inset={16} />
+        <MuseCaption>
+          {t("The reminders and recurring jobs Muse ran for you (morning check-ins, weekly prep, hourly syncs) become this app's own routines and keep firing here. A job Muse turns off later is cancelled on the next sync. Muse's own internal maintenance jobs are left out.")}
+        </MuseCaption>
+        <MuseDivider inset={52} />
         <MuseSwitchRow label={t("Keep the original archive")} checked={keepCopy} onChange={setKeepCopy} />
         <MuseDivider inset={16} />
         <MuseCaption>
@@ -482,6 +501,54 @@ export function ImportExport({ mode = "full" }: { mode?: "full" | "import" }) {
           <span className="text-accent">{summaryOf(result, t)}</span>
           {result.note ? ` ${result.note}` : ""}
         </MuseCaption>
+      )}
+      {result?.excluded?.length ? (
+        <MuseCard className="mt-2">
+          <div className="px-4 py-3">
+            <p className="text-[13.5px] text-fg/90">{t("Muse could not put these in the export:")}</p>
+            <ul className="mt-1.5 space-y-0.5">
+              {result.excluded.map((x, i) => (
+                <li key={i} className="text-[12px] leading-[17px] text-muted">
+                  {x.area}{x.count ? ` (${x.count})` : ""}{x.why ? ` - ${x.why}` : ""}
+                </li>
+              ))}
+            </ul>
+            <p className="pt-2 text-[12px] text-muted">
+              {t("They stay in Muse only; everything else in the zip came across.")}
+            </p>
+          </div>
+        </MuseCard>
+      ) : null}
+      {result?.transfer_code && (
+        <MuseCard className="mt-2">
+          <div className="px-4 py-3">
+            <p className="text-[13.5px] text-fg/90">{t("Next sync can be much smaller")}</p>
+            <p className="pt-1 text-[12px] leading-[17px] text-muted">
+              {t("Copy this line and paste it above the prompt next time you ask Muse for the archive: it then sends only what changed since this transfer, so the zip is smaller and imports faster.")}
+            </p>
+            <div className="mt-2 flex items-center gap-2">
+              <code className="min-w-0 flex-1 truncate rounded-xl border border-border bg-surface-2 px-3 py-2 font-mono text-[12.5px] text-fg/90">
+                SINCE: {result.transfer_code}
+              </code>
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard
+                    .writeText(`SINCE: ${result.transfer_code}`)
+                    .then(() => {
+                      setCopiedSince(true);
+                      window.setTimeout(() => setCopiedSince(false), 2000);
+                    })
+                    .catch(() => toast(t("Could not copy; select the text and copy it by hand.")));
+                }}
+                className="flex shrink-0 items-center gap-1.5 rounded-xl border border-border bg-surface px-3 py-2 text-[12.5px] transition active:bg-surface-2"
+              >
+                {copiedSince ? <Check size={14} className="text-accent" /> : <Copy size={14} />}
+                {copiedSince ? t("Copied") : t("Copy")}
+              </button>
+            </div>
+          </div>
+        </MuseCard>
       )}
       {result?.verify && (
         <MuseCard className="mt-2">

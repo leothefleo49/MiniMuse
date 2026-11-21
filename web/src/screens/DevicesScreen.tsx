@@ -488,7 +488,9 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
         </div>
 
         <div className="px-4 pt-4 space-y-3">
-          <SectionLabel>{t("Chrome Side Panel, Smartwatch & VR Headsets")}</SectionLabel>
+          {/* Extra devices: the companion installs that are not phones or computers, all in
+              one place instead of a section each */}
+          <SectionLabel>{t("Extra devices")}</SectionLabel>
           <ChromeCompanionCard />
           <WatchPairingCard />
           <VRHeadsetCard />
@@ -1448,7 +1450,7 @@ export function WatchPairingCard() {
     const n = notice;
     setNotice(null);
     if (!n) return;
-    if (n.action === "download") window.location.href = "/api/watch/apk";
+    if (n.action === "download") window.location.href = api.watchApkUrl();
     else if (n.action === "code") window.setTimeout(() => codeRef.current?.focus(), 50);
     else void pushToWatch(phase.watchId);
   };
@@ -1693,9 +1695,12 @@ export function WatchPairingCard() {
             <div className="text-[11px] font-semibold uppercase tracking-wide text-muted">{t("6-Digit Watch Code (valid 10 min)")}</div>
             <div className="mt-0.5 font-mono text-[22px] font-bold tracking-[0.2em] text-accent">{info.code}</div>
           </div>
-          <div className="text-right text-[12px] text-muted">
+          <div className="max-w-full text-right text-[12px] text-muted">
             <div>{t("Server on watch:")}</div>
-            <div className="font-mono text-fg/90">{info.best_url}</div>
+            <div className="truncate font-mono text-fg/90">{info.best_url}</div>
+            {info.best_url?.startsWith("https://") && (
+              <div className="pt-0.5 text-[11px] text-accent">{t("This address works from any Wi-Fi, not only this one.")}</div>
+            )}
           </div>
         </div>
       )}
@@ -1710,7 +1715,7 @@ export function WatchPairingCard() {
           {t("Watch Wi-Fi Setup & Manual APK Sideload")}
         </button>
         <a
-          href="/api/watch/apk"
+          href={api.watchApkUrl()}
           download="MiniMuse-wear.apk"
           className="inline-flex items-center gap-1 rounded-full px-3 py-1 text-[12px] font-medium text-accent hover:bg-accent/10"
         >

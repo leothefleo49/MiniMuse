@@ -1752,6 +1752,11 @@ function MultiApiSmartRoutingSection({
   const formatBalance = (st?: ProviderUsageStatus) => {
     const b = st?.live_balance;
     if (!b) return null;
+    // OpenRouter /credits names what was bought, spent and left directly
+    if (typeof b.remaining === "number") {
+      const sym = b.currency === "CNY" ? "¥" : "$";
+      return `${sym}${b.remaining.toFixed(2)} ${t("remaining")}`;
+    }
     if (typeof b.balance === "number") {
       const sym = b.currency === "CNY" ? "¥" : "$";
       return `${sym}${b.balance.toFixed(2)} ${t("remaining")}`;
@@ -1762,6 +1767,9 @@ function MultiApiSmartRoutingSection({
     }
     if (typeof b.usage === "number") {
       return `$${b.usage.toFixed(2)} ${t("used")}`;
+    }
+    if (typeof b.total_usage === "number") {
+      return `$${b.total_usage.toFixed(2)} ${t("used")}`;
     }
     return null;
   };
@@ -2467,7 +2475,14 @@ export function MediaSlotCard({
         )}
       </Field>
       {choice === CUSTOM_ID && (
-        <Field label={t("Base URL")} hint={t("The endpoint that serves /images/generations, for example https://host/v1.")}>
+        <Field
+          label={t("Base URL")}
+          hint={
+            slot === "image"
+              ? t("The endpoint that serves /images/generations, for example https://host/v1.")
+              : t("The endpoint that serves the async video task API, for example https://host/v1.")
+          }
+        >
           <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} className={inputCls} placeholder="https://host/v1" inputMode="url" autoCapitalize="off" />
         </Field>
       )}

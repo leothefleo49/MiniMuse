@@ -32,7 +32,7 @@ import { MuseCard, MuseDivider, MuseSectionLabel } from "../components/MuseList"
 import { CURRENCIES, formatUsdInCurrency, usePreferredCurrency, type CurrencyCode } from "../currency";
 import { useStore } from "../store";
 import { useT } from "../i18n";
-import type { UsageLimitRow, UsageSummary } from "../types";
+import type { LlmUsageStatusView, ProviderUsageStatus, UsageLimitRow, UsageSummary } from "../types";
 import { cx, relativeTime } from "../util";
 
 /**
@@ -94,6 +94,8 @@ export function UsageScreen({ embedded = false }: { embedded?: boolean } = {}) {
   const [data, setData] = useState<UsageSummary | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [credits, setCredits] = useState<LlmUsageStatusView | null>(null);
+  const [creditsBusy, setCreditsBusy] = useState(false);
   const loadGen = useRef(0);
 
   const load = (d: number, m = "") => {
@@ -118,11 +120,24 @@ export function UsageScreen({ embedded = false }: { embedded?: boolean } = {}) {
 
   useEffect(() => {
     void load(days, model);
+    api
+      .getLlmUsageStatus()
+      .then(setCredits)
+      .catch(() => setCredits(null));
     return () => {
       loadGen.current += 1;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [days, model]);
+
+  const checkCredits = () => {
+    setCreditsBusy(true);
+    api
+      .refreshLlmUsageStatus()
+      .then(setCredits)
+      .catch(() => undefined)
+      .finally(() => setCreditsBusy(false));
+  };
 
   // the local Ollama's line for the chosen AI: total size and how much sits in VRAM
   const ollamaModel = data?.ollama?.models.find((m) => m.name === data.model || m.name === model);
@@ -262,18 +277,19 @@ export function UsageScreen({ embedded = false }: { embedded?: boolean } = {}) {
             <MuseSectionLabel>{t("What it did")}</MuseSectionLabel>
             <MuseCard className="mb-1">
               <ActivityRows
+                fmtCost={fmtCost}
                 rows={[
-                  { key: "live_calls", label: t("Live voice calls"), icon: <Phone size={19} />, n: data.activities.live_calls },
-                  { key: "web_browsing", label: t("Web browsing & research"), icon: <Globe size={19} />, n: data.activities.web_browsing },
-                  { key: "email_calendar", label: t("Email, calendar & contacts"), icon: <Mail size={19} />, n: data.activities.email_calendar },
-                  { key: "device_control", label: t("Device & screen control"), icon: <MonitorSmartphone size={19} />, n: data.activities.device_control },
-                  { key: "reading", label: t("Memory & general reading"), icon: <Globe size={19} />, n: data.activities.reading },
-                  { key: "files_read", label: t("Files read"), icon: <FileText size={19} />, n: data.activities.files_read },
-                  { key: "files_written", label: t("Files written"), icon: <FileCode2 size={19} />, n: data.activities.files_written },
-                  { key: "commands", label: t("Commands (shell, PC)"), icon: <TerminalSquare size={19} />, n: data.activities.commands },
-                  { key: "apis", label: t("API calls"), icon: <Database size={19} />, n: data.activities.apis },
-                  { key: "coding", label: t("Coding"), icon: <MessageSquareCode size={19} />, n: data.activities.coding },
-                  { key: "tracking", label: t("Tracking (memory, goals, reminders)"), icon: <Sparkles size={19} />, n: data.activities.tracking },
+                  { key: "live_calls", label: t("Live voice calls"), icon: <Phone size={19} />, n: data.activities.live_calls, cost: data.activity_costs?.live_calls },
+                  { key: "web_browsing", label: t("Web browsing & research"), icon: <Globe size={19} />, n: data.activities.web_browsing, cost: data.activity_costs?.web_browsing },
+                  { key: "email_calendar", label: t("Email, calendar & contacts"), icon: <Mail size={19} />, n: data.activities.email_calendar, cost: data.activity_costs?.email_calendar },
+                  { key: "device_control", label: t("Device & screen control"), icon: <MonitorSmartphone size={19} />, n: data.activities.device_control, cost: data.activity_costs?.device_control },
+                  { key: "reading", label: t("Memory & general reading"), icon: <Globe size={19} />, n: data.activities.reading, cost: data.activity_costs?.reading },
+                  { key: "files_read", label: t("Files read"), icon: <FileText size={19} />, n: data.activities.files_read, cost: data.activity_costs?.files_read },
+                  { key: "files_written", label: t("Files written"), icon: <FileCode2 size={19} />, n: data.activities.files_written, cost: data.activity_costs?.files_written },
+                  { key: "commands", label: t("Commands (shell, PC)"), icon: <TerminalSquare size={19} />, n: data.activities.commands, cost: data.activity_costs?.commands },
+                  { key: "apis", label: t("API calls"), icon: <Database size={19} />, n: data.activities.apis, cost: data.activity_costs?.apis },
+                  { key: "coding", label: t("Coding"), icon: <MessageSquareCode size={19} />, n: data.activities.coding, cost: data.activity_costs?.coding },
+                  { key: "tracking", label: t("Tracking (memory, goals, reminders)"), icon: <Sparkles size={19} />, n: data.activities.tracking, cost: data.activity_costs?.tracking },
                 ]}
                 empty={t("No tool runs in this range.")}
               />
@@ -283,23 +299,24 @@ export function UsageScreen({ embedded = false }: { embedded?: boolean } = {}) {
             <MuseSectionLabel>{t("Files, apps & media")}</MuseSectionLabel>
             <MuseCard className="mb-1">
               <ActivityRows
+                fmtCost={fmtCost}
                 rows={[
-                  { key: "app_built", label: t("Building apps (HTML / UI)"), icon: <AppWindow size={19} />, n: (data.activities.app_built ?? 0) + (data.media.app_built ?? 0) },
-                  { key: "pdf_read", label: t("Reading PDFs"), icon: <FileText size={19} />, n: data.media.pdf_read },
-                  { key: "pdf_built", label: t("Building PDFs"), icon: <FileText size={19} />, n: data.media.pdf_built },
-                  { key: "document_read", label: t("Reading documents (Word / Markdown)"), icon: <FileText size={19} />, n: data.media.document_read },
-                  { key: "document_built", label: t("Building documents (Word / Markdown)"), icon: <FileText size={19} />, n: data.media.document_built },
-                  { key: "spreadsheet_read", label: t("Reading spreadsheets (CSV / Excel)"), icon: <FileSpreadsheet size={19} />, n: data.media.spreadsheet_read },
-                  { key: "spreadsheet_built", label: t("Building spreadsheets (CSV / Excel)"), icon: <FileSpreadsheet size={19} />, n: data.media.spreadsheet_built },
-                  { key: "code_read", label: t("Reading code files"), icon: <FileCode2 size={19} />, n: data.media.code_read },
-                  { key: "code_built", label: t("Building code files"), icon: <FileCode2 size={19} />, n: data.media.code_built },
-                  { key: "audio_read", label: t("Reading audio files"), icon: <Headphones size={19} />, n: data.media.audio_read },
-                  { key: "image_generation", label: t("Images generated"), icon: <ImageIcon size={19} />, n: data.media.image_generation },
-                  { key: "image_editing", label: t("Images edited"), icon: <Pencil size={19} />, n: data.media.image_editing },
-                  { key: "video_generation", label: t("Videos generated"), icon: <Video size={19} />, n: data.media.video_generation },
-                  { key: "video_editing", label: t("Videos edited"), icon: <Film size={19} />, n: data.media.video_editing },
-                  { key: "photo_analysis", label: t("Photos analyzed"), icon: <ImageIcon size={19} />, n: data.media.photo_analysis },
-                  { key: "video_analysis", label: t("Videos analyzed"), icon: <Film size={19} />, n: data.media.video_analysis },
+                  { key: "app_built", label: t("Building apps (HTML / UI)"), icon: <AppWindow size={19} />, n: (data.activities.app_built ?? 0) + (data.media.app_built ?? 0), cost: (data.activity_costs?.app_built ?? 0) + (data.media_costs?.app_built ?? 0) },
+                  { key: "pdf_read", label: t("Reading PDFs"), icon: <FileText size={19} />, n: data.media.pdf_read, cost: data.media_costs?.pdf_read },
+                  { key: "pdf_built", label: t("Building PDFs"), icon: <FileText size={19} />, n: data.media.pdf_built, cost: data.media_costs?.pdf_built },
+                  { key: "document_read", label: t("Reading documents (Word / Markdown)"), icon: <FileText size={19} />, n: data.media.document_read, cost: data.media_costs?.document_read },
+                  { key: "document_built", label: t("Building documents (Word / Markdown)"), icon: <FileText size={19} />, n: data.media.document_built, cost: data.media_costs?.document_built },
+                  { key: "spreadsheet_read", label: t("Reading spreadsheets (CSV / Excel)"), icon: <FileSpreadsheet size={19} />, n: data.media.spreadsheet_read, cost: data.media_costs?.spreadsheet_read },
+                  { key: "spreadsheet_built", label: t("Building spreadsheets (CSV / Excel)"), icon: <FileSpreadsheet size={19} />, n: data.media.spreadsheet_built, cost: data.media_costs?.spreadsheet_built },
+                  { key: "code_read", label: t("Reading code files"), icon: <FileCode2 size={19} />, n: data.media.code_read, cost: data.media_costs?.code_read },
+                  { key: "code_built", label: t("Building code files"), icon: <FileCode2 size={19} />, n: data.media.code_built, cost: data.media_costs?.code_built },
+                  { key: "audio_read", label: t("Reading audio files"), icon: <Headphones size={19} />, n: data.media.audio_read, cost: data.media_costs?.audio_read },
+                  { key: "image_generation", label: t("Images generated"), icon: <ImageIcon size={19} />, n: data.media.image_generation, cost: data.media_costs?.image_generation },
+                  { key: "image_editing", label: t("Images edited"), icon: <Pencil size={19} />, n: data.media.image_editing, cost: data.media_costs?.image_editing },
+                  { key: "video_generation", label: t("Videos generated"), icon: <Video size={19} />, n: data.media.video_generation, cost: data.media_costs?.video_generation },
+                  { key: "video_editing", label: t("Videos edited"), icon: <Film size={19} />, n: data.media.video_editing, cost: data.media_costs?.video_editing },
+                  { key: "photo_analysis", label: t("Photos analyzed"), icon: <ImageIcon size={19} />, n: data.media.photo_analysis, cost: data.media_costs?.photo_analysis },
+                  { key: "video_analysis", label: t("Videos analyzed"), icon: <Film size={19} />, n: data.media.video_analysis, cost: data.media_costs?.video_analysis },
                 ]}
                 empty={t("No files, apps, or media in this range.")}
               />
@@ -331,6 +348,12 @@ export function UsageScreen({ embedded = false }: { embedded?: boolean } = {}) {
               })}
               <MuseDivider inset={16} />
               <p className="px-4 py-2.5 text-[12.5px] leading-[18px] text-muted">{t("Costs are estimates off each provider's rate card. A local model bills nothing.")}</p>
+            </MuseCard>
+
+            {/* what is left at each provider */}
+            <MuseSectionLabel>{t("Credits & balance")}</MuseSectionLabel>
+            <MuseCard className="mb-1">
+              <CreditsCard credits={credits} busy={creditsBusy} onCheck={checkCredits} fmtCost={fmtCost} />
             </MuseCard>
 
             {/* per day */}
@@ -600,7 +623,102 @@ function LimitsCard() {
 }
 
 
-function ActivityRows({ rows, empty }: { rows: Array<{ key: string; label: string; icon: ReactNode; n: number | undefined }>; empty: string }) {
+/** What each provider still has: the live balance the provider reports (OpenRouter
+ *  credits, DeepSeek balance) beside this app's own estimate of what was spent there. */
+function CreditsCard({
+  credits,
+  busy,
+  onCheck,
+  fmtCost,
+}: {
+  credits: LlmUsageStatusView | null;
+  busy: boolean;
+  onCheck: () => void;
+  fmtCost: (usd: number) => string;
+}) {
+  const t = useT();
+  const rows = Object.values(credits?.providers ?? {}).filter(
+    (p) => p.configured && (p.live_balance?.summary || p.live_balance?.remaining !== undefined || (p.estimated_spend_usd ?? 0) > 0),
+  );
+  return (
+    <>
+      {rows.length === 0 && (
+        <p className="px-4 py-3 text-[13px] leading-[18px] text-muted">
+          {t("Add a provider API key under Connections and the balance it reports shows up here.")}
+        </p>
+      )}
+      {rows.map((p, i) => (
+        <div key={p.id}>
+          {i > 0 && <MuseDivider inset={16} />}
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+            <div className="min-w-0">
+              <div className="truncate text-[14.5px] font-medium leading-5">{p.label}</div>
+              <div className="mt-0.5 truncate text-[12px] leading-4 text-muted">
+                {creditsLine(p, fmtCost, t)}
+              </div>
+            </div>
+            <div className="shrink-0 text-[13.5px] font-medium tabular-nums">
+              {creditsHeadline(p, fmtCost, t)}
+            </div>
+          </div>
+        </div>
+      ))}
+      <MuseDivider inset={16} />
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+        <p className="min-w-0 text-[12px] leading-[17px] text-muted">
+          {t("Balances come from each provider's own balance API. The spent figure is this app's estimate from its rate card.")}
+        </p>
+        <button
+          type="button"
+          onClick={onCheck}
+          disabled={busy}
+          className="flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1.5 text-[12.5px] transition active:bg-surface-2 disabled:opacity-60"
+        >
+          {busy ? <RefreshCw size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+          {busy ? t("Checking…") : t("Check now")}
+        </button>
+      </div>
+    </>
+  );
+}
+
+/** The headline number: what is left, in the currency the provider reports. */
+function creditsHeadline(p: ProviderUsageStatus, fmtCost: (usd: number) => string, t: (s: string) => string): string {
+  const b = p.live_balance ?? {};
+  if (b.remaining !== undefined) return fmtCost(b.remaining);
+  if (b.balance !== undefined) return fmtCost(b.balance);
+  if ((p.estimated_spend_usd ?? 0) > 0) return fmtCost(p.estimated_spend_usd ?? 0);
+  return t("—");
+}
+
+/** The sentence under it: used of what, or the free tier note. */
+function creditsLine(
+  p: ProviderUsageStatus,
+  fmtCost: (usd: number) => string,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): string {
+  const b = p.live_balance ?? {};
+  if (b.total_credits !== undefined && b.total_usage !== undefined) {
+    return t("{used} used of {total}", {
+      used: fmtCost(b.total_usage),
+      total: fmtCost(b.total_credits),
+    });
+  }
+  if (b.summary) return b.summary;
+  if (b.usage !== undefined) return t("{used} used", { used: fmtCost(b.usage) });
+  if ((p.estimated_spend_usd ?? 0) > 0) return t("estimated spent here");
+  return t("No balance API for this provider; only the estimate is known.");
+}
+
+function ActivityRows({
+  rows,
+  empty,
+  fmtCost,
+}: {
+  rows: Array<{ key: string; label: string; icon: ReactNode; n: number | undefined; cost?: number }>;
+  empty: string;
+  fmtCost: (usd: number) => string;
+}) {
   const shown = rows.filter((r) => (r.n ?? 0) > 0);
   if (shown.length === 0) {
     return <p className="px-4 py-4 text-[13.5px] leading-[19px] text-muted">{empty}</p>;
@@ -610,7 +728,11 @@ function ActivityRows({ rows, empty }: { rows: Array<{ key: string; label: strin
       {shown.map((r, i) => (
         <div key={r.key}>
           {i > 0 && <MuseDivider inset={52} />}
-          <StatLine label={r.label} icon={r.icon} value={(r.n ?? 0).toLocaleString()} />
+          <StatLine
+            label={r.label}
+            icon={r.icon}
+            value={(r.n ?? 0).toLocaleString() + (r.cost && r.cost > 0 ? ` · ${fmtCost(r.cost)}` : "")}
+          />
         </div>
       ))}
     </>

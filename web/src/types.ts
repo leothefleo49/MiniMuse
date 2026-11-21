@@ -302,6 +302,9 @@ export interface StudioView {
   video_model: string;
   cloud: boolean;
   host: string;
+  /** where the clips come from when the video slot is its own provider, "" when the clips
+   *  follow the pictures */
+  video_host?: string;
   current: StudioSession | null;
   face: StudioFace | null;
 }
@@ -1542,7 +1545,16 @@ export interface ProviderUsageStatus {
     usage?: number;
     is_free_tier?: boolean;
     fetched_at?: number;
+    /** OpenRouter /credits: what was bought, what was spent, what is left */
+    total_credits?: number;
+    total_usage?: number;
+    remaining?: number;
+    available?: boolean;
+    summary?: string;
+    checked_at?: number;
   };
+  /** what this app's own estimate says was spent at this provider */
+  estimated_spend_usd?: number;
   rate_headers: Record<string, unknown>;
 }
 
@@ -2225,6 +2237,9 @@ export interface UsageSummary {
   per_model: UsageModel[];
   activities: Record<string, number>;
   media: Record<string, number>;
+  /** each feature's share of the money, the same keys as `activities` / `media` */
+  activity_costs?: Record<string, number>;
+  media_costs?: Record<string, number>;
   recent: UsageRecent[];
   /** the local Ollama's loaded models (size and VRAM), for the RAM line on a local AI */
   ollama?: { models: Array<{ name: string; size_bytes: number; vram_bytes: number }> };

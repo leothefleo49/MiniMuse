@@ -207,6 +207,8 @@ export type ImportOptions = {
   apps: "save" | "restore" | "both" | "neither";
   /** what happens to the Muse main chat */
   main_chat: "side" | "replace" | "merge";
+  /** turn Muse's scheduled jobs into this app's own routines and reminders */
+  continue_tasks?: boolean;
   /** keep the uploaded file itself under workspace/imports/ instead of deleting it */
   keep_copy?: boolean;
 };
@@ -237,6 +239,19 @@ export type ImportResult = {
   skipped_files: number;
   duplicates: number;
   note: string;
+  /** photos & files from the export attached to the messages that carried them */
+  attachments_linked?: number;
+  /** Muse's scheduled jobs that now run here as routines and reminders */
+  tasks_created?: number;
+  tasks_updated?: number;
+  tasks_cancelled?: number;
+  /** "delta" when the archive was built against a transfer code, else "full" */
+  scope?: "full" | "delta";
+  since_code?: string | null;
+  /** the code to paste above the prompt next time for a much smaller update */
+  transfer_code?: string;
+  /** what Muse said the export could not include, named as it named it */
+  excluded?: Array<{ area: string; count: number; why: string }> | null;
   /** where the original upload was kept, when the switch was on */
   kept_copy?: string;
   /** declared-vs-staged counts, when the archive declared its own */
@@ -571,14 +586,16 @@ export const api = {
   memoryChanges: (limit = 30) => request<MemoryChange[]>(`/api/memory/changes?limit=${limit}`),
   restoreMemoryChange: (id: string) =>
     request<MemoryChange>(`/api/memory/changes/${id}/restore`, { method: "POST" }),
-  memoryFiles: (q = "") =>
+  memoryFiles: (q = "", limit = 10000) =>
     request<{
       files: Array<{ path: string; name: string; folder: string; size: number; updated_at: string; snippet: string }>;
       total: number;
       folders: string[];
       total_bytes: number;
       root: string;
-    }>(`/api/memory/files${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+    }>(
+      `/api/memory/files?limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ""}`,
+    ),
   readMemoryFile: (path: string) =>
     request<{ path: string; name: string; content: string; size: number; updated_at: string }>(
       `/api/memory/files/read?path=${encodeURIComponent(path)}`,
@@ -649,6 +666,7 @@ export const api = {
       apps: options.apps,
       main_chat: options.main_chat,
       keep_copy: String(options.keep_copy ?? true),
+      continue_tasks: String(options.continue_tasks ?? true),
     });
     const headers: Record<string, string> = {};
     const token = getToken();
@@ -677,6 +695,7 @@ export const api = {
       apps: options.apps,
       main_chat: options.main_chat,
       keep_copy: String(options.keep_copy ?? true),
+      continue_tasks: String(options.continue_tasks ?? true),
       background: "true",
     });
     return new Promise((resolve, reject) => {
@@ -731,6 +750,7 @@ export const api = {
       background_memory: String(options.background_memory),
       apps: options.apps,
       main_chat: options.main_chat,
+      continue_tasks: String(options.continue_tasks ?? true),
     });
     const headers: Record<string, string> = { "Content-Type": "text/plain; charset=utf-8" };
     const token = getToken();
@@ -780,6 +800,12 @@ export const api = {
     const token = getToken();
     const q = token ? `?${signedParams(token, "/api/vr/apk")}` : "";
     return `/api/vr/apk${q}`;
+  },
+  /** Signed so the download works from any context (a cookie-less tab, a tunnel) */
+  watchApkUrl: (): string => {
+    const token = getToken();
+    const q = token ? `?${signedParams(token, "/api/watch/apk")}` : "";
+    return `/api/watch/apk${q}`;
   },
   chromeStatus: () => request<ChromeBridgeStatus>("/api/chrome/status"),
   chromeDetach: () => request<ChromeBridgeStatus>("/api/chrome/detach", { method: "POST" }),

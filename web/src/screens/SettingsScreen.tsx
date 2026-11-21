@@ -13,8 +13,8 @@ import {
   DatabaseZap,
   Download,
   Fingerprint,
-  Glasses,
   Hand,
+  Image as ImageIcon,
   Info,
   KeyRound,
   Loader2,
@@ -47,7 +47,7 @@ import {
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { androidApp, authenticateNativeBiometric, keepRunningStatus, nativeBiometricInfo, type AppUpdateView, type KeepRunningStatus } from "../android";
 import { AccountScreen } from "./AccountScreen";
-import { DevicesScreen, VRHeadsetCard } from "./DevicesScreen";
+import { DevicesScreen } from "./DevicesScreen";
 import { MemoryScreen } from "./MemoryScreen";
 import { UsageScreen } from "./UsageScreen";
 import {
@@ -291,7 +291,6 @@ export function SettingsScreen() {
       { id: "cloud", title: t("nanoMuse Cloud"), group: t("Models & Devices"), icon: <Cloud size={15} /> },
       { id: "devices", title: t("Devices"), group: t("Models & Devices"), icon: <MonitorSmartphone size={15} /> },
       { id: "notifications", title: t("Notifications"), group: t("Models & Devices"), icon: <Bell size={15} /> },
-      { id: "vr", title: t("VR Headset (Meta Quest)"), group: t("Models & Devices"), icon: <Glasses size={15} /> },
       { id: "assistant", title: t("Default assistant"), group: t("Models & Devices"), icon: <Sparkles size={15} /> },
       ...(keepRunningStatus() ? [{ id: "keep-running" as const, title: t("Keep it running"), group: t("Models & Devices"), icon: <BatteryFull size={15} /> }] : []),
       ...(isDesktopApp() ? [{ id: "desktop" as const, title: t("Desktop app"), group: t("Models & Devices"), icon: <Monitor size={15} /> }] : []),
@@ -330,7 +329,7 @@ export function SettingsScreen() {
       { id: "sentinel-more", sectionId: "sentinel", sectionTitle: t("Safety · Sentinel"), label: t("Emergency stop, quiet hours and limits"), description: t("Stop everything now, jump to quiet hours, or set spending and usage limits."), keywords: ["emergency", "stop", "panic", "quiet", "limit", "spending", "budget"] },
       { id: "assistant-main", sectionId: "assistant", sectionTitle: t("Default assistant"), label: t("Make MiniMuse your default assistant"), description: t("Choose MiniMuse as the assistant a phone or watch opens from its home, power or side button or assist gesture."), keywords: ["assistant", "default", "digital assistant", "home button", "power button", "side button", "gesture", "voice", "gemini", "google assistant"] },
       { id: "devices-main", sectionId: "devices", sectionTitle: t("Devices"), label: t("Paired devices, PC/phone sync, Wear OS watch & remote hands"), description: t("Manage paired computers, phones, direct Wi-Fi/Personal Cloud sync, smartwatch (Wear OS) pairing, and remote hands."), keywords: ["devices", "phone", "pc", "pair", "sync", "hands", "qr", "wear", "watch", "apk", "adb", "sideload"] },
-      { id: "vr-main", sectionId: "vr", sectionTitle: t("VR Headset (Meta Quest)"), label: t("Meta Quest / VR APK install & AI headset control"), description: t("Install MiniMuse onto Meta Quest 2/3/3S/Pro, Pico, or Android XR as a floating spatial window with AI control."), keywords: ["vr", "quest", "meta", "oculus", "pico", "horizon", "xr", "headset", "sidequest", "apk"] },
+      { id: "vr-main", sectionId: "devices", sectionTitle: t("Devices"), label: t("Meta Quest / VR APK install & AI headset control"), description: t("Install MiniMuse onto Meta Quest 2/3/3S/Pro, Pico, or Android XR as a floating spatial window with AI control, from the Extra devices part of Devices."), keywords: ["vr", "quest", "meta", "oculus", "pico", "horizon", "xr", "headset", "sidequest", "apk"] },
       { id: "notifications-main", sectionId: "notifications", sectionTitle: t("Notifications"), label: t("Push & background notifications"), description: t("Enable alerts for approvals, questions, and finished background tasks."), keywords: ["push", "alerts", "test notification"] },
       ...(keepRunningStatus() ? [{ id: "keep-running-main", sectionId: "keep-running" as const, sectionTitle: t("Keep it running"), label: t("Battery optimization, overlay & boot start"), description: t("Keep Android background services alive, configure exact alarms, and export crash logs."), keywords: ["battery", "alarms", "boot", "logs"] }] : []),
       { id: "cloud-main", sectionId: "cloud", sectionTitle: t("nanoMuse Cloud"), label: t("Local / Hybrid / Cloud routing"), description: t("Switch between strictly local mode, custom slot routing, or nanoMuse Cloud."), keywords: ["relay", "local", "hybrid", "sync"] },
@@ -398,9 +397,10 @@ export function SettingsScreen() {
   };
 
   // `#developer`, `#usage`, `#who`, `#account`, etc. open that exact tab on both desktop and mobile.
-  // Legacy `#watch` redirects directly to `devices` where Wear OS lives.
+  // Legacy `#watch` and `#vr` redirect directly to `devices`, where the watch and the VR
+  // headset now live under Extra devices.
   const normalizeSectionHash = (raw: string): SectionId | null => {
-    if (raw === "watch") return "devices";
+    if (raw === "watch" || raw === "vr") return "devices";
     return SECTION_IDS.includes(raw as SectionId) ? (raw as SectionId) : null;
   };
   const [wanted, setWanted] = useState<SectionId | null>(() =>
@@ -554,12 +554,13 @@ export function SettingsScreen() {
         )}
       <div ref={bodyRef} className="flex-1 overflow-y-auto overflow-x-hidden px-4 pb-8 wide:px-6 wide:pb-10">
         {/* A desktop window used to centre a 740px column, which left a 16:9 monitor mostly
-            empty. The sections now use the width: one column on a phone or a narrow window,
-            two on a wide one, three on an ultrawide. */}
+            empty. The sections now use the width, and the columns arrive as the window
+            gives room for them: one column on a phone or a narrow window, two from a small
+            laptop screen (xl), three from 1700px, four on an ultrawide. */}
         <div
           className={cx(
             wide &&
-              "mx-auto w-full max-w-none 2xl:grid 2xl:grid-cols-2 2xl:items-start 2xl:gap-5 min-[1900px]:grid-cols-3",
+              "mx-auto w-full max-w-none xl:grid xl:grid-cols-2 xl:items-start xl:gap-5 min-[1700px]:grid-cols-3 min-[2300px]:grid-cols-4",
           )}
         >
         {/* who it is */}
@@ -962,20 +963,12 @@ export function SettingsScreen() {
         </Section>
         )}
 
-        {/* Devices (available directly in Settings on both Desktop and Mobile — includes Wear OS watch) */}
+        {/* Devices (available directly in Settings on both Desktop and Mobile — includes
+            Wear OS watch and the VR headset under Extra devices) */}
         {show("devices") && (
         <Section title={t("Devices")} id="devices" plain={!wide}>
           <SettingBlock id="devices-main" highlightedId={highlightedId}>
             <DevicesScreen embedded />
-          </SettingBlock>
-        </Section>
-        )}
-
-        {/* VR Headset (Meta Quest / Horizon OS / XR) */}
-        {show("vr") && (
-        <Section title={t("VR Headset (Meta Quest)")} id="vr" plain={!wide}>
-          <SettingBlock id="vr-main" highlightedId={highlightedId}>
-            <VRHeadsetCard />
           </SettingBlock>
         </Section>
         )}
@@ -1336,8 +1329,8 @@ export function SettingsScreen() {
   );
 }
 
-type SectionId = "who" | "memory" | "account" | "usage" | "sentinel" | "app-lock" | "passwords" | "proactivity" | "behavior" | "permissions" | "devices" | "vr" | "assistant" | "notifications" | "keep-running" | "cloud" | "model" | "appearance" | "desktop" | "data" | "import" | "developer" | "about";
-const SECTION_IDS: SectionId[] = ["who", "memory", "account", "usage", "sentinel", "app-lock", "passwords", "proactivity", "behavior", "permissions", "devices", "vr", "assistant", "notifications", "keep-running", "cloud", "model", "appearance", "desktop", "data", "import", "developer", "about"];
+type SectionId = "who" | "memory" | "account" | "usage" | "sentinel" | "app-lock" | "passwords" | "proactivity" | "behavior" | "permissions" | "devices" | "assistant" | "notifications" | "keep-running" | "cloud" | "model" | "appearance" | "desktop" | "data" | "import" | "developer" | "about";
+const SECTION_IDS: SectionId[] = ["who", "memory", "account", "usage", "sentinel", "app-lock", "passwords", "proactivity", "behavior", "permissions", "devices", "assistant", "notifications", "keep-running", "cloud", "model", "appearance", "desktop", "data", "import", "developer", "about"];
 
 function CloudModeSelector({
   cloudMode,
@@ -2284,14 +2277,23 @@ function SettingsHome({
           <MuseRow icon={<Cloud size={22} />} label="nanoMuse Cloud" value={cloudValue} onClick={() => onOpen("cloud")} />
           <MuseDivider />
           <MuseRow
-            icon={<Clapperboard size={22} />}
+            icon={
+              <span className="relative inline-flex">
+                <ImageIcon size={22} />
+                <Clapperboard size={12} className="absolute -right-1.5 -bottom-0.5 text-accent" />
+              </span>
+            }
             label={t("Image & video models")}
             value={
-              has(providers, "image") === false
-                ? unavailableLine(t, "image", regionOf(hub?.account), getLocale())
-                : has(providers, "video") === false
-                  ? unavailableLine(t, "video", regionOf(hub?.account), getLocale())
-                  : undefined
+              has(providers, "image") === false && has(providers, "video") === false
+                ? unavailableLine(t, "image", regionOf(hub?.account), getLocale()) +
+                  " " +
+                  unavailableLine(t, "video", regionOf(hub?.account), getLocale())
+                : has(providers, "image") === false
+                  ? unavailableLine(t, "image", regionOf(hub?.account), getLocale())
+                  : has(providers, "video") === false
+                    ? unavailableLine(t, "video", regionOf(hub?.account), getLocale())
+                    : undefined
             }
             onClick={() => setTab("connections")}
           />
@@ -2318,8 +2320,6 @@ function SettingsHome({
           <MuseRow icon={<MessageSquare size={22} />} label={t("Chat apps")} onClick={() => setTab("channels")} />
           <MuseDivider />
           <MuseRow icon={<Monitor size={22} />} label={t("Devices")} value={devicesSubtitle} onClick={() => onOpen("devices")} />
-          <MuseDivider />
-          <MuseRow icon={<Glasses size={22} />} label={t("VR Headset (Meta Quest)")} onClick={() => onOpen("vr")} />
           <MuseDivider />
           <MuseRow icon={<Sparkles size={22} />} label={t("Default assistant")} onClick={() => onOpen("assistant")} />
           {phone && typeof phone.scanToPair === "function" && (

@@ -307,7 +307,14 @@ export function AvatarStudioScreen() {
               {view === null
                 ? "…"
                 : view.available
-                  ? t("Drawn by {provider} · {model}", { provider, model: view.image_model || t("default model") })
+                  ? t("Drawn by {provider} · {model}", { provider, model: view.image_model || t("default model") }) +
+                    (view.video_model
+                      ? " · " +
+                        t("animated by {provider} · {model}", {
+                          provider: providerName(view.video_host || view.host || "", t),
+                          model: view.video_model,
+                        })
+                      : "")
                   : unavailableLine(t, "image", regionOf(state.hub?.account), getLocale())}
             </span>
             <span className="shrink-0 font-medium text-accent">{t("Change model")}</span>
