@@ -5890,7 +5890,7 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         return svc.upcoming()
 
     @app.get("/api/files", dependencies=dep)
-    async def list_files(limit: int = Query(200, ge=1, le=2000)) -> list[dict[str, Any]]:
+    async def list_files(limit: int = Query(200, ge=1, le=10000)) -> list[dict[str, Any]]:
         return svc.list_files(limit)
 
     @app.get("/api/apps", dependencies=dep)
