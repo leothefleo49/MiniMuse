@@ -399,6 +399,11 @@ export const api = {
       "/api/sync/pair/resync",
       json({ identifier }),
     ),
+  syncMirrorFromPeer: (identifier: string) =>
+    request<{ ok: boolean; mirrored?: boolean; removed?: number; applied?: number } & SyncState>(
+      "/api/sync/pair/mirror-from",
+      json({ identifier }),
+    ),
   syncNow: () =>
     request<{ ok: boolean; applied: number; pushed: number } & SyncState>("/api/sync/now", json({})),
   /** the avatar studio: whether a face can be drawn, and the session under way */
@@ -482,6 +487,8 @@ export const api = {
   renameThread: (id: string, title: string) =>
     request<ThreadMeta>(`/api/threads/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
   deleteThread: (id: string) => request<{ ok: boolean }>(`/api/threads/${id}`, { method: "DELETE" }),
+  bulkDeleteThreads: (threadIds: string[]) =>
+    request<{ ok: boolean; deleted: string[]; count: number }>("/api/threads/bulk-delete", json({ thread_ids: threadIds })),
   deleteEvent: (threadId: string, eventId: string) =>
     request<{ ok: boolean }>(`/api/threads/${encodeURIComponent(threadId)}/events/${encodeURIComponent(eventId)}`, { method: "DELETE" }),
   listTrash: () => request<{ items: TrashedThread[]; retention_days: number }>("/api/trash"),
@@ -564,6 +571,27 @@ export const api = {
   memoryChanges: (limit = 30) => request<MemoryChange[]>(`/api/memory/changes?limit=${limit}`),
   restoreMemoryChange: (id: string) =>
     request<MemoryChange>(`/api/memory/changes/${id}/restore`, { method: "POST" }),
+  memoryFiles: (q = "") =>
+    request<{
+      files: Array<{ path: string; name: string; folder: string; size: number; updated_at: string; snippet: string }>;
+      total: number;
+      folders: string[];
+      total_bytes: number;
+      root: string;
+    }>(`/api/memory/files${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  readMemoryFile: (path: string) =>
+    request<{ path: string; name: string; content: string; size: number; updated_at: string }>(
+      `/api/memory/files/read?path=${encodeURIComponent(path)}`,
+    ),
+  saveMemoryFile: (path: string, content: string) =>
+    request<{ ok: boolean; path: string; size: number; updated_at: string }>("/api/memory/files", {
+      method: "PUT",
+      body: JSON.stringify({ path, content }),
+    }),
+  deleteMemoryFile: (path: string) =>
+    request<{ ok: boolean; path: string }>(`/api/memory/files?path=${encodeURIComponent(path)}`, {
+      method: "DELETE",
+    }),
   ideas: (refresh = false) => request<IdeasData>(`/api/ideas${refresh ? "?refresh=1" : ""}`),
   activity: (n = 150) => request<ActivityData>(`/api/activity?n=${n}`),
   feed: (limit = 60) => request<FeedItem[]>(`/api/feed?limit=${limit}`),

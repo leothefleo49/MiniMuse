@@ -545,6 +545,7 @@ export function Avatar({
   const videoAdvanceCountRef = useRef<number>(0);
   const [canvasReady, setCanvasReady] = useState(false);
   const [canvasDisabled, setCanvasDisabled] = useState(false);
+  const [videoFrameReady, setVideoFrameReady] = useState(false);
 
   // Synchronously ensure muted/playsinline HTML attributes exist on mount (fixes React's missing
   // `muted` attribute bug that can block autoplay on Android Chrome / WebView)
@@ -631,8 +632,11 @@ export function Avatar({
       : studio
         ? customStillOverride || studioUrl(studio, pose, false, updatedAt)
         : "";
+  // 1x1 transparent SVG poster prevents Android WebView / Chromium from EVER flashing a
+  // default gray play-button triangle while a custom clip or switched-tab video buffers frame 0.
+  const TRANSPARENT_POSTER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='1'/%3E";
   // Avoid flashing idle.webp for 1ms before a different custom situation clip decodes
-  const videoPoster = customClipActive ? undefined : stillUrl || undefined;
+  const videoPoster = customClipActive ? TRANSPARENT_POSTER : stillUrl || TRANSPARENT_POSTER;
 
   const shouldKeyBackdrop = (dragon || studio) && bgMode !== "default" && !canvasDisabled;
   const dpr = typeof window !== "undefined" ? Math.min(3, Math.max(1, window.devicePixelRatio || 1)) : 2;
@@ -704,6 +708,7 @@ export function Avatar({
 
   useEffect(() => {
     setCanvasDisabled(false);
+    setVideoFrameReady(false);
     lastVideoTimeRef.current = -1;
     videoAdvanceCountRef.current = 0;
     if (!shouldKeyBackdrop) setCanvasReady(false);
@@ -947,64 +952,81 @@ export function Avatar({
         style={discStyle}
       >
         {clip ? (
-          <video
-            ref={attachVideoRef}
-            key={clip}
-            src={clip}
-            poster={videoPoster}
-            autoPlay
-            loop
-            muted
-            playsInline
-            preload="auto"
-            disablePictureInPicture
-            disableRemotePlayback
-            // Keep <video> BEHIND <canvas> inside the isolated disc while keyed (opacity 0.004 keeps
-            // Chromium/Android WebView decoding at full FPS without ever painting over canvas or sibling buttons!)
-            style={{
-              opacity: shouldKeyBackdrop && canvasReady ? 0.004 : 1,
-            }}
-            onLoadedMetadata={(e) => {
-              const v = e.currentTarget;
-              if (rejectPortraitIfNonCall(v)) return;
-              v.defaultMuted = true;
-              v.muted = true;
-              void v.play().catch(() => undefined);
-            }}
-            onCanPlay={(e) => {
-              const v = e.currentTarget;
-              if (rejectPortraitIfNonCall(v)) return;
-              v.muted = true;
-              if (v.paused) void v.play().catch(() => undefined);
-            }}
-            onLoadedData={(e) => {
-              const v = e.currentTarget;
-              if (rejectPortraitIfNonCall(v)) return;
-              v.muted = true;
-              if (shouldKeyBackdrop) paintKeyedSource(v);
-              void v.play().catch(() => undefined);
-            }}
-            onTimeUpdate={(e) => {
-              if (shouldKeyBackdrop) {
+          <>
+            {!customClipActive && stillUrl && !videoFrameReady && !(shouldKeyBackdrop && canvasReady) && (
+              <img
+                src={stillUrl}
+                alt=""
+                draggable={false}
+                className="pointer-events-none absolute -inset-[1px] z-[1] h-[calc(100%+2px)] w-[calc(100%+2px)] max-w-none object-cover"
+              />
+            )}
+            <video
+              ref={attachVideoRef}
+              key={clip}
+              src={clip}
+              poster={videoPoster}
+              autoPlay
+              loop
+              muted
+              playsInline
+              preload="auto"
+              disablePictureInPicture
+              disableRemotePlayback
+              // Keep <video> at opacity 0.004 until frame 0 is decoded (prevents any mobile WebView
+              // play-button flash on tab switch) and while keyed canvas paints over it.
+              style={{
+                opacity: !videoFrameReady || (shouldKeyBackdrop && canvasReady) ? 0.004 : 1,
+              }}
+              onLoadedMetadata={(e) => {
                 const v = e.currentTarget;
-                if (v.readyState >= 2 && v.videoWidth > 0) paintKeyedSource(v);
-              }
-            }}
-            onError={(e) => {
-              const mediaErr = e.currentTarget.error;
-              recordDebugEvent("error", `avatar video error (${size}px)`, {
-                clip: clip.split("?")[0],
-                code: mediaErr?.code,
-                msg: mediaErr?.message,
-              });
-              noClipUntil.set(clip, Date.now() + NO_CLIP_TTL_MS);
-              bump((n) => n + 1);
-              if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
-                window.setTimeout(() => bump((n) => n + 1), NO_CLIP_TTL_MS + 100);
-              }
-            }}
-            className="pointer-events-none absolute -inset-[1px] z-0 h-[calc(100%+2px)] w-[calc(100%+2px)] max-w-none object-cover"
-          />
+                if (rejectPortraitIfNonCall(v)) return;
+                v.defaultMuted = true;
+                v.muted = true;
+                void v.play().catch(() => undefined);
+              }}
+              onCanPlay={(e) => {
+                const v = e.currentTarget;
+                if (rejectPortraitIfNonCall(v)) return;
+                v.muted = true;
+                if (v.readyState >= 2 && v.videoWidth > 0) setVideoFrameReady(true);
+                if (v.paused) void v.play().catch(() => undefined);
+              }}
+              onLoadedData={(e) => {
+                const v = e.currentTarget;
+                if (rejectPortraitIfNonCall(v)) return;
+                v.muted = true;
+                if (v.readyState >= 2 && v.videoWidth > 0) setVideoFrameReady(true);
+                if (shouldKeyBackdrop) paintKeyedSource(v);
+                void v.play().catch(() => undefined);
+              }}
+              onPlaying={(e) => {
+                const v = e.currentTarget;
+                if (v.readyState >= 2 && v.videoWidth > 0) setVideoFrameReady(true);
+              }}
+              onTimeUpdate={(e) => {
+                const v = e.currentTarget;
+                if (v.readyState >= 2 && v.videoWidth > 0) {
+                  if (!videoFrameReady) setVideoFrameReady(true);
+                  if (shouldKeyBackdrop) paintKeyedSource(v);
+                }
+              }}
+              onError={(e) => {
+                const mediaErr = e.currentTarget.error;
+                recordDebugEvent("error", `avatar video error (${size}px)`, {
+                  clip: clip.split("?")[0],
+                  code: mediaErr?.code,
+                  msg: mediaErr?.message,
+                });
+                noClipUntil.set(clip, Date.now() + NO_CLIP_TTL_MS);
+                bump((n) => n + 1);
+                if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
+                  window.setTimeout(() => bump((n) => n + 1), NO_CLIP_TTL_MS + 100);
+                }
+              }}
+              className="nm-avatar-video pointer-events-none absolute -inset-[1px] z-0 h-[calc(100%+2px)] w-[calc(100%+2px)] max-w-none object-cover"
+            />
+          </>
         ) : dragon || studio ? (
           <img
             ref={imgRef}

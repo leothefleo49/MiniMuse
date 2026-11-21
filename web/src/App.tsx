@@ -657,8 +657,10 @@ function Connecting({ error }: { error: string | null }) {
   const where = kind === "computer" ? t("The MiniMuse server runs on this computer. Start it with minimuse serve, then try again.") : t("The MiniMuse server runs on your computer. Check it is on, and that both are on the same network.");
   return (
     <div className="mx-auto flex h-full max-w-sm flex-col items-center justify-center px-6 text-center">
-      {/* the web's splash: the app's mark, no face (the face is the Muse, who is not here yet) */}
-      <BrandMark size={72} />
+      {/* the web's splash: static official app mark with soft ambient glow (never moving/scaling) */}
+      <div className="nm-boot-icon-glow">
+        <BrandMark size={84} />
+      </div>
       {error ? (
         <>
           <p className="mt-6 text-[15px] font-medium">{t("Could not reach your MiniMuse.")}</p>
@@ -670,7 +672,7 @@ function Connecting({ error }: { error: string | null }) {
         </>
       ) : (
         <p className="mt-6 flex items-center gap-2 text-[14px] text-muted">
-          <Loader2 className="animate-spin" size={16} /> {t("Connecting to your MiniMuse…")}
+          <Loader2 className="animate-spin" size={16} /> {t("Booting up MiniMuse…")}
         </p>
       )}
     </div>

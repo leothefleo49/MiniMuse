@@ -48,6 +48,7 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, typ
 import { androidApp, authenticateNativeBiometric, keepRunningStatus, nativeBiometricInfo, type AppUpdateView, type KeepRunningStatus } from "../android";
 import { AccountScreen } from "./AccountScreen";
 import { DevicesScreen, VRHeadsetCard } from "./DevicesScreen";
+import { MemoryScreen } from "./MemoryScreen";
 import { UsageScreen } from "./UsageScreen";
 import {
   clearDebugLog,
@@ -279,6 +280,7 @@ export function SettingsScreen() {
   const sections: Array<{ id: SectionId; title: string; group: string; icon: ReactNode }> = useMemo(
     () => [
       { id: "who", title: name, group: t("General & Usage"), icon: <Sparkles size={15} /> },
+      { id: "memory", title: t("Memory"), group: t("General & Usage"), icon: <Brain size={15} /> },
       { id: "account", title: t("Account"), group: t("General & Usage"), icon: <UserRound size={15} /> },
       { id: "usage", title: t("Usage"), group: t("General & Usage"), icon: <BarChart3 size={15} /> },
       { id: "appearance", title: t("Appearance"), group: t("General & Usage"), icon: <Palette size={15} /> },
@@ -310,6 +312,7 @@ export function SettingsScreen() {
   const catalog: SettingsCatalogEntry<SectionId>[] = useMemo(
     () => [
       { id: "who-identity", sectionId: "who", sectionTitle: name, label: t("Name & personality"), description: t("Customize assistant name, avatar, background, glow, and personality."), keywords: ["profile", "avatar", "identity", "unedited", "background", "glow"] },
+      { id: "memory-main", sectionId: "memory", sectionTitle: t("Memory"), label: t("Memory & imported Muse memory"), description: t("Toggle cross-chat memory, review saved facts, and read or edit imported Muse memory files."), keywords: ["memory", "muse", "facts", "notes", "remember", "imported", "deep memory", "forget", "tidy"] },
       { id: "account-main", sectionId: "account", sectionTitle: t("Account"), label: t("Account & Private Personal Cloud"), description: t("Manage your Free Cloudflare Quick Tunnel, Tailscale, self-hosted sync, and optional nanoMuse Cloud account."), keywords: ["account", "personal cloud", "tunnel", "cloudflare", "tailscale", "sign in", "password", "sessions"] },
       { id: "usage-overview", sectionId: "usage", sectionTitle: t("Usage"), label: t("Token & cost usage"), description: t("Turns, cloud cost estimate, cached tokens, Ollama VRAM, and spending caps."), keywords: ["tokens", "cost", "limits", "budget", "ollama", "vram", "spending", "activity"] },
       { id: "sentinel-mode", sectionId: "sentinel", sectionTitle: t("Safety · Sentinel"), label: t("Approval mode & sandbox"), description: t("Locked in, Balanced, Cautious, Hands-off, and sandbox isolation rules."), keywords: ["safety", "sentinel", "sandbox", "hands-off", "auto", "approvals"] },
@@ -590,6 +593,15 @@ export function SettingsScreen() {
             >
               {saving ? t("Saving…") : dirty ? t("Save") : t("Saved")}
             </button>
+          </SettingBlock>
+        </Section>
+        )}
+
+        {/* Memory: cross-chat memory toggle, saved facts & imported Muse memory files */}
+        {show("memory") && (
+        <Section title={t("Memory")} id="memory" plain={!wide}>
+          <SettingBlock id="memory-main" highlightedId={highlightedId}>
+            <MemoryScreen embedded />
           </SettingBlock>
         </Section>
         )}
@@ -1324,8 +1336,8 @@ export function SettingsScreen() {
   );
 }
 
-type SectionId = "who" | "account" | "usage" | "sentinel" | "app-lock" | "passwords" | "proactivity" | "behavior" | "permissions" | "devices" | "vr" | "assistant" | "notifications" | "keep-running" | "cloud" | "model" | "appearance" | "desktop" | "data" | "import" | "developer" | "about";
-const SECTION_IDS: SectionId[] = ["who", "account", "usage", "sentinel", "app-lock", "passwords", "proactivity", "behavior", "permissions", "devices", "vr", "assistant", "notifications", "keep-running", "cloud", "model", "appearance", "desktop", "data", "import", "developer", "about"];
+type SectionId = "who" | "memory" | "account" | "usage" | "sentinel" | "app-lock" | "passwords" | "proactivity" | "behavior" | "permissions" | "devices" | "vr" | "assistant" | "notifications" | "keep-running" | "cloud" | "model" | "appearance" | "desktop" | "data" | "import" | "developer" | "about";
+const SECTION_IDS: SectionId[] = ["who", "memory", "account", "usage", "sentinel", "app-lock", "passwords", "proactivity", "behavior", "permissions", "devices", "vr", "assistant", "notifications", "keep-running", "cloud", "model", "appearance", "desktop", "data", "import", "developer", "about"];
 
 function CloudModeSelector({
   cloudMode,
@@ -2293,7 +2305,7 @@ function SettingsHome({
           <MuseDivider />
           <MuseRow icon={<Smile size={22} />} label={t("Avatar")} onClick={() => setTab("avatar")} />
           <MuseDivider />
-          <MuseRow icon={<Brain size={22} />} label={t("Memory")} onClick={() => setTab("memory")} />
+          <MuseRow icon={<Brain size={22} />} label={t("Memory")} value={s?.memory_enabled === false ? t("Off") : undefined} onClick={() => onOpen("memory")} />
           {s?.skills?.enabled !== false && (
             <>
               <MuseDivider />

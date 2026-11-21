@@ -292,18 +292,19 @@ def _boot_splash_html(port: int) -> str:
     padding: 32px; text-align: center; max-width: 380px;
   }}
   .logo {{
-    width: 68px; height: 68px; border-radius: 22px;
-    background: linear-gradient(135deg, #0064d4, #6366f1);
-    color: #fff; font-weight: 800; font-size: 26px; letter-spacing: -0.04em;
+    width: 84px; height: 84px; border-radius: 23px;
     display: flex; align-items: center; justify-content: center;
-    box-shadow: 0 12px 36px rgba(0, 100, 212, 0.32);
-    animation: pulse 1.8s ease-in-out infinite;
+    box-shadow: 0 0 38px 6px rgba(1, 114, 251, 0.34), 0 10px 28px rgba(0, 0, 0, 0.28);
+    animation: glow 2.4s ease-in-out infinite;
   }}
-  @keyframes pulse {{
-    0%, 100% {{ transform: scale(1); box-shadow: 0 12px 36px rgba(0, 100, 212, 0.30); }}
-    50% {{ transform: scale(1.04); box-shadow: 0 16px 44px rgba(99, 102, 241, 0.45); }}
+  .logo svg {{
+    width: 84px; height: 84px; display: block;
   }}
-  .title {{ font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }}
+  @keyframes glow {{
+    0%, 100% {{ box-shadow: 0 0 32px 4px rgba(1, 114, 251, 0.28), 0 10px 28px rgba(0, 0, 0, 0.25); }}
+    50% {{ box-shadow: 0 0 54px 12px rgba(1, 134, 251, 0.52), 0 10px 30px rgba(0, 0, 0, 0.28); }}
+  }}
+  .title {{ font-size: 21px; font-weight: 700; letter-spacing: -0.01em; }}
   .status {{
     display: inline-flex; align-items: center; gap: 10px;
     font-size: 13.5px; color: var(--muted);
@@ -324,9 +325,20 @@ def _boot_splash_html(port: int) -> str:
 </head>
 <body>
   <div class="wrap">
-    <div class="logo">MM</div>
+    <div class="logo" aria-label="MiniMuse">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+        <defs>
+          <linearGradient id="mm" gradientUnits="userSpaceOnUse" x1="10.25" y1="50" x2="89.75" y2="50">
+            <stop offset="0" stop-color="#015CFB"/>
+            <stop offset="1" stop-color="#0186FB"/>
+          </linearGradient>
+        </defs>
+        <rect width="100" height="100" rx="27" ry="27" fill="#FFFFFF"/>
+        <path d="M14.5 70 L14.5 30 L28.5 57 L42.5 30 L42.5 70 M57.5 70 L57.5 30 L71.5 57 L85.5 30 L85.5 70" fill="none" stroke="url(#mm)" stroke-width="8.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
     <div class="title">MiniMuse</div>
-    <div class="status" id="st"><span class="spinner"></span><span id="msg">Starting MiniMuse runtime…</span></div>
+    <div class="status" id="st"><span class="spinner"></span><span id="msg">Booting up MiniMuse…</span></div>
     <div class="err" id="err"></div>
   </div>
   <script>
@@ -340,7 +352,7 @@ def _boot_splash_html(port: int) -> str:
       async function poll() {{
         if (done) return;
         const elapsed = (Date.now() - start) / 1000;
-        if (elapsed > 2.5 && msgEl) msgEl.textContent = "Loading workspace & local runtime…";
+        if (elapsed > 2.5 && msgEl) msgEl.textContent = "Booting up workspace & local runtime…";
         try {{
           if (window.pywebview && window.pywebview.api && window.pywebview.api.get_boot_status) {{
             const info = await window.pywebview.api.get_boot_status();
@@ -365,14 +377,52 @@ def _boot_splash_html(port: int) -> str:
             }}
           }}
         }} catch (_) {{}}
-        setTimeout(poll, 120);
+        setTimeout(poll, 100);
       }}
       window.addEventListener("pywebviewready", poll);
-      setTimeout(poll, 40);
+      setTimeout(poll, 30);
     }})();
   </script>
 </body>
 </html>"""
+
+
+def _close_pyi_splash() -> None:
+    """Close PyInstaller's native bootloader splash screen once the real window is visible."""
+    try:
+        import pyi_splash  # type: ignore[import-not-found]
+
+        if pyi_splash.is_alive():
+            pyi_splash.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _read_fast_boot_config() -> tuple[int, object]:
+    """Read only ``server.port`` and ``data_dir`` from config.toml in <1ms using stdlib
+    ``tomllib`` — ZERO heavy ``nanomuse``/``fastapi`` imports on the main thread before opening
+    the native window!"""
+    from pathlib import Path
+
+    default_dir = Path.home() / ".nanomuse"
+    port = 8787
+    data_dir = default_dir
+    cfg_path = default_dir / "config.toml"
+    if cfg_path.is_file():
+        try:
+            import tomllib
+
+            raw = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                dd = raw.get("data_dir")
+                if isinstance(dd, str) and dd.strip():
+                    data_dir = Path(dd.strip()).expanduser()
+                srv = raw.get("server")
+                if isinstance(srv, dict) and isinstance(srv.get("port"), int) and srv["port"] > 0:
+                    port = int(srv["port"])
+        except Exception:  # noqa: BLE001
+            pass
+    return port, data_dir
 
 
 def _apply_win32_fullscreen(win: object, enabled: bool, saved: dict[str, object]) -> bool:
@@ -519,12 +569,13 @@ def _run_native_window(
     boot_port: int | None = None,
     data_dir: object | None = None,
     server_err: list[BaseException] | None = None,
+    boot_state: dict[str, object] | None = None,
 ) -> bool:
     """Open the MiniMuse UI in a dedicated native desktop window (never a browser tab).
 
-    When ``boot_port`` is provided, opens the window INSTANTLY with a booting indicator while
-    the local server starts in the background, then navigates directly to the app URL the
-    millisecond ``/api/health`` responds.
+    When ``boot_state`` or ``boot_port`` is provided, opens the window INSTANTLY with a
+    booting indicator while imports and the local server initialize in the background,
+    then navigates directly to the app URL the millisecond ``/api/health`` responds.
     """
     if os.environ.get("MINIMUSE_NO_BROWSER") or os.environ.get("BROWSER"):
         return False
@@ -532,8 +583,6 @@ def _run_native_window(
         return False
     try:
         import webview
-
-        from nanomuse.server.selfupdate import set_restart_hook
     except Exception as exc:  # noqa: BLE001
         _log(f"pywebview unavailable ({exc}); falling back")
         return False
@@ -567,6 +616,16 @@ def _run_native_window(
         def get_boot_status(self) -> dict[str, object]:
             if server_err:
                 return {"ready": False, "url": "", "error": f"MiniMuse server failed to start: {server_err[0]}"}
+            if boot_state is not None:
+                if boot_state.get("error"):
+                    return {"ready": False, "url": "", "error": str(boot_state["error"])}
+                if boot_state.get("ready") and boot_state.get("url"):
+                    return {"ready": True, "url": str(boot_state["url"]), "error": ""}
+                active_port = int(boot_state.get("port") or boot_port or 8787)
+                active_dir = boot_state.get("data_dir") or data_dir
+                if boot_state.get("serving") and _health_info("127.0.0.1", active_port, timeout=0.25) is not None:
+                    return {"ready": True, "url": _app_url(active_port, data_dir=active_dir), "error": ""}
+                return {"ready": False, "url": "", "error": ""}
             if boot_port is None:
                 return {"ready": True, "url": url, "error": ""}
             if _health_info("127.0.0.1", boot_port, timeout=0.35) is not None:
@@ -592,7 +651,9 @@ def _run_native_window(
         def toggle_fullscreen(self) -> bool:
             return self.set_fullscreen(not bool(fs_state["fullscreen"]))
 
-    use_splash = boot_port is not None and _health_info("127.0.0.1", boot_port, timeout=0.2) is None
+    use_splash = (boot_state is not None) or (
+        boot_port is not None and _health_info("127.0.0.1", boot_port, timeout=0.15) is None
+    )
     win_kwargs: dict[str, object] = {
         "width": 1220,
         "height": 840,
@@ -603,8 +664,8 @@ def _run_native_window(
         "confirm_close": False,
         "js_api": _DesktopWindowApi(),
     }
-    if use_splash and boot_port is not None:
-        win_kwargs["html"] = _boot_splash_html(boot_port)
+    if use_splash:
+        win_kwargs["html"] = _boot_splash_html(boot_port or 8787)
     else:
         win_kwargs["url"] = _app_url(boot_port, data_dir=data_dir) if boot_port is not None else url
 
@@ -617,11 +678,12 @@ def _run_native_window(
         return False
     win_holder["win"] = win
 
-    if sys.platform == "win32" and start_fullscreen:
-        def _apply_initial_fs() -> None:
+    def _on_shown() -> None:
+        _close_pyi_splash()
+        if sys.platform == "win32" and start_fullscreen:
             _apply_win32_fullscreen(win, True, win32_saved)
 
-        win.events.shown += _apply_initial_fs
+    win.events.shown += _on_shown
 
     def _destroy_win() -> None:
         try:
@@ -629,7 +691,15 @@ def _run_native_window(
         except Exception:  # noqa: BLE001
             pass
 
-    set_restart_hook(_destroy_win)
+    if boot_state is not None:
+        boot_state["destroy_window"] = _destroy_win
+    else:
+        try:
+            from nanomuse.server.selfupdate import set_restart_hook
+
+            set_restart_hook(_destroy_win)
+        except Exception:  # noqa: BLE001
+            pass
     if callable(on_close):
         win.events.closed += lambda: on_close()
 
@@ -1205,7 +1275,9 @@ def _ensure_stdio() -> None:
 
 
 def _app_mode() -> None:
-    """Double-clicked: serve locally and open MiniMuse in its native desktop window."""
+    """Double-clicked: open the native window IMMEDIATELY with a static glowing MiniMuse icon
+    and 'Booting up…', while importing the runtime, checking handoffs, and starting the server
+    on a background thread."""
     _ensure_stdio()
     if sys.platform == "win32":
         try:
@@ -1214,63 +1286,103 @@ def _app_mode() -> None:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MiniMuse")
         except Exception:  # noqa: BLE001
             pass
-    from nanomuse.cli import _settings
-    from nanomuse.server import port_taken, serve
 
-    try:
-        settings = _settings(None)
-    except SystemExit as exc:  # a config.toml the runtime refuses: say it, don't just die
-        _fatal(f"MiniMuse could not read its settings (exit {exc.code}).")
-        raise
-    from nanomuse import __version__
-
-    # Listen on the network too: a phone pairs by scanning this app's QR, and that QR carries
-    # the LAN address, so a loopback-only server could never answer it ("pairing does not
-    # work"). The window, the health probe and every self-check still use 127.0.0.1, and
-    # every request carries the access token, so this only widens reach, not access.
-    host, port = _bind_host(settings), settings.server.port
-    _canonical_handoff_if_needed(host, port)
-    _install_app_entry()
+    fast_port, fast_data_dir = _read_fast_boot_config()
+    # Fast-path: if the exact same MiniMuse window is already open, focus it in ~5ms!
+    # Only skip fast-focus when launched from outside the canonical folder (an update handoff).
+    is_canonical_exe = True
     if FROZEN:
-        target = _canonical_windows_target() if sys.platform == "win32" else _canonical_linux_target()
-        _stop_older_running_instance(host, port, target)
+        try:
+            from pathlib import Path
 
-    taken = port_taken(host, port)
-    storage_dir = settings.data_dir / "webview"
-    # Clean up any stale secondary WebView2 session folders from earlier launches
-    try:
-        import shutil
-
-        for old_dir in settings.data_dir.glob("webview-session-*"):
-            if old_dir.is_dir():
-                shutil.rmtree(old_dir, ignore_errors=True)
-    except Exception:  # noqa: BLE001
-        pass
-
-    if taken in (f"nanoMuse {__version__}", f"MiniMuse {__version__}"):
-        # The same release is already serving on this port: focus its window if open,
-        # otherwise open a native window with an unlocked per-PID storage path so WebView2
-        # never hits 0x800700AA (resource in use) and shows a blank white window.
-        _log(f"{taken} is already running on {host}:{port}; activating window")
+            target = _canonical_windows_target() if sys.platform == "win32" else _canonical_linux_target()
+            if target is not None and Path(sys.executable).resolve() != target.resolve():
+                is_canonical_exe = False
+        except Exception:  # noqa: BLE001
+            pass
+    if is_canonical_exe and _health_info("127.0.0.1", fast_port, timeout=0.15) is not None:
         if _focus_existing_window():
+            _close_pyi_splash()
             raise SystemExit(0)
-        _wait_for_health(port, wait=10.0)
-        url = _app_url(port, data_dir=settings.data_dir)
-        unlocked_dir = settings.data_dir / f"webview-session-{os.getpid()}"
-        if not _run_native_window(url, storage_dir=unlocked_dir):
-            _open_the_app(port, wait=2.0, data_dir=settings.data_dir)
-        raise SystemExit(0)
-    if taken:
-        port = _next_free_port(port + 1)
-        _log(
-            f"port {settings.server.port} is held by {taken}; serving {__version__} on {port} instead"
-        )
+
+    storage_dir = fast_data_dir / "webview"
+    # If another headless runtime already holds WebView2's default folder, use a fresh session dir
+    if _health_info("127.0.0.1", fast_port, timeout=0.1) is not None and is_canonical_exe:
+        storage_dir = fast_data_dir / f"webview-session-{os.getpid()}"
 
     server_ref: list[object] = []
     server_err: list[BaseException] = []
+    boot_state: dict[str, object] = {
+        "port": fast_port,
+        "data_dir": fast_data_dir,
+        "serving": False,
+        "ready": False,
+        "url": "",
+        "error": "",
+        "destroy_window": None,
+        "handed_off": False,
+    }
 
-    def _serve_bg() -> None:
+    def _boot_and_serve() -> None:
         try:
+            from nanomuse import __version__
+            from nanomuse.cli import _settings
+            from nanomuse.server import port_taken, serve
+            from nanomuse.server.selfupdate import set_restart_hook
+
+            destroy_fn = boot_state.get("destroy_window")
+            if callable(destroy_fn):
+                set_restart_hook(destroy_fn)
+
+            try:
+                settings = _settings(None)
+            except SystemExit as exc:
+                boot_state["error"] = f"MiniMuse could not read its settings (exit {exc.code})."
+                return
+
+            host, port = _bind_host(settings), settings.server.port
+            boot_state["port"] = port
+            boot_state["data_dir"] = settings.data_dir
+
+            try:
+                _canonical_handoff_if_needed(host, port)
+            except SystemExit:
+                boot_state["handed_off"] = True
+                fn = boot_state.get("destroy_window")
+                if callable(fn):
+                    fn()
+                return
+
+            threading.Thread(target=_install_app_entry, name="minimuse-shortcuts", daemon=True).start()
+            if FROZEN:
+                target = _canonical_windows_target() if sys.platform == "win32" else _canonical_linux_target()
+                _stop_older_running_instance(host, port, target)
+
+            # Clean up any stale secondary WebView2 session folders from earlier launches
+            try:
+                import shutil
+
+                for old_dir in settings.data_dir.glob("webview-session-*"):
+                    if old_dir.is_dir() and old_dir.name != f"webview-session-{os.getpid()}":
+                        shutil.rmtree(old_dir, ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
+
+            taken = port_taken(host, port)
+            if taken in (f"nanoMuse {__version__}", f"MiniMuse {__version__}"):
+                _log(f"{taken} is already running on {host}:{port}; attaching window")
+                _wait_for_health(port, wait=10.0)
+                boot_state["url"] = _app_url(port, data_dir=settings.data_dir)
+                boot_state["ready"] = True
+                return
+            if taken:
+                port = _next_free_port(port + 1)
+                boot_state["port"] = port
+                _log(
+                    f"port {settings.server.port} is held by {taken}; serving {__version__} on {port} instead"
+                )
+
+            boot_state["serving"] = True
             serve(
                 settings,
                 host=host,
@@ -1280,39 +1392,51 @@ def _app_mode() -> None:
             )
         except BaseException as exc:  # noqa: BLE001
             server_err.append(exc)
+            boot_state["error"] = f"MiniMuse server failed to start: {exc}"
 
-    srv_thread = threading.Thread(target=_serve_bg, name="minimuse-server", daemon=True)
+    srv_thread = threading.Thread(target=_boot_and_serve, name="minimuse-server", daemon=True)
     srv_thread.start()
-
-    url = _app_url(port, data_dir=settings.data_dir)
 
     def _stop_server() -> None:
         for srv in server_ref:
             srv.should_exit = True  # type: ignore[attr-defined]
 
-    # Open the native desktop window IMMEDIATELY with a booting splash instead of blocking ~5s
+    # Open the native desktop window IMMEDIATELY — zero blocking imports or HTTP probes first!
     if _run_native_window(
-        url,
+        _app_url(fast_port, data_dir=fast_data_dir),
         storage_dir=storage_dir,
         on_close=_stop_server,
-        boot_port=port,
-        data_dir=settings.data_dir,
+        boot_port=fast_port,
+        data_dir=fast_data_dir,
         server_err=server_err,
+        boot_state=boot_state,
     ):
+        _close_pyi_splash()
+        if boot_state.get("handed_off"):
+            raise SystemExit(0)
         srv_thread.join(timeout=3.0)
         return
 
-    if not _wait_for_health(port, wait=60.0):
-        if server_err:
-            _fatal(f"MiniMuse server failed to start: {server_err[0]}")
+    _close_pyi_splash()
+    # Wait up to 60s for background boot to expose port
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        if server_err or boot_state.get("error"):
+            _fatal(str(boot_state.get("error") or server_err[0]))
             raise SystemExit(1)
+        cur_p = int(boot_state.get("port") or fast_port)
+        if boot_state.get("ready") or (
+            boot_state.get("serving") and _health_info("127.0.0.1", cur_p, timeout=0.4) is not None
+        ):
+            break
+        time.sleep(0.15)
 
-    # Fallback (headless / no GUI webview engine): open chromeless app window or browser
-    # and keep serving until interrupted.
+    active_port = int(boot_state.get("port") or fast_port)
+    active_dir = boot_state.get("data_dir") or fast_data_dir
     threading.Thread(
         target=_open_the_app,
-        args=(port,),
-        kwargs={"wait": 5.0, "data_dir": settings.data_dir},
+        args=(active_port,),
+        kwargs={"wait": 5.0, "data_dir": active_dir},
         daemon=True,
     ).start()
     try:
@@ -1334,14 +1458,17 @@ def main() -> None:
         try:
             _app_mode()
         except SystemExit:
+            _close_pyi_splash()
             raise
         except Exception as exc:  # noqa: BLE001 — a windowed build must not die silently
             import traceback
 
+            _close_pyi_splash()
             _log("startup failed:\n" + "".join(traceback.format_exception(exc)))
             _fatal(f"MiniMuse could not start ({exc}).")
             raise
         return
+    _close_pyi_splash()
     # the bridge commands (console scripts in a pip install) are subcommands of this one
     # executable: `nanomuse device …`, `nanomuse browser …`, `nanomuse open …`
     if len(sys.argv) > 1 and sys.argv[1] in ("device", "browser", "open"):

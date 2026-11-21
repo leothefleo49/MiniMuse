@@ -5209,6 +5209,27 @@ class MuseService:
                 server_patch["trash_retention_days"] = days
             except (TypeError, ValueError):
                 pass
+        if "memory_enabled" in data and data["memory_enabled"] is not None:
+            from nanomuse.config import load_app_settings, save_app_settings
+            from nanomuse.memory import MemoryStore
+
+            val = bool(data["memory_enabled"])
+            self.settings.memory.enabled = val
+            if val and self.app.memory is None:
+                try:
+                    self.app.memory = MemoryStore(self.settings.memory_db)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("could not open memory store: {}", exc)
+            elif not val and self.app.memory is not None:
+                try:
+                    self.app.memory.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self.app.memory = None
+            stored = load_app_settings(self.data_dir)
+            stored["memory"] = {**stored.get("memory", {}), "enabled": val}
+            save_app_settings(self.data_dir, stored)
+            self.bus.publish({"kind": "memory"})
         if server_patch:
             from nanomuse.config import load_app_settings, save_app_settings
 

@@ -138,6 +138,16 @@ HEADER_PATTERNS = (
         r"^##\s+(?P<speaker>[^\u2014\n]{1,60}?)\s*\u2014\s*(?P<ts>\S[^\n]{0,60})$",
         re.MULTILINE,
     ),
+    # ### User, em dash, Mon, Oct 5, 2026, 1:18 PM MDT
+    re.compile(
+        r"^###\s+(?P<speaker>[^\u2014\n]{1,60}?)\s*\u2014\s*(?P<ts>\S[^\n]{0,60})$",
+        re.MULTILINE,
+    ),
+    # ## Mon, Nov 2, 2026 — 1:01 PM MST — Tyler (weekday/date — time — speaker)
+    re.compile(
+        r"^#{2,3}\s+(?P<ts>[A-Za-z]{3,9},?\s+[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}\s*(?:\u2014|-|,)\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AP]M)?(?:\s+[A-Z]{2,5})?)\s*(?:\u2014|-{1,3})\s+(?P<speaker>[^\n]{1,60})$",
+        re.MULTILINE,
+    ),
     # ## 2026-11-07 7:45 PM MST, em dash, Tyler: the time first, then the speaker, which is
     # what the archive's own builder writes (em dash or hyphen, ## or ###)
     re.compile(
@@ -293,8 +303,9 @@ class ImportPlan:
     # second run of the same archive stores nothing twice
     ledger: ImportLedger | None = None
     # transcripts the archive carried twice (the canonical copy under chat-transcripts/ and
-    # Muse's own working copy): one chat each, merged by the chat id written in the file
+    # Muse's own working copy): one chat each, merged by chat id or opening-turn fingerprint
     chats_by_id: dict[str, Conversation] = field(default_factory=dict)
+    chats_by_sig: dict[str, Conversation] = field(default_factory=dict)
 
 
 # ------------------------------------------------------------------ parsing
@@ -311,6 +322,12 @@ _TIME_FORMATS = (
     "%a %Y-%m-%d %H:%M",
     "%a %b %d, %Y, %I:%M:%S %p",
     "%a %b %d, %Y, %I:%M %p",
+    "%a, %b %d, %Y, %I:%M:%S %p",
+    "%a, %b %d, %Y, %I:%M %p",
+    "%a, %b %d, %Y %I:%M:%S %p",
+    "%a, %b %d, %Y %I:%M %p",
+    "%a %b %d, %Y %I:%M:%S %p",
+    "%a %b %d, %Y %I:%M %p",
     "%b %d, %Y, %I:%M:%S %p",
     "%b %d, %Y, %I:%M %p",
     "%A, %B %d, %Y, %I:%M:%S %p",
@@ -346,6 +363,7 @@ def parse_timestamp(raw: str) -> str:
     if abbr is not None and abbr.group(1) in TZ_OFFSETS:
         offset = TZ_OFFSETS[abbr.group(1)]
         raw = raw[: abbr.start()].strip()
+    raw = re.sub(r"\s*[\u2014\u2013]\s*", " ", raw)
     raw = re.sub(r"\s+", " ", raw)
     for fmt in _TIME_FORMATS:
         try:
@@ -531,7 +549,15 @@ def parse_transcript(text: str, source: str = "") -> list[Turn]:
         if current is not None and current["text"].strip():
             raw.append(current)
     else:
-        inline = list(INLINE_SPEAKER.finditer(text))
+        _META_SPEAKERS = {
+            "chat id", "chat", "span", "saved", "title", "date", "date range",
+            "notes", "note", "source", "messages", "message count", "exported",
+            "coverage", "summary", "topic", "status", "duration", "participants",
+        }
+        inline = [
+            m for m in INLINE_SPEAKER.finditer(text)
+            if _clean_speaker(m.group("speaker")).lower() not in _META_SPEAKERS
+        ]
         distinct = {_clean_speaker(m.group("speaker")).lower() for m in inline}
         if len(inline) >= 3 and len(distinct) <= 4:
             for i, match in enumerate(inline):
@@ -642,8 +668,11 @@ def _title_from_text(text: str, name: str) -> str:
 
 _FILE_EXT = re.compile(r"\.(?:md|markdown|txt|json|csv|log|html?|bak)$", re.IGNORECASE)
 
-# "- Chat ID: e7ce5fac-3702-4b7f-b7c3-466693085b81" in a transcript's metadata block
-_CHAT_ID = re.compile(r"^\s*[-*]?\s*Chat\s+ID\s*:\s*([0-9a-fA-F][0-9a-fA-F-]{5,})\s*$", re.MULTILINE)
+# "- Chat ID: e7ce5fac-3702-4b7f-b7c3-466693085b81" or "- **Chat ID:** ..." in metadata
+_CHAT_ID = re.compile(
+    r"^\s*[-*]?\s*\*{0,2}Chat\s+ID\s*:?\*{0,2}\s*:?\s*([0-9a-fA-F][0-9a-fA-F-]{5,})\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
 
 
 def _chat_id_of(text: str) -> str:
@@ -1818,8 +1847,23 @@ def _ingest_zip(
         if MAX_ZIP_TOTAL_BYTES and total > MAX_ZIP_TOTAL_BYTES:
             raise ValueError("the archive expands to more than the import limit; split it first")
         apps: dict[str, dict[str, Any]] = {}
-        entry_total = len(names)
-        for entry_no, info in enumerate(archive.infolist(), start=1):
+        # Process manifest + canonical archive root (minimuse-archive/) FIRST so canonical
+        # chat transcripts establish their chat_ids and content fingerprints before any
+        # older/working copies elsewhere in workspace/your_files/ are read.
+        infolist = list(archive.infolist())
+        if plan.archive_root:
+            ar_tok = plan.archive_root.lower()
+            infolist.sort(
+                key=lambda i: (
+                    0
+                    if i.filename.replace("\\", "/").lower() == "manifest.json"
+                    else 1
+                    if ar_tok in [p.lower() for p in i.filename.replace("\\", "/").split("/")]
+                    else 2
+                )
+            )
+        entry_total = len(infolist)
+        for entry_no, info in enumerate(infolist, start=1):
             if progress is not None and (entry_no % 100 == 0 or entry_no == entry_total):
                 progress(entry_no, entry_total)
             member = info.filename
@@ -1889,8 +1933,12 @@ _TEXT_EXTRA = {".yaml", ".yml", ".toml", ".ini", ".cfg", ".py", ".sh", ".js", ".
 
 
 # Muse keeps a folder of half-rendered transcript pages while it writes them; the finished
-# transcripts live elsewhere, so the fragments are never content
-_CACHE_FOLDERS = {".transcript-pages"}
+# transcripts live elsewhere, so the fragments are never content. Also skip virtualenv/build caches.
+_CACHE_FOLDERS = {".transcript-pages", "venv", ".venv", "node_modules", "__pycache__", ".git", "site-packages"}
+
+# Folders that carry background research, verification docs, or raw source trees — NEVER side chats
+_MEMORY_ONLY_FOLDERS = {"proactive_messages", "hidden_verification"}
+_FILE_ONLY_FOLDERS = {"apps_source_code"}
 
 # copies of a file next to the file itself: kept as files, never parsed as the file
 _BACKUP_SUFFIXES = (".bak", ".old", ".orig", ".swp", ".copy", "~")
@@ -1940,6 +1988,13 @@ def _classify(parts: list[str]) -> str:
         return "thread"
     if _app_root(parts) is not None:
         return "app"
+    if _FILE_ONLY_FOLDERS & set(lower_parts[:-1]):
+        return "file"
+    if len(lower_parts) >= 2 and lower_parts[0] == "workspace" and lower_parts[1] == "user":
+        # Uploaded user attachments/files (PDFs, CSVs, VTT recordings, screenshots): keep intact as workspace files, never bogus chats
+        return "file"
+    if _MEMORY_ONLY_FOLDERS & set(lower_parts[:-1]):
+        return "memory" if (suffix in TEXT_SUFFIXES or suffix in _TEXT_EXTRA) else "file"
     if "chat-transcripts" in joined:
         return "transcript"
     if any(p in ("memory", "goals", "projects", "notes", "system", "profile") for p in lower_parts):
@@ -2311,6 +2366,7 @@ def _read_text_entry(
         return
     turns = parse_transcript(text, member)
     parts = [p for p in member.replace("\\", "/").split("/") if p]
+    in_chat_dir = any(p.lower() in ("chat-transcripts", "conversations") for p in parts)
     if _in_archive(plan, member) and any(p.lower() == "chat-transcripts" for p in parts):
         # counted against the archive's own transcript totals in the verification report
         plan.staged_counts["chat_transcripts_in_archive"] = (
@@ -2319,13 +2375,35 @@ def _read_text_entry(
         plan.staged_counts["total_transcript_messages"] = (
             plan.staged_counts.get("total_transcript_messages", 0) + len(turns)
         )
+    # Loose documents outside chat-transcripts/ (READMEs, prompt packs, guides) can accidentally
+    # trigger 1-2 false-positive "You:" lines; require real back-and-forth (both user & assistant)
+    # or an explicit Chat ID before turning a loose file into a side chat.
+    chat_id = _chat_id_of(text) if turns else ""
+    if turns and not in_chat_dir and not chat_id:
+        roles_seen = {t.role for t in turns}
+        if len(turns) < 2 or not ({"user", "assistant"} <= roles_seen):
+            turns = []
     if turns:
-        chat_id = _chat_id_of(text)
         ext_key = f"muse:{chat_id}" if chat_id else ""
+        # Compute opening-turn content fingerprints (first user + first assistant snippet)
+        # so an older working copy without Chat ID merges cleanly into its canonical archive chat
+        sigs: list[str] = []
+        for role_sig in ("user", "assistant"):
+            first_t = next((t for t in turns if t.role == role_sig and len(t.text.strip()) >= 12), None)
+            if first_t is not None:
+                norm_t = re.sub(r"\s+", " ", first_t.text.strip().lower())[:140]
+                sigs.append(f"{role_sig}:{hashlib.sha256(norm_t.encode('utf-8')).hexdigest()[:16]}")
         existing = plan.chats_by_id.get(chat_id) if chat_id else None
+        if existing is None and not chat_id:
+            for sg in sigs:
+                if sg in plan.chats_by_sig:
+                    existing = plan.chats_by_sig[sg]
+                    break
         if existing is not None:
             # the same conversation, carried a second time: the messages join the one chat
             _absorb_turns(existing, turns)
+            for sg in sigs:
+                plan.chats_by_sig.setdefault(sg, existing)
             return
         conv = Conversation(
             title=title_from_text(text, member),
@@ -2336,6 +2414,8 @@ def _read_text_entry(
         )
         if chat_id:
             plan.chats_by_id[chat_id] = conv
+        for sg in sigs:
+            plan.chats_by_sig.setdefault(sg, conv)
         plan.conversations.append(conv)
         return
     if options.background_memory:
@@ -2350,7 +2430,9 @@ def _read_text_entry(
             if stored and index_memory_text(data_dir / "personal.db", stored, text):
                 plan.memory_files += 1
     lowered = member.replace("\\", "/").lower()
-    is_chat_file = lowered.startswith("conversations/") or "transcript" in lowered
+    is_chat_file = lowered.startswith("conversations/") or (
+        "chat-transcripts/" in lowered and (not plan.archive_root or _in_archive(plan, member))
+    )
     if options.restore_chats and is_chat_file:
         plan.conversations.append(
             Conversation(
@@ -2904,6 +2986,8 @@ def _apply_conversation(
             stats["duplicates"] += 1
             continue
         ev_obj: dict[str, Any] = {"type": turn.role, "text": turn.text, "ts": turn.ts, "imported": True}
+        if turn.role == "assistant":
+            ev_obj["final"] = True
         if turn.source_msg_id:
             ev_obj["source_msg_id"] = turn.source_msg_id
         events.append(ev_obj)

@@ -153,8 +153,10 @@ def test_classify_archive_layout() -> None:
     assert data_import._classify(["notes", ".hatch-fileserver-tmp.x.jpg.123.tmp"]) == "skip"
     assert data_import._classify(["notes", "x.md.tmp"]) == "skip"
     assert data_import._classify(["notes", ".DS_Store"]) == "skip"
-    # a hidden file that carries something is stored, not thrown away
-    assert data_import._classify(["notes", "documents", "venv", ".f2py_f2cmap"]) == "file"
+    # a Muse export can carry a whole virtualenv under notes; those leftovers are never content
+    assert data_import._classify(["notes", "documents", "venv", ".f2py_f2cmap"]) == "skip"
+    # a hidden file that carries something, outside a cache folder, is stored
+    assert data_import._classify(["notes", "documents", ".f2py_f2cmap"]) == "file"
     # a goal note whose name says "transcript" is a note, not a chat
     assert (
         data_import._classify(["notes", "goals", "x", "call-transcript-setting-nov5.md"])
@@ -276,8 +278,13 @@ class FakeSvc:
         self.profile = FakeProfile()
         self._counter = 0
 
-    def update_profile(self, **fields: Any) -> None:
-        self.profile.fields.update({k: v for k, v in fields.items() if v is not None})
+    def update_profile(self, data: dict[str, Any] | None = None, **fields: Any) -> None:
+        # The real MuseService takes one dict. Older tests pass keyword fields.
+        merged: dict[str, Any] = {}
+        if isinstance(data, dict):
+            merged.update(data)
+        merged.update(fields)
+        self.profile.fields.update({k: v for k, v in merged.items() if v is not None})
 
     def workspace(self) -> Path:
         return self.workspace_dir

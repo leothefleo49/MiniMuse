@@ -63,6 +63,8 @@ export function MuseSheet({ open, onClose }: { open: boolean; onClose: () => voi
   const [stopping, setStopping] = useState(false);
   const name = state.profile?.name ?? "MiniMuse";
   const pending = state.pendingApprovals.length;
+  const wide = typeof document !== "undefined" && (document.documentElement?.classList?.contains("desktop") || (typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(min-width: 64rem)").matches));
+  const sheetAvatarSize = wide ? 172 : 148;
   const t = useT();
 
   useEffect(() => {
@@ -118,18 +120,18 @@ export function MuseSheet({ open, onClose }: { open: boolean; onClose: () => voi
         >
           <Share2 size={16} />
         </button>
-        <div className="relative isolate overflow-visible">
-          <Avatar profile={state.profile} status={state.status} size={72} />
+        <div className="relative isolate overflow-visible mt-1">
+          <Avatar profile={state.profile} status={state.status} size={sheetAvatarSize} />
           {/* the pen badge, bottom-right of the face: straight to Avatar Studio */}
           <button
             type="button"
             aria-label={t("Edit")}
             title={t("Avatar studio")}
             onClick={() => go("avatar")}
-            style={{ transform: "translateZ(2px)" }}
-            className="absolute -bottom-0.5 -right-0.5 z-30 flex h-6 w-6 items-center justify-center rounded-full bg-surface text-fg shadow-[0_1px_4px_rgba(0,0,0,0.22)] hover:bg-surface-2 dark:border dark:border-border"
+            style={{ transform: "translateZ(4px)" }}
+            className="absolute bottom-1 right-1 z-30 flex h-9 w-9 items-center justify-center rounded-full bg-surface text-fg shadow-[0_2px_8px_rgba(0,0,0,0.28)] hover:bg-surface-2 dark:border dark:border-border"
           >
-            <Pencil size={13} />
+            <Pencil size={16} />
           </button>
         </div>
         <div className="mt-2.5 text-[21px] font-semibold leading-[26px]">{name}</div>

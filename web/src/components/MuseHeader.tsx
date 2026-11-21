@@ -22,7 +22,7 @@ export function MuseHeader({
   leading,
   trailing,
   under,
-  size = 72,
+  size = 98,
   className,
   scrim = false,
 }: {

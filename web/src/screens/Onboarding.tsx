@@ -486,7 +486,7 @@ export function Onboarding() {
         )}
         {step === "welcome" && (
           <div className="flex min-h-full flex-col items-center justify-start pt-4 pb-4 text-center sm:justify-center">
-            <Avatar profile={preview} size={96} />
+            <Avatar profile={preview} size={128} />
             <span className="mt-2.5 rounded-full bg-surface-2 px-3 py-1 text-[12px] font-medium text-fg/80">
               {preview.name} · {t("Local-first assistant")}
             </span>
@@ -532,7 +532,7 @@ export function Onboarding() {
         {step === "appearance" && (
           <div className="pt-4 space-y-4 wide:grid wide:grid-cols-2 wide:items-start wide:gap-4 wide:space-y-0" data-testid="onboarding-appearance">
             <div className="flex items-center gap-3.5 wide:col-span-2">
-              <Avatar profile={preview} size={72} />
+              <Avatar profile={preview} size={96} />
               <div className="min-w-0">
                 <h1 className="text-[24px] font-bold tracking-tight">{t("Theme & AI appearance")}</h1>
                 <p className="text-[13.5px] text-muted">{t("Pick your canvas style, creature look, AI name, and navigation tabs.")}</p>
@@ -774,7 +774,7 @@ export function Onboarding() {
         {step === "list" && (
           <div className="pt-4 space-y-4">
             <div className="flex items-center gap-3">
-              <Avatar profile={preview} size={56} />
+              <Avatar profile={preview} size={76} />
               <div className="min-w-0">
                 <h1 className="text-[24px] font-bold tracking-tight truncate">{t("Set it up")}</h1>
                 <p className="text-[13.5px] text-muted truncate">{t("Local-first setup for {name}. Ready in a minute.", { name: preview.name })}</p>

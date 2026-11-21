@@ -1,4 +1,5 @@
-import { CalendarDays, FileText, Home, MapPin, MessageSquare, Monitor, MonitorSmartphone, MoreHorizontal, Pencil, Search, Settings, Smartphone, SquarePen, Terminal, Trash2, X } from "lucide-react";
+import { CalendarDays, CheckSquare, FileText, Home, MapPin, MessageSquare, Monitor, MonitorSmartphone, MoreHorizontal, Pencil, Search, Settings, Smartphone, Square, SquarePen, Terminal, Trash2, X } from "lucide-react";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { TrashModal } from "./TrashModal";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
@@ -24,6 +25,10 @@ export function ChatsDrawer() {
   const [query, setQuery] = useState("");
   const [sheet, setSheet] = useState<{ thread: ThreadMeta; mode: ThreadSheetMode } | null>(null);
   const [trashOpen, setTrashOpen] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const panel = useRef<HTMLElement>(null);
   useFocusTrap(panel, open);
   // the phone's back gesture closes the drawer first (back.ts)
@@ -42,6 +47,8 @@ export function ChatsDrawer() {
     if (!open) {
       setQuery("");
       setSheet(null);
+      setSelectMode(false);
+      setSelectedIds(new Set());
       return;
     }
     // warm the Devices chunk while the drawer is open, so its row opens instantly
@@ -109,6 +116,35 @@ export function ChatsDrawer() {
       toast((e as Error).message);
     } finally {
       setSheet(null);
+    }
+  };
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const runBulkDelete = async () => {
+    const ids = [...selectedIds].filter((id) => id !== "main");
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const res = await api.bulkDeleteThreads(ids);
+      const removed = res.deleted ?? ids;
+      for (const id of removed) {
+        dispatch({ type: "ws", msg: { kind: "thread_deleted", thread: id } });
+      }
+      if (removed.includes(state.activeThread)) openThread("main");
+      toast(t("Moved {n} chats to Trash", { n: removed.length }));
+      setSelectMode(false);
+      setSelectedIds(new Set());
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setBulkBusy(false);
+      setBulkConfirm(false);
     }
   };
   const kindOf = (id: string) => state.hub?.devices.find((d) => d.id === id)?.kind ?? "phone";
@@ -180,9 +216,47 @@ export function ChatsDrawer() {
           onClick={() => setTrashOpen(true)}
         />
 
-        <div className="mt-3 px-5 pb-1">
+        <div className="mt-3 flex items-center justify-between px-5 pb-1">
           <span className="text-[14px] font-medium text-muted">{t("Side chats")}</span>
+          {side.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                if (selectMode) {
+                  setSelectMode(false);
+                  setSelectedIds(new Set());
+                } else {
+                  setSelectMode(true);
+                }
+              }}
+              className="rounded-lg px-2 py-0.5 text-[12px] font-medium text-accent hover:bg-surface-2"
+            >
+              {selectMode ? t("Cancel") : t("Select")}
+            </button>
+          )}
         </div>
+        {selectMode && (
+          <div className="mx-3 mb-1.5 flex items-center justify-between gap-2 rounded-2xl bg-surface-2/80 px-3 py-2 text-[12.5px]">
+            <button
+              type="button"
+              onClick={() => {
+                if (selectedIds.size >= side.length) setSelectedIds(new Set());
+                else setSelectedIds(new Set(side.map((th) => th.id)));
+              }}
+              className="font-medium text-accent"
+            >
+              {selectedIds.size >= side.length ? t("Deselect all") : t("Select all")}
+            </button>
+            <button
+              type="button"
+              disabled={selectedIds.size === 0 || bulkBusy}
+              onClick={() => setBulkConfirm(true)}
+              className="inline-flex items-center gap-1 rounded-xl bg-rose-500 px-3 py-1 font-medium text-white disabled:opacity-40"
+            >
+              <Trash2 size={13} /> {t("Delete ({n})", { n: selectedIds.size })}
+            </button>
+          </div>
+        )}
         {side.length === 0 && !query && state.activeThread !== DRAFT_THREAD ? (
           <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
             <MessageSquare size={28} className="mb-3 text-muted/70" />
@@ -202,7 +276,10 @@ export function ChatsDrawer() {
                 key={th.id}
                 thread={th}
                 kind={th.device ? kindOf(th.device) : undefined}
-                selected={chatHere && state.activeThread === th.id}
+                selected={selectMode ? selectedIds.has(th.id) : chatHere && state.activeThread === th.id}
+                selectMode={selectMode}
+                checked={selectedIds.has(th.id)}
+                onToggleCheck={() => toggleSelected(th.id)}
                 onPick={() => pick(th.id)}
                 onHold={() => setSheet({ thread: th, mode: "menu" })}
                 onRename={() => setSheet({ thread: th, mode: "rename" })}
@@ -253,6 +330,15 @@ export function ChatsDrawer() {
         />
       )}
       <TrashModal open={trashOpen} onClose={() => setTrashOpen(false)} onRestored={(id) => pick(id)} />
+      <ConfirmDialog
+        open={bulkConfirm}
+        title={t("Delete {n} chats?", { n: selectedIds.size })}
+        body={t("Selected side chats will be moved to Trash and removed on synced devices.")}
+        confirmLabel={bulkBusy ? t("Deleting…") : t("Delete")}
+        danger
+        onCancel={() => !bulkBusy && setBulkConfirm(false)}
+        onConfirm={() => void runBulkDelete()}
+      />
     </div>
   );
 }
@@ -275,6 +361,9 @@ function SideRow({
   thread,
   kind,
   selected,
+  selectMode = false,
+  checked = false,
+  onToggleCheck,
   onPick,
   onHold,
   onRename,
@@ -283,6 +372,9 @@ function SideRow({
   thread: ThreadMeta;
   kind?: string;
   selected: boolean;
+  selectMode?: boolean;
+  checked?: boolean;
+  onToggleCheck?: () => void;
   onPick: () => void;
   onHold: () => void;
   onRename: () => void;
@@ -293,13 +385,28 @@ function SideRow({
   return (
     <li
       onContextMenu={(e) => {
+        if (selectMode) return;
         e.preventDefault();
         onHold();
       }}
       className={cx("group mx-2 flex items-center gap-1 rounded-2xl px-3", selected ? "bg-surface-2" : "hover:bg-surface-2/60")}
     >
+      {selectMode && (
+        <button
+          type="button"
+          aria-label={checked ? t("Deselect chat") : t("Select chat")}
+          onClick={onToggleCheck}
+          className={cx("shrink-0 p-1", checked ? "text-accent" : "text-muted")}
+        >
+          {checked ? <CheckSquare size={18} /> : <Square size={18} />}
+        </button>
+      )}
       {/* the name answers a hold or menu with the chat's actions (rename, clear, delete) */}
-      <button type="button" {...hold} className="flex min-w-0 flex-1 items-center gap-2 py-2.5 text-left">
+      <button
+        type="button"
+        {...(selectMode ? { onClick: onToggleCheck } : hold)}
+        className="flex min-w-0 flex-1 items-center gap-2 py-2.5 text-left"
+      >
         {thread.device ? (
           <span className="shrink-0 text-accent">{kind === "computer" ? <Monitor size={15} /> : <Smartphone size={15} />}</span>
         ) : thread.remote_from ? (
@@ -309,15 +416,19 @@ function SideRow({
         {thread.busy && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-400" />}
         <span className="shrink-0 text-[12px] text-muted">{relativeDay(thread.updated_at)}</span>
       </button>
-      <button type="button" aria-label={t("Rename")} onClick={onRename} className="p-1 text-muted/70 opacity-0 hover:text-fg focus:opacity-100 group-hover:opacity-100">
-        <Pencil size={14} />
-      </button>
-      <button type="button" aria-label={t("Move to Trash")} onClick={onDelete} className="p-1 text-muted/70 opacity-0 hover:text-rose-500 focus:opacity-100 group-hover:opacity-100">
-        <Trash2 size={15} />
-      </button>
-      <button type="button" aria-label={t("Chat options")} onClick={onHold} className="p-1 text-muted/70 opacity-0 hover:text-fg focus:opacity-100 group-hover:opacity-100">
-        <MoreHorizontal size={14} />
-      </button>
+      {!selectMode && (
+        <>
+          <button type="button" aria-label={t("Rename")} onClick={onRename} className="p-1 text-muted/70 opacity-0 hover:text-fg focus:opacity-100 group-hover:opacity-100">
+            <Pencil size={14} />
+          </button>
+          <button type="button" aria-label={t("Move to Trash")} onClick={onDelete} className="p-1 text-muted/70 opacity-0 hover:text-rose-500 focus:opacity-100 group-hover:opacity-100">
+            <Trash2 size={15} />
+          </button>
+          <button type="button" aria-label={t("Chat options")} onClick={onHold} className="p-1 text-muted/70 opacity-0 hover:text-fg focus:opacity-100 group-hover:opacity-100">
+            <MoreHorizontal size={14} />
+          </button>
+        </>
+      )}
     </li>
   );
 }

@@ -32,7 +32,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
-LIMITS = {"messages": 20000, "text_bytes": 16384}
+LIMITS = {"messages": 200000, "text_bytes": 262144}
 MAX_POST_MESSAGES = 200
 DEFAULT_PAGE = 500
 MAX_PAGE = 1000

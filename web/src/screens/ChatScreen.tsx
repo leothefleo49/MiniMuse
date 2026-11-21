@@ -1,4 +1,4 @@
-import { ArrowUp, Camera, Check, ChevronDown, Clock3, Copy, FileText, Globe, Hand, Loader2, Menu, MessageSquarePlus, Monitor, MonitorSmartphone, Moon, MoreHorizontal, Pencil, Phone, Plus, Reply, Smile, Smartphone, Square, Table2, Trash2, Type, Wand2, X } from "lucide-react";
+import { ArrowUp, Camera, Check, CheckSquare, ChevronDown, Clock3, Copy, FileText, Globe, Hand, Loader2, Menu, MessageSquarePlus, Monitor, MonitorSmartphone, Moon, MoreHorizontal, Pencil, Phone, Plus, Reply, Smile, Smartphone, Square, Table2, Trash2, Type, Wand2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api, fileUrl } from "../api";
 import { AllowanceHeadsUp } from "../components/AllowanceWays";
@@ -2157,7 +2157,44 @@ export function ThreadList({
   const [title, setTitle] = useState("");
   const [sheet, setSheet] = useState<{ thread: ThreadMeta; mode: ThreadSheetMode } | null>(null);
   const [trashOpen, setTrashOpen] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const newInput = useRef<HTMLInputElement>(null);
+  const sideThreads = threads.filter((th) => th.id !== "main");
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const exitSelectMode = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+  const runBulkDelete = async () => {
+    const ids = [...selectedIds].filter((id) => id !== "main");
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const res = await api.bulkDeleteThreads(ids);
+      const removed = res.deleted ?? ids;
+      for (const id of removed) {
+        dispatch({ type: "ws", msg: { kind: "thread_deleted", thread: id } });
+      }
+      if (removed.includes(active)) onPick("main");
+      toast(t("Moved {n} chats to Trash", { n: removed.length }));
+      exitSelectMode();
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setBulkBusy(false);
+      setBulkConfirm(false);
+    }
+  };
   // devices of yours on the hub that a chat can be addressed to
   const devices: HubDevice[] = (state.hub?.devices ?? []).filter((d) => !d.this && d.kind !== "web" && d.online);
   const kindOf = (id: string) => state.hub?.devices.find((d) => d.id === id)?.kind ?? "phone";
@@ -2211,21 +2248,41 @@ export function ThreadList({
     }
   };
 
-  const row = (th: ThreadMeta) => (
+  const row = (th: ThreadMeta) => {
+    const selectable = selectMode && th.id !== "main";
+    const isChecked = selectable && selectedIds.has(th.id);
+    return (
           <li
             key={th.id}
             onContextMenu={(e) => {
+              if (selectable) return;
               e.preventDefault();
               setSheet({ thread: th, mode: "menu" });
             }}
-            className={cx("group flex items-center gap-1 px-3", compact ? "py-2 rounded-xl hover:bg-surface-2/60" : "py-2.5", th.id === active && "bg-surface-2/60")}
+            className={cx(
+              "group flex items-center gap-1.5 px-3",
+              compact ? "py-2 rounded-xl hover:bg-surface-2/60" : "py-2.5",
+              (isChecked || (!selectable && th.id === active)) && "bg-surface-2/60",
+            )}
           >
+            {selectable && (
+              <button
+                type="button"
+                aria-label={isChecked ? t("Deselect chat") : t("Select chat")}
+                onClick={() => toggleSelected(th.id)}
+                className={cx("shrink-0 p-0.5", isChecked ? "text-accent" : "text-muted")}
+              >
+                {isChecked ? <CheckSquare size={16} /> : <Square size={16} />}
+              </button>
+            )}
             <button
               type="button"
-              {...longPressHandlers(
-                () => setSheet({ thread: th, mode: "menu" }),
-                () => onPick(th.id),
-              )}
+              {...(selectable
+                ? { onClick: () => toggleSelected(th.id) }
+                : longPressHandlers(
+                    () => setSheet({ thread: th, mode: "menu" }),
+                    () => onPick(th.id),
+                  ))}
               className="flex-1 text-left min-w-0"
             >
               <div className={cx("font-medium truncate flex items-center gap-2", compact ? "text-[13.5px]" : "text-[15px]")}>
@@ -2241,42 +2298,47 @@ export function ThreadList({
                 {t("{n} events", { n: eventCount(th.events) })} · {timeShort(th.updated_at)}
               </div>
             </button>
-            <button
-              type="button"
-              aria-label={t("Rename")}
-              onClick={() => setSheet({ thread: th, mode: "rename" })}
-              className={cx("p-1.5 text-muted hover:text-fg", compact && "opacity-0 group-hover:opacity-100 focus:opacity-100")}
-            >
-              <Pencil size={14} />
-            </button>
-            <button
-              type="button"
-              aria-label={t("Clear")}
-              onClick={() => setSheet({ thread: th, mode: "clear" })}
-              className={cx("p-1.5 text-muted hover:text-fg", compact && "opacity-0 group-hover:opacity-100 focus:opacity-100")}
-            >
-              <X size={15} />
-            </button>
-            {th.id !== "main" && (
-              <button
-                type="button"
-                aria-label={t("Move to Trash")}
-                onClick={() => setSheet({ thread: th, mode: "delete" })}
-                className={cx("p-1.5 text-muted hover:text-rose-500", compact && "opacity-0 group-hover:opacity-100 focus:opacity-100")}
-              >
-                <Trash2 size={15} />
-              </button>
+            {!selectable && (
+              <>
+                <button
+                  type="button"
+                  aria-label={t("Rename")}
+                  onClick={() => setSheet({ thread: th, mode: "rename" })}
+                  className={cx("p-1.5 text-muted hover:text-fg", compact && "opacity-0 group-hover:opacity-100 focus:opacity-100")}
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
+                  type="button"
+                  aria-label={t("Clear")}
+                  onClick={() => setSheet({ thread: th, mode: "clear" })}
+                  className={cx("p-1.5 text-muted hover:text-fg", compact && "opacity-0 group-hover:opacity-100 focus:opacity-100")}
+                >
+                  <X size={15} />
+                </button>
+                {th.id !== "main" && (
+                  <button
+                    type="button"
+                    aria-label={t("Move to Trash")}
+                    onClick={() => setSheet({ thread: th, mode: "delete" })}
+                    className={cx("p-1.5 text-muted hover:text-rose-500", compact && "opacity-0 group-hover:opacity-100 focus:opacity-100")}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  aria-label={t("Chat options")}
+                  onClick={() => setSheet({ thread: th, mode: "menu" })}
+                  className={cx("p-1.5 text-muted hover:text-fg", compact && "opacity-0 group-hover:opacity-100 focus:opacity-100")}
+                >
+                  <MoreHorizontal size={14} />
+                </button>
+              </>
             )}
-            <button
-              type="button"
-              aria-label={t("Chat options")}
-              onClick={() => setSheet({ thread: th, mode: "menu" })}
-              className={cx("p-1.5 text-muted hover:text-fg", compact && "opacity-0 group-hover:opacity-100 focus:opacity-100")}
-            >
-              <MoreHorizontal size={14} />
-            </button>
           </li>
-  );
+    );
+  };
   const listCls = cx("divide-y divide-border overflow-hidden", compact ? "rounded-xl" : "rounded-2xl border border-border");
   const heading = "px-3 pb-1 pt-3 text-[11.5px] font-semibold uppercase tracking-wide text-muted";
 
@@ -2303,15 +2365,50 @@ export function ThreadList({
           <ul className={listCls}>{threads.filter((th) => th.id === "main").map(row)}</ul>
           <div className={cx(heading, "flex items-center justify-between pr-1")}>
             <span>{t("Side chats")}</span>
-            <button
-              type="button"
-              aria-label={t("New side chat")}
-              onClick={create}
-              className="flex h-6 w-6 items-center justify-center rounded-full text-muted hover:bg-surface-2 hover:text-fg"
-            >
-              <Plus size={15} />
-            </button>
+            <div className="flex items-center gap-1">
+              {sideThreads.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+                  className="rounded-lg px-2 py-0.5 text-[11px] font-medium normal-case tracking-normal text-muted hover:bg-surface-2 hover:text-fg"
+                >
+                  {selectMode ? t("Cancel") : t("Select")}
+                </button>
+              )}
+              {!selectMode && (
+                <button
+                  type="button"
+                  aria-label={t("New side chat")}
+                  onClick={create}
+                  className="flex h-6 w-6 items-center justify-center rounded-full text-muted hover:bg-surface-2 hover:text-fg"
+                >
+                  <Plus size={15} />
+                </button>
+              )}
+            </div>
           </div>
+          {selectMode && (
+            <div className="mb-1.5 flex items-center justify-between gap-1.5 rounded-xl bg-surface-2/80 px-2.5 py-1.5 text-[11.5px]">
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedIds.size >= sideThreads.length) setSelectedIds(new Set());
+                  else setSelectedIds(new Set(sideThreads.map((th) => th.id)));
+                }}
+                className="font-medium text-accent hover:underline"
+              >
+                {selectedIds.size >= sideThreads.length ? t("Deselect all") : t("Select all")}
+              </button>
+              <button
+                type="button"
+                disabled={selectedIds.size === 0 || bulkBusy}
+                onClick={() => setBulkConfirm(true)}
+                className="inline-flex items-center gap-1 rounded-lg bg-rose-500 px-2.5 py-1 font-medium text-white disabled:opacity-40"
+              >
+                <Trash2 size={12} /> {t("Delete ({n})", { n: selectedIds.size })}
+              </button>
+            </div>
+          )}
           <ul className={listCls}>
             {active === DRAFT_THREAD && (
               <li className={cx("flex items-center gap-2 px-3 bg-surface-2/60", compact ? "py-2 rounded-xl" : "py-2.5")}>
@@ -2380,6 +2477,15 @@ export function ThreadList({
         />
       )}
       <TrashModal open={trashOpen} onClose={() => setTrashOpen(false)} onRestored={(id) => onPick(id)} />
+      <ConfirmDialog
+        open={bulkConfirm}
+        title={t("Delete {n} chats?", { n: selectedIds.size })}
+        body={t("Selected side chats will be moved to Trash and removed on synced devices.")}
+        confirmLabel={bulkBusy ? t("Deleting…") : t("Delete")}
+        danger
+        onCancel={() => !bulkBusy && setBulkConfirm(false)}
+        onConfirm={() => void runBulkDelete()}
+      />
     </div>
   );
 }

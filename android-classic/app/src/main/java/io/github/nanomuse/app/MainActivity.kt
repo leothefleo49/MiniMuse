@@ -436,6 +436,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         web.webChromeClient = object : WebChromeClient() {
+            override fun getDefaultVideoPoster(): Bitmap {
+                // Return a 1x1 transparent bitmap so Android WebView NEVER flashes its default
+                // gray play-button triangle before an autoplay avatar <video> decodes frame 0.
+                return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+            }
+
             override fun onShowFileChooser(
                 webView: WebView,
                 filePathCallback: ValueCallback<Array<Uri>>,

@@ -146,6 +146,33 @@ html {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Suppress Android WebView / Chromium native play button overlay on muted autoplay avatar videos */
+video.nm-avatar-video::-webkit-media-controls,
+video.nm-avatar-video::-webkit-media-controls-enclosure,
+video.nm-avatar-video::-webkit-media-controls-panel,
+video.nm-avatar-video::-webkit-media-controls-play-button,
+video.nm-avatar-video::-webkit-media-controls-start-playback-button,
+video.nm-avatar-video::-webkit-media-controls-overlay-play-button {
+  display: none !important;
+  opacity: 0 !important;
+  -webkit-appearance: none !important;
+  pointer-events: none !important;
+}
+
+/* Static glowing app icon halo for boot/connecting screen (NO movement or scale) */
+@keyframes nm-icon-glow {
+  0%, 100% {
+    box-shadow: 0 0 32px 4px rgba(1, 114, 251, 0.28), 0 10px 28px rgba(0, 0, 0, 0.22);
+  }
+  50% {
+    box-shadow: 0 0 54px 12px rgba(1, 134, 251, 0.50), 0 10px 30px rgba(0, 0, 0, 0.26);
+  }
+}
+.nm-boot-icon-glow {
+  border-radius: 23px;
+  animation: nm-icon-glow 2.4s ease-in-out infinite;
+}
+
 /* Screen changes cross-fade with a hair of rise (store's setTab wraps one in
    document.startViewTransition when the browser has it). */
 ::view-transition-old(root) {

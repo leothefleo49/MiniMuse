@@ -1014,6 +1014,9 @@ def apply_app_settings(settings: Settings, data: dict[str, Any]) -> None:
                 setattr(settings.llm, key, str(llm[key]).strip())
         if settings.llm.base_url:
             settings.llm.base_url = settings.llm.base_url.rstrip("/")
+    if isinstance(mem := data.get("memory"), dict):
+        if "enabled" in mem and mem["enabled"] is not None:
+            settings.memory.enabled = bool(mem["enabled"])
     if emb := data.get("embeddings"):
         m = settings.memory
         if emb.get("mode") in ("auto", "on", "off"):

@@ -101,14 +101,14 @@ export function Sidebar() {
 
   const railButton = (active: boolean) =>
     cx(
-      "relative flex w-[60px] flex-col items-center gap-[3px] rounded-xl py-1.5 text-[10.5px] font-medium leading-none transition",
+      "relative flex w-[68px] flex-col items-center gap-[3px] rounded-xl py-1.5 text-[10.5px] font-medium leading-none transition",
       active ? "bg-surface-2 text-fg" : "text-fg/65 hover:bg-surface-2/60 hover:text-fg",
     );
 
   return (
     <div className="flex h-full shrink-0">
       {/* the rail */}
-      <aside className="relative flex h-full w-[76px] shrink-0 flex-col items-center border-r border-border bg-surface/70">
+      <aside className="relative flex h-full w-[88px] shrink-0 flex-col items-center border-r border-border bg-surface/70">
         <div className="titlebar-room" />
         <button
           type="button"
@@ -117,7 +117,7 @@ export function Sidebar() {
           aria-label={t("Activity")}
           title={`${name} · ${statusLine}`}
         >
-          <Avatar profile={profile} status={status} size={44} />
+          <Avatar profile={profile} status={status} size={60} />
           {pendingApprovals > 0 && (
             <span
               style={{ transform: "translateZ(2px)" }}
@@ -127,7 +127,7 @@ export function Sidebar() {
             </span>
           )}
         </button>
-        <span className="mt-1.5 max-w-[68px] truncate px-1 text-[11px] font-semibold leading-tight">{name}</span>
+        <span className="mt-1.5 max-w-[78px] truncate px-1 text-[11px] font-semibold leading-tight">{name}</span>
 
         <nav className="mt-3 flex w-full flex-1 flex-col items-center gap-0.5 overflow-y-auto overflow-x-hidden px-2">
           {rail.map((item) => {
@@ -172,7 +172,7 @@ export function Sidebar() {
               <span>{t("More")}</span>
             </button>
             {menuOpen && (
-              <div role="menu" className="absolute bottom-0 left-[68px] z-30 w-[232px] rounded-2xl border border-border bg-surface p-1.5 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.3)]">
+              <div role="menu" className="absolute bottom-0 left-[80px] z-30 w-[232px] rounded-2xl border border-border bg-surface p-1.5 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.3)]">
                 <a
                   role="menuitem"
                   href={bugReportUrl(state.version)}

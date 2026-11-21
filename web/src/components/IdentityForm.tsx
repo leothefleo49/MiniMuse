@@ -103,7 +103,7 @@ export function IdentityForm({
   return (
     <div className="space-y-5">
       <div className="flex items-start gap-4 pt-2 overflow-visible">
-        <Avatar profile={preview} size={72} />
+        <Avatar profile={preview} size={96} />
         <div className="flex-1 min-w-0 space-y-2">
           <div>
             <input

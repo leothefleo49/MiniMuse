@@ -103,6 +103,8 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
   const { total, online } = countDevices(hub, local, state.sync);
   const [syncingPeer, setSyncingPeer] = useState<string | null>(null);
   const [freshSyncingPeer, setFreshSyncingPeer] = useState<string | null>(null);
+  const [mirroringPeer, setMirroringPeer] = useState<string | null>(null);
+  const [mirrorConfirmPeer, setMirrorConfirmPeer] = useState<{ ident: string; key: string; name: string } | null>(null);
   const [remoteModalPeer, setRemoteModalPeer] = useState<{ key: string; ident: string; name: string; currentHost: string; authError?: boolean } | null>(null);
   const [remoteUrlDraft, setRemoteUrlDraft] = useState("");
   const [remoteCodeDraft, setRemoteCodeDraft] = useState("");
@@ -156,6 +158,31 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
       toast((e as Error).message);
     } finally {
       setFreshSyncingPeer(null);
+    }
+  };
+
+  const mirrorChatsFromPeer = async (identifier: string, peerKey: string, peerName: string) => {
+    setMirroringPeer(peerKey);
+    try {
+      const res = await api.syncMirrorFromPeer(identifier);
+      dispatch({ type: "ws", msg: { kind: "sync", sync: res } });
+      const freshThreads = await api.threads().catch(() => null);
+      if (freshThreads) {
+        const snap = await api.state().catch(() => null);
+        if (snap) dispatch({ type: "hello", state: snap });
+      }
+      openThread("main");
+      toast(
+        t("Chats reset to match {name} ({a} synced).", {
+          name: peerName,
+          a: String(res.applied ?? 0),
+        }),
+      );
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setMirroringPeer(null);
+      setMirrorConfirmPeer(null);
     }
   };
 
@@ -325,6 +352,8 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
                 const pIdent = peer.id || peer.url || peer.name;
                 const isSyncing = syncingPeer === pKey;
                 const isFreshSyncing = freshSyncingPeer === pKey;
+                const isMirroring = mirroringPeer === pKey;
+                const peerBusy = isSyncing || isFreshSyncing || isMirroring;
                 const remoteReady = peer.remote_ready === true;
                 return (
                   <DeviceShell key={pKey}>
@@ -373,7 +402,7 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
                         <div className="mt-2.5 flex flex-wrap gap-2">
                           <button
                             type="button"
-                            disabled={isSyncing || isFreshSyncing}
+                            disabled={peerBusy}
                             onClick={() => void syncNowWithPeer(pKey, peer.id)}
                             className="inline-flex h-8 items-center gap-1.5 rounded-full bg-accent/12 px-3 text-[12px] font-medium text-accent hover:bg-accent/20 disabled:opacity-50"
                           >
@@ -418,7 +447,7 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
                           </button>
                           <button
                             type="button"
-                            disabled={isSyncing || isFreshSyncing}
+                            disabled={peerBusy}
                             onClick={() => void freshSyncWithPeer(pIdent, pKey)}
                             className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border px-3 text-[12px] font-medium text-muted hover:text-fg disabled:opacity-50"
                           >
@@ -427,8 +456,18 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
                           </button>
                           <button
                             type="button"
+                            disabled={peerBusy}
+                            onClick={() => setMirrorConfirmPeer({ ident: pIdent, key: pKey, name: displayName })}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border px-3 text-[12px] font-medium text-fg hover:bg-surface-2 disabled:opacity-50"
+                          >
+                            {isMirroring ? <Loader2 size={12} className="animate-spin" /> : null}
+                            {isMirroring ? t("Matching…") : t("Match chats")}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={peerBusy}
                             onClick={() => void unpairPeer(pIdent)}
-                            className="inline-flex h-8 items-center rounded-full border border-border px-3 text-[12px] font-medium text-muted hover:text-fg"
+                            className="inline-flex h-8 items-center rounded-full border border-border px-3 text-[12px] font-medium text-muted hover:text-fg disabled:opacity-50"
                           >
                             {t("Unpair")}
                           </button>
@@ -464,6 +503,24 @@ export function DevicesScreen({ embedded = false }: { embedded?: boolean } = {})
           </div>
         )}
       </div>
+
+      {/* Match chats confirmation dialog */}
+      <ConfirmDialog
+        open={mirrorConfirmPeer !== null}
+        title={t("Reset chats to match {name}?", { name: mirrorConfirmPeer?.name ?? "" })}
+        body={t(
+          "This replaces all chats on THIS device with an exact copy of {name}'s chats. Any extra or stale local chats not on {name} will be removed, and nothing on {name} will be changed.",
+          { name: mirrorConfirmPeer?.name ?? "" },
+        )}
+        confirmLabel={mirroringPeer ? t("Matching…") : t("Match chats")}
+        danger
+        onCancel={() => !mirroringPeer && setMirrorConfirmPeer(null)}
+        onConfirm={() => {
+          if (mirrorConfirmPeer) {
+            void mirrorChatsFromPeer(mirrorConfirmPeer.ident, mirrorConfirmPeer.key, mirrorConfirmPeer.name);
+          }
+        }}
+      />
 
       {/* Centered Connect Remotely Modal (impossible to miss on mobile!) */}
       {remoteModalPeer && (

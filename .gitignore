@@ -82,6 +82,12 @@ cloud/data/
 keystore.properties
 *.jks.pw
 
+# local chat history — this repository is public
+CONVERSATION_LOG.md
+
+# classic Android Gradle cache (not source)
+android-classic/.gradle/
+
 .venv-build/
 dist-installer/
 

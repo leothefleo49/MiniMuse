@@ -264,6 +264,16 @@ class SettingsBody(BaseModel):
     permissions: dict[str, dict[str, str]] | None = None
     auto_update: bool | None = None
     trash_retention_days: int | None = Field(default=None, ge=1, le=3650)
+    memory_enabled: bool | None = None
+
+
+class BulkDeleteThreadsBody(BaseModel):
+    thread_ids: list[str] = Field(default_factory=list)
+
+
+class MemoryFileSaveBody(BaseModel):
+    path: str = Field(min_length=1, max_length=500)
+    content: str = ""
 
 
 class DeviceRenameBody(BaseModel):
@@ -1449,6 +1459,20 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             raise HTTPException(404, "no such thread")
         return {"ok": True}
 
+    @app.post("/api/threads/bulk-delete", dependencies=dep)
+    async def bulk_delete_threads(body: BulkDeleteThreadsBody) -> dict[str, Any]:
+        """Move multiple side chats to Trash in one action and sync deletions to paired devices."""
+        deleted: list[str] = []
+        seen: set[str] = set()
+        for raw_tid in body.thread_ids:
+            tid = str(raw_tid or "").strip()
+            if not tid or tid == MAIN_THREAD or tid in seen:
+                continue
+            seen.add(tid)
+            if svc.delete_thread(tid):
+                deleted.append(tid)
+        return {"ok": True, "deleted": deleted, "count": len(deleted)}
+
     @app.get("/api/trash", dependencies=dep)
     async def list_trash() -> dict[str, Any]:
         """Deleted chats held in Trash (default 365 days) before permanent expiry."""
@@ -1908,6 +1932,138 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             raise HTTPException(404, "no such change")
         svc.bus.publish({"kind": "memory"})
         return change.to_dict()
+
+    def _safe_muse_memory_path(rel: str) -> tuple[Path, str]:
+        root = (svc.data_dir / "muse_memory").resolve()
+        clean = str(rel or "").replace("\\", "/").strip("/")
+        parts = [p for p in clean.split("/") if p and p not in (".", "..")]
+        if not parts:
+            raise HTTPException(400, "invalid memory file path")
+        target = root.joinpath(*parts).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise HTTPException(403, "path escapes muse_memory folder") from exc
+        return target, "/".join(parts)
+
+    @app.get("/api/memory/files", dependencies=dep)
+    async def list_memory_files(q: str = Query(default="", max_length=200)) -> dict[str, Any]:
+        """List Muse-imported memory documents under ``data/muse_memory/`` (with search & snippets)."""
+        root = svc.data_dir / "muse_memory"
+        query = q.strip().lower()
+        items: list[dict[str, Any]] = []
+        folders: set[str] = set()
+        total_bytes = 0
+        allowed_ext = {".md", ".markdown", ".txt", ".json", ".yaml", ".yml"}
+        if root.is_dir():
+            for f in sorted(root.rglob("*")):
+                if not f.is_file() or f.name.startswith("."):
+                    continue
+                if f.suffix.lower() not in allowed_ext:
+                    continue
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                rel = f.relative_to(root).as_posix()
+                parts = rel.split("/")
+                folder = parts[0] if len(parts) > 1 else "daily"
+                folders.add(folder)
+                total_bytes += int(st.st_size)
+                snippet = ""
+                matched = not query or query in rel.lower() or query in folder.lower()
+                try:
+                    raw_text = f.read_text(encoding="utf-8", errors="replace")
+                    if not matched and query in raw_text.lower():
+                        matched = True
+                    lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
+                    snippet = " · ".join(lines[:3])[:220]
+                except OSError:
+                    pass
+                if not matched:
+                    continue
+                items.append(
+                    {
+                        "path": rel,
+                        "name": f.name,
+                        "folder": folder,
+                        "size": int(st.st_size),
+                        "updated_at": datetime.fromtimestamp(st.st_mtime, UTC).isoformat(timespec="seconds"),
+                        "snippet": snippet,
+                    }
+                )
+        items.sort(key=lambda x: x["updated_at"], reverse=True)
+        return {
+            "files": items[:500],
+            "total": len(items),
+            "folders": sorted(folders),
+            "total_bytes": total_bytes,
+            "root": str(root),
+        }
+
+    @app.get("/api/memory/files/read", dependencies=dep)
+    async def read_memory_file(path: str = Query(..., min_length=1, max_length=500)) -> dict[str, Any]:
+        target, clean = _safe_muse_memory_path(path)
+        if not target.is_file():
+            raise HTTPException(404, "memory file not found")
+        try:
+            content = target.read_text(encoding="utf-8", errors="replace")
+            st = target.stat()
+        except OSError as exc:
+            raise HTTPException(500, f"could not read memory file: {exc}") from exc
+        return {
+            "path": clean,
+            "name": target.name,
+            "content": content,
+            "size": int(st.st_size),
+            "updated_at": datetime.fromtimestamp(st.st_mtime, UTC).isoformat(timespec="seconds"),
+        }
+
+    @app.put("/api/memory/files", dependencies=dep)
+    async def save_memory_file(body: MemoryFileSaveBody) -> dict[str, Any]:
+        target, clean = _safe_muse_memory_path(body.path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target.write_text(body.content, encoding="utf-8")
+            st = target.stat()
+        except OSError as exc:
+            raise HTTPException(500, f"could not write memory file: {exc}") from exc
+        with contextlib.suppress(Exception):
+            from nanomuse.server.data_import import index_memory_text
+
+            index_memory_text(svc.data_dir / "personal.db", f"memory/{clean}", body.content)
+        svc.bus.publish({"kind": "memory"})
+        if getattr(svc, "sync", None) is not None:
+            with contextlib.suppress(Exception):
+                svc.sync.peer_sync_soon(delay=1.0)
+        return {
+            "ok": True,
+            "path": clean,
+            "size": int(st.st_size),
+            "updated_at": datetime.fromtimestamp(st.st_mtime, UTC).isoformat(timespec="seconds"),
+        }
+
+    @app.delete("/api/memory/files", dependencies=dep)
+    async def delete_memory_file(path: str = Query(..., min_length=1, max_length=500)) -> dict[str, Any]:
+        target, clean = _safe_muse_memory_path(path)
+        if not target.is_file():
+            raise HTTPException(404, "memory file not found")
+        try:
+            target.unlink()
+        except OSError as exc:
+            raise HTTPException(500, f"could not delete memory file: {exc}") from exc
+        with contextlib.suppress(Exception):
+            import sqlite3
+
+            pdb = svc.data_dir / "personal.db"
+            if pdb.is_file():
+                conn = sqlite3.connect(str(pdb))
+                conn.execute("DELETE FROM memory_fts WHERE path = ? OR path = ?", (f"memory/{clean}", clean))
+                conn.commit()
+                conn.close()
+        svc.sync.note_deleted("memory_files", clean)
+        svc.bus.publish({"kind": "memory"})
+        return {"ok": True, "path": clean}
 
     # ------------------------------------------------------------------ ideas
     @app.get("/api/ideas", dependencies=dep)
@@ -3460,6 +3616,23 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         except Exception:
             identifier = ""
         return await svc.sync.reset_peer_sync(identifier=identifier)
+
+    @app.post("/api/sync/pair/mirror-from", dependencies=dep)
+    async def sync_mirror_from_peer(request: Request) -> dict[str, Any]:
+        """Replace all local chats with an exact mirror of a paired device's chats."""
+        identifier = ""
+        try:
+            raw = await request.body()
+            if raw:
+                body = json.loads(raw)
+                if isinstance(body, dict):
+                    identifier = str(body.get("identifier") or "")
+        except Exception:
+            identifier = ""
+        try:
+            return await svc.sync.mirror_from_peer(identifier=identifier)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
 
     @app.put("/api/sync/device-overrides", dependencies=dep)
     async def put_sync_device_overrides(request: Request) -> dict[str, Any]:
@@ -6506,6 +6679,26 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
         if not target.is_file():
             raise HTTPException(404, "app file not found")
         media = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        return FileResponse(target, media_type=media)
+
+    @app.get("/v1/sync/live-cids", dependencies=dep_sync)
+    async def peer_get_live_cids() -> dict[str, Any]:
+        return svc.sync.live_cids()
+
+    @app.get("/v1/sync/memory-file/{relpath:path}", dependencies=dep_sync)
+    async def peer_get_memory_file(relpath: str) -> FileResponse:
+        parts = [p for p in relpath.replace("\\", "/").split("/") if p and p not in (".", "..")]
+        if not parts:
+            raise HTTPException(400, "invalid memory file path")
+        mem_root = (svc.data_dir / "muse_memory").resolve()
+        target = mem_root.joinpath(*parts).resolve()
+        try:
+            target.relative_to(mem_root)
+        except ValueError as exc:
+            raise HTTPException(403, "path escapes muse_memory folder") from exc
+        if not target.is_file():
+            raise HTTPException(404, "memory file not found")
+        media = mimetypes.guess_type(target.name)[0] or "text/plain; charset=utf-8"
         return FileResponse(target, media_type=media)
 
     @app.get("/v1/sync/app-db/{db_name}", dependencies=dep_sync)

@@ -483,7 +483,7 @@ function FacePreview({
   return (
     <>
       <div className="p-2 overflow-visible">
-        <Avatar profile={profile} status={status} size={148} previewClipUrl={moodClipUrl} />
+        <Avatar profile={profile} status={status} size={196} previewClipUrl={moodClipUrl} />
       </div>
       <div className="mt-2 text-[20px] font-semibold tracking-tight">{name}</div>
       {previewClip && (

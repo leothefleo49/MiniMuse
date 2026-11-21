@@ -32,6 +32,7 @@ datas = [
     (os.path.join(ROOT, "chrome-extension"), os.path.join("nanomuse", "server", "chrome-extension")),
     (os.path.join(ROOT, "nanomuse", "skills", "builtin"), os.path.join("nanomuse", "skills", "builtin")),
     (os.path.join(ROOT, "assets", "brand", "mm.ico"), os.path.join("assets", "brand")),
+    (os.path.join(ROOT, "assets", "brand", "splash.png"), os.path.join("assets", "brand")),
     (os.path.join(ROOT, "config", "config.example.toml"), "nanomuse"),
     (os.path.join(ROOT, "CHANGELOG.md"), "."),
 ]
@@ -79,12 +80,29 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# Native bootloader splash on Windows: opens in ~150ms BEFORE --onefile extracts to temp,
+# showing the static glowing MiniMuse icon and "Booting up..." immediately on click.
+splash_path = os.path.join(ROOT, "assets", "brand", "splash.png")
+use_splash = sys.platform == "win32" and os.path.isfile(splash_path)
+splash = (
+    Splash(
+        splash_path,
+        binaries=a.binaries,
+        datas=a.datas,
+        text_pos=None,
+        always_on_top=True,
+    )
+    if use_splash
+    else None
+)
+
+exe_args = [pyz, a.scripts]
+if splash is not None:
+    exe_args += [splash, splash.binaries]
+exe_args += [a.binaries, a.datas, []]
+
 exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
+    *exe_args,
     name="MiniMuse",
     debug=False,
     bootloader_ignore_signals=False,

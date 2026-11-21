@@ -112,7 +112,7 @@ TAIL = 300
 # a `working: true` without a `false` stands this long (the device may have lost its network)
 WORKING_TTL_S = 10 * 60
 # how many POSTs one push may make before it lets go (a brand-new device with a long history)
-MAX_ROUNDS = 50
+MAX_ROUNDS = 500
 # the quietest gap between two presence posts of one run (0.31): a step that changes
 # every second still reads on the other devices as one moving line, not a stream
 PRESENCE_INTERVAL_S = 2.0
@@ -774,7 +774,7 @@ class ConversationSync:
                 continue
             for ev in thread.timeline.events:
                 if ev.get("type") in ("user", "assistant") and not ev.get("synced") and not ev.get("via_device"):
-                    if ev.get("type") == "assistant" and not ev.get("final"):
+                    if ev.get("type") == "assistant" and not (ev.get("final") or ev.get("imported")):
                         continue
                     count += 1
         return count
@@ -1520,7 +1520,7 @@ class ConversationSync:
             if ev.get("via_device"):
                 # written on another device: shown here, never pushed as ours
                 continue
-            if kind == "assistant" and not ev.get("final"):
+            if kind == "assistant" and not (ev.get("final") or ev.get("imported")):
                 continue
             text = str(ev.get("text") or "")
             attachments = self._attachments(ev)
@@ -1765,7 +1765,7 @@ class ConversationSync:
                 self.svc.rename_thread(thread.id, title)
             return
         device = str(row.get("device") or "")
-        if device and device == self.svc.hub.device_id:
+        if device and device == self.svc.hub.device_id and not getattr(self, "_mirroring", False):
             # ours, but the mapping was lost (a reset): no second copy
             return
         created = self.svc.create_thread(title or "Side chat")
@@ -1826,7 +1826,7 @@ class ConversationSync:
         if existing is not None:
             return
         device = str(row.get("device") or "")
-        if device and device == self.svc.hub.device_id:
+        if device and device == self.svc.hub.device_id and not getattr(self, "_mirroring", False):
             # the echo of our own push (or a row of ours the timeline no longer holds):
             # never a second bubble (C8)
             return
@@ -1950,7 +1950,7 @@ class ConversationSync:
                 kind = ev.get("type")
                 if kind not in ("user", "assistant") or ev.get("quiet"):
                     continue
-                if kind == "assistant" and not ev.get("final"):
+                if kind == "assistant" and not (ev.get("final") or ev.get("imported")):
                     continue
                 text = str(ev.get("text") or "")
                 attachments = self._attachments(ev)
@@ -3072,6 +3072,35 @@ class ConversationSync:
                 out.append({"face": target_face, "rel": rel, "size": size, "mtime": round(mtime, 2)})
         return out
 
+    def list_memory_files(self) -> list[dict[str, Any]]:
+        """List portable Muse-imported memory documents under ``<data_dir>/muse_memory/``
+        for bidirectional peer sync and the Memory settings screen."""
+        root = self.svc.data_dir / "muse_memory"
+        if not root.is_dir():
+            return []
+        allowed_ext = {".md", ".markdown", ".txt", ".json", ".yaml", ".yml"}
+        max_bytes = 512 * 1024
+        out: list[dict[str, Any]] = []
+        try:
+            for f in sorted(root.rglob("*")):
+                if not f.is_file() or f.name.startswith("."):
+                    continue
+                if f.suffix.lower() not in allowed_ext:
+                    continue
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                if st.st_size > max_bytes:
+                    continue
+                rel = f.relative_to(root).as_posix()
+                out.append({"rel": rel, "size": int(st.st_size), "mtime": round(float(st.st_mtime), 2)})
+                if len(out) >= 2000:
+                    break
+        except OSError:
+            pass
+        return out
+
     def export_muse_data(self) -> dict[str, Any]:
         """Export portable Muse state (profile, avatar manifest, memories, goals, reminders,
         USER.md, UI prefs, portable settings, and small HTML apps) for peer sync."""
@@ -3182,11 +3211,13 @@ class ConversationSync:
             if k not in DEVICE_LOCAL_SETTINGS_KEYS
         }
 
+        memory_files_manifest = self.list_memory_files()
+
         # Auto-detect items that previously existed locally and were deleted (e.g. via agent tools,
         # memory tidy, or manual file cleanup) so deletions propagate as tombstones and never resurrect.
         self._prune_tombstones()
         known_map = self.state.setdefault(
-            "known_muse_ids", {"memories": [], "goals": [], "reminders": [], "apps": []}
+            "known_muse_ids", {"memories": [], "goals": [], "reminders": [], "apps": [], "memory_files": []}
         )
         cur_ids = {
             "memories": {str(m.get("id") or "").strip() for m in memories if m.get("id")},
@@ -3197,6 +3228,7 @@ class ConversationSync:
                 | {str(a.get("slug") or "").strip() for a in custom_apps if a.get("slug")}
                 | {str(a.get("rel") or "").strip() for a in apps_manifest if a.get("rel")}
             ),
+            "memory_files": {str(m.get("rel") or "").strip() for m in memory_files_manifest if m.get("rel")},
         }
         now_ts = time.time()
         known_dirty = False
@@ -3218,7 +3250,7 @@ class ConversationSync:
 
         tombstones_out = {
             tk: dict(self._tombstones_bucket(tk))
-            for tk in ("memories", "goals", "reminders", "apps")
+            for tk in ("memories", "goals", "reminders", "apps", "memory_files")
         }
 
         return {
@@ -3232,6 +3264,7 @@ class ConversationSync:
             "app_dbs": app_dbs,
             "custom_apps": custom_apps,
             "memories": memories,
+            "memory_files_manifest": memory_files_manifest,
             "goals": goals,
             "goal_steps": goal_steps,
             "reminders": reminders,
@@ -3413,7 +3446,7 @@ class ConversationSync:
         in_tombs = payload.get("tombstones")
         if isinstance(in_tombs, dict):
             tomb_changed = False
-            for tk in ("memories", "goals", "reminders", "apps"):
+            for tk in ("memories", "goals", "reminders", "apps", "memory_files"):
                 in_b = in_tombs.get(tk)
                 if not isinstance(in_b, dict):
                     continue
@@ -3510,6 +3543,29 @@ class ConversationSync:
                                 if target.stat().st_mtime <= dts + 1.0:
                                     target.unlink()
                                     counts["apps"] += 1
+            mf_t = self._tombstones_bucket("memory_files")
+            if mf_t:
+                mem_root = self.svc.data_dir / "muse_memory"
+                personal_db = self.svc.data_dir / "personal.db"
+                for mrel, dts in list(mf_t.items()):
+                    parts = [p for p in mrel.replace("\\", "/").strip("/").split("/") if p and p not in (".", "..")]
+                    if not parts:
+                        continue
+                    target = mem_root.joinpath(*parts)
+                    if target.is_file():
+                        with contextlib.suppress(OSError):
+                            if target.stat().st_mtime <= dts + 1.0:
+                                target.unlink()
+                                if personal_db.is_file():
+                                    with contextlib.suppress(Exception):
+                                        conn = sqlite3.connect(str(personal_db))
+                                        conn.execute(
+                                            "DELETE FROM memory_fts WHERE path = ? OR path = ?",
+                                            (f"memory/{mrel}", mrel),
+                                        )
+                                        conn.commit()
+                                        conn.close()
+                                counts["memories"] += 1
 
         mem_tomb = self._tombstones_bucket("memories")
         goal_tomb = self._tombstones_bucket("goals")
@@ -4016,9 +4072,75 @@ class ConversationSync:
                         except Exception:
                             pass
 
-                    self.apply_muse_data(remote_data)
-                    if apps_downloaded and getattr(self.svc, "bus", None):
+                    # Download missing or newer Muse-imported memory documents (muse_memory/**)
+                    mem_tomb_merged = dict(self._tombstones_bucket("memory_files"))
+                    in_tomb_mem = (
+                        (remote_data.get("tombstones") or {}).get("memory_files")
+                        if isinstance(remote_data.get("tombstones"), dict)
+                        else None
+                    )
+                    if isinstance(in_tomb_mem, dict):
+                        for mk, mv in in_tomb_mem.items():
+                            if mk:
+                                mem_tomb_merged[str(mk)] = max(
+                                    float(mv or 0.0), float(mem_tomb_merged.get(str(mk)) or 0.0)
+                                )
+                    mem_root = self.svc.data_dir / "muse_memory"
+                    mem_downloaded = 0
+                    for mitem in remote_data.get("memory_files_manifest") or []:
+                        if not isinstance(mitem, dict):
+                            continue
+                        rel = str(mitem.get("rel") or "").replace("\\", "/").strip("/")
+                        expected_sz = int(mitem.get("size") or 0)
+                        remote_mt = float(mitem.get("mtime") or 0.0)
+                        if not rel or ".." in rel:
+                            continue
+                        if rel in mem_tomb_merged and remote_mt <= float(mem_tomb_merged[rel]) + 1.0:
+                            continue
+                        parts = [p for p in rel.split("/") if p and p not in (".", "..")]
+                        if not parts:
+                            continue
+                        dest = mem_root.joinpath(*parts)
+                        if dest.is_file():
+                            try:
+                                st = dest.stat()
+                                if (expected_sz > 0 and st.st_size == expected_sz) or (
+                                    remote_mt > 0 and st.st_mtime >= remote_mt - 1.0
+                                ):
+                                    continue
+                            except OSError:
+                                pass
                         try:
+                            from urllib.parse import quote as _url_quote
+
+                            enc_rel = "/".join(_url_quote(p, safe="") for p in parts)
+                            fr = await hc.get(
+                                f"{base}/v1/sync/memory-file/{enc_rel}",
+                                headers=headers,
+                                timeout=20.0,
+                            )
+                            if fr.status_code == 200 and fr.content is not None:
+                                dest.parent.mkdir(parents=True, exist_ok=True)
+                                tmp_m = dest.with_name(f".{dest.name}.sync.tmp")
+                                tmp_m.write_bytes(fr.content)
+                                tmp_m.replace(dest)
+                                if remote_mt > 0:
+                                    with contextlib.suppress(OSError):
+                                        os.utime(dest, (remote_mt, remote_mt))
+                                with contextlib.suppress(Exception):
+                                    from nanomuse.server.data_import import index_memory_text
+
+                                    text_m = fr.content.decode("utf-8", errors="replace")
+                                    index_memory_text(self.svc.data_dir / "personal.db", f"memory/{rel}", text_m)
+                                mem_downloaded += 1
+                        except Exception:
+                            pass
+
+                    self.apply_muse_data(remote_data)
+                    if (apps_downloaded or mem_downloaded) and getattr(self.svc, "bus", None):
+                        try:
+                            if mem_downloaded:
+                                self.svc.bus.publish({"kind": "memory"})
                             self.svc.bus.publish({"kind": "sync", "sync": self.view()})
                         except Exception:
                             pass
@@ -4055,6 +4177,7 @@ class ConversationSync:
                     ),
                     "a": len(local_data.get("avatar_manifest") or []),
                     "app_files": len(local_data.get("apps_manifest") or []),
+                    "mem_files": len(local_data.get("memory_files_manifest") or []),
                     "apps": [(x.get("rel"), x.get("mtime")) for x in (local_data.get("workspace_apps") or [])],
                     "tomb": local_data.get("tombstones") or {},
                     "del_cids": sorted(list((local_data.get("deleted_cids") or {}).keys())),
@@ -4683,6 +4806,162 @@ class ConversationSync:
         self.reload_peers()
         res = await self.sync_peers()
         return {"ok": True, **res, **self.view()}
+
+    def live_cids(self) -> dict[str, Any]:
+        """Return the authoritative set of live conversation IDs currently on this device."""
+        self.mirror_local_now()
+        cids: list[str] = []
+        main_cid = ""
+        for thread in list(self.svc.threads.values()):
+            if not self._eligible_for_local_sync(thread):
+                continue
+            cid = self._cid_for_local(thread)
+            cids.append(cid)
+            if thread.id == _main_thread():
+                main_cid = cid
+        return {
+            "cids": cids,
+            "main_cid": main_cid,
+            "count": len(cids),
+            "device_id": self.svc.hub.device_id,
+            "device_name": self.svc.hub.device_name,
+        }
+
+    async def mirror_from_peer(self, identifier: str = "") -> dict[str, Any]:
+        """Replace ALL local chats on this device with an exact mirror of a paired peer's chats
+        (e.g., reset phone to match PC without pushing stale/extra local chats back to PC)."""
+        self.reload_peers()
+        ident = str(identifier or "").strip()
+        target_peer = next(
+            (
+                p
+                for p in self.peers
+                if not ident
+                or p.get("id") == ident
+                or p.get("name") == ident
+                or p.get("url") == ident
+            ),
+            None,
+        )
+        if target_peer is None:
+            raise ValueError("Paired device not found")
+
+        reachable = await self._refresh_peer_identity(target_peer)
+        if reachable is False:
+            raise ValueError(
+                f"Could not reach {target_peer.get('name') or 'paired device'} right now — make sure both devices are online."
+            )
+        tok = str(target_peer.get("token") or "").strip()
+        if not tok or "{{vault:" in tok:
+            raise ValueError("Sync token missing — tap Connect remotely to re-link first.")
+
+        pkey = self._peer_key_of(target_peer)
+        client = SyncClient(CloudClient(target_peer["url"]))
+        client.cloud.api_key = tok
+
+        # 1. Verify we can pull cleanly from the peer BEFORE wiping local chats!
+        try:
+            probe = await client.changes(0, PAGE, scope=self.scope, tail=0)
+        except CloudError as exc:
+            if exc.status == 401:
+                raise ValueError("Sync token rejected by peer — tap Connect remotely to re-link.") from None
+            raise ValueError(f"Could not read chats from peer: {exc}") from None
+
+        # 2. Wipe local chats (side threads + main chat events + trash + local sync-peer.db)
+        #    while _applying=True so NO deletion tombstones are ever emitted back to the peer!
+        removed = 0
+        self._applying = True
+        self._mirroring = True
+        try:
+            side_ids = [tid for tid in list(self.svc.threads.keys()) if tid != _main_thread()]
+            for tid in side_ids:
+                if self.svc.delete_thread(tid):
+                    removed += 1
+            # Also empty trash so stale pre-mirror threads don't linger in Trash
+            with contextlib.suppress(Exception):
+                self.svc.empty_trash()
+            # Clear local main thread cleanly so it mirrors peer's main chat
+            main_th = self.svc.threads.get(_main_thread())
+            if main_th is not None:
+                self.svc.clear_thread(_main_thread())
+            # Reset local sync store & mappings cleanly
+            self.local_store.wipe()
+            self.local_store.set_enabled(True)
+            self.state["cids"] = {}
+            self.state["titles"] = {}
+            self.state["deleted_cids"] = {}
+            self.state["deleted_mids"] = []
+            self.state["deleted_mids_map"] = {}
+            self.state["local_cursor"] = 0
+            peer_cursors = self.state.setdefault("peer_cursors", {})
+            peer_cursors[pkey] = {"in": 0, "out": 0, "tail_done": True}
+            self.state.setdefault("peer_muse_digests", {}).pop(pkey, None)
+            self._save()
+
+            # 3. Pull ALL live conversations & messages from the peer (PULL-ONLY first!)
+            applied = 0
+            in_seq = 0
+            page_data = probe
+            for _round in range(MAX_ROUNDS):
+                store = str(page_data.get("store") or "")
+                if store:
+                    self.state.setdefault("peer_stores", {})[pkey] = store
+                convs = [c for c in page_data.get("conversations") or [] if isinstance(c, dict)]
+                msgs = [m for m in page_data.get("messages") or [] if isinstance(m, dict)]
+                convs.sort(key=lambda c: int(c.get("seq") or 0))
+                msgs.sort(key=lambda m: int(m.get("seq") or 0))
+                for row in convs:
+                    if not row.get("deleted"):
+                        self._apply_conversation(row)
+                        applied += 1
+                for row in msgs:
+                    if not row.get("deleted"):
+                        self._apply_message(row)
+                        applied += 1
+                self._mirror_pulled_into_local_store(
+                    [c for c in convs if not c.get("deleted")],
+                    [m for m in msgs if not m.get("deleted")],
+                )
+                in_seq = max(in_seq, int(page_data.get("cursor") or 0))
+                peer_cursors[pkey]["in"] = in_seq
+                self._save()
+                if not page_data.get("more"):
+                    break
+                page_data = await client.changes(in_seq, PAGE, scope=self.scope, tail=0)
+        finally:
+            self._mirroring = False
+            self._applying = False
+
+        # 4. Advance local out_seq past mirrored rows so nothing we just pulled echoes back
+        self.mirror_local_now()
+        try:
+            cur_local = int(self.local_store.state().get("cursor") or 0)
+        except Exception:
+            cur_local = 0
+        self.state.setdefault("peer_cursors", {}).setdefault(pkey, {})["out"] = cur_local
+        self.state["peer_cursors"][pkey]["last_sync_at"] = _now_iso()
+        self.state["local_cursor"] = cur_local
+        self._save()
+
+        # 5. Also refresh Muse data (profile, avatar, memories, apps, muse_memory/)
+        with contextlib.suppress(Exception):
+            await self._sync_muse_data_with_peer(target_peer)
+
+        self._peer_status[pkey] = {
+            "online": True,
+            "last_sync_at": _now_iso(),
+            "last_error": "",
+        }
+        if getattr(self.svc, "bus", None):
+            self.svc.bus.publish({"kind": "sync", "sync": self.view()})
+            self.svc.bus.publish({"kind": "threads"})
+        return {
+            "ok": True,
+            "mirrored": True,
+            "removed": removed,
+            "applied": applied,
+            **self.view(),
+        }
 
     async def reset_peer_sync(self, identifier: str = "") -> dict[str, Any]:
         """Perform a clean fresh sync by resetting peer cursors & Muse-data digests without

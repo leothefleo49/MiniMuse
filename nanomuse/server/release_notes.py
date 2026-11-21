@@ -17,6 +17,23 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.23": {
+        "title": "Instant desktop boot, bigger avatar, memory, and chats that match",
+        "added": [
+            "The desktop window opens immediately on a glowing icon that says MiniMuse is booting",
+            "Bulk delete for chats, and Match chats, which makes this device's chats a copy of a paired device",
+            "A Memory section in Settings, including the Muse memory files from an import, synced between paired devices",
+        ],
+        "improved": [
+            "The avatar is larger everywhere, and larger again in the sheet that opens when you tap it",
+            "Sync keeps long assistant replies, including ones that came from a Muse import",
+        ],
+        "fixed": [
+            "A memory refresh that fails no longer throws away the list already on screen",
+            "Uploads, research notes, and virtualenv files in a Muse export stay files instead of becoming extra chats",
+            "Opening a chat on Android no longer flashes the system play button before the avatar moves",
+        ],
+    },
     "1.2.13": {
         "title": "PC-phone sync fixed, unified Devices, Muse Watch OS overhaul & Desktop Fullscreen",
         "added": [

@@ -4,6 +4,21 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.23] - 2026-11-20
+### Added
+- Desktop opens on a static glowing icon that says it is booting, instead of waiting on the runtime before any window appears.
+- Bulk delete for chats, and Match chats on a paired device, which replaces this device's chats with that device's chats.
+- Settings has a Memory section: the remember switch, saved facts, and the imported Muse memory files, which sync to paired devices.
+
+### Changed
+- The avatar is larger on every screen, and larger again in the popup that opens when you tap it.
+- Sync accepts longer messages (256 KB) and more of them, and an imported assistant reply counts as a finished message.
+
+### Fixed
+- A failed memory refresh keeps the list you already have and says what went wrong.
+- Muse export folders that are uploads, research notes, or a virtualenv are no longer turned into extra chats.
+- The Android chat no longer flashes the system play button before the avatar animation starts.
+
 ## [1.2.13] - 2026-11-19
 ### Added
 - **Desktop Fullscreen Mode**: press **F11**, click **Fullscreen** in the desktop sidebar rail, or toggle **Settings -> Appearance -> Fullscreen mode** (persists across launches in the native Windows/Linux desktop window, with browser fullscreen fallback).
