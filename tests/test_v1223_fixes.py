@@ -3,7 +3,19 @@
 from __future__ import annotations
 
 from nanomuse.server import data_import as di
+from nanomuse.server.events import Timeline
 from nanomuse.sync import peer
+
+
+def test_clearing_a_chat_zeroes_the_displayed_total(tmp_path) -> None:
+    path = tmp_path / "main.json"
+    timeline = Timeline("main", path)
+    timeline.total = 9272
+    timeline.clear()
+    assert timeline.total == 0
+    reloaded = Timeline("main", path)
+    assert reloaded.events == []
+    assert reloaded.total == 0
 
 
 def test_peer_limits_allow_long_ai_replies() -> None:

@@ -18,6 +18,7 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 - A failed memory refresh keeps the list you already have and says what went wrong.
 - Muse export folders that are uploads, research notes, or a virtualenv are no longer turned into extra chats.
 - The Android chat no longer flashes the system play button before the avatar animation starts.
+- Clearing a chat resets its message count, so an empty chat no longer keeps the old total.
 
 ## [1.2.13] - 2026-11-19
 ### Added

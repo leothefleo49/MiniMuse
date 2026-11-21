@@ -32,6 +32,7 @@ BUILTIN_NOTES: dict[str, dict[str, Any]] = {
             "A memory refresh that fails no longer throws away the list already on screen",
             "Uploads, research notes, and virtualenv files in a Muse export stay files instead of becoming extra chats",
             "Opening a chat on Android no longer flashes the system play button before the avatar moves",
+            "Clearing a chat resets its count, so an empty chat does not keep the old total",
         ],
     },
     "1.2.13": {

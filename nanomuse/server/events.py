@@ -195,6 +195,8 @@ class Timeline:
     def clear(self) -> None:
         self.events.clear()
         self._index.clear()
+        # the persisted total is the number the chat list shows; a cleared chat is empty
+        self.total = 0
         self.save()
 
 
