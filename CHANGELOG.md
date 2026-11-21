@@ -4,6 +4,21 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+### Added
+- Imported chats show the photos and files from the Muse export attached to the messages that carried them, like a message sent here: the export's manifest links each file to its turn, the file lands in the workspace, and the chat shows the thumbnail or chip.
+- Muse's scheduled jobs keep running here: the export's cron list (system/scheduled-jobs.md) becomes this app's own routines and reminders, including interval jobs such as "every 1h", and a job Muse turns off later is cancelled on the next sync. Muse's own maintenance jobs (heartbeat, archive auto-update) stay out. A new switch in Settings -> Import & export turns this on or off.
+- Delta transfers: after each import, MiniMuse shows a transfer code to paste above the prompt next time, so Muse sends only what changed since then. The result names what was understood as an update, and anything Muse said it could not put in the zip is listed out loud.
+- The Usage screen shows each feature's share of the money next to its count, and a Credits & balance section reports what each provider's own balance API says is left (OpenRouter credits, DeepSeek and others), with a Check now button.
+- The watch finds its server again from any network: the server announces its live address on a private beacon, and a watch that lost the connection asks it after the local scan comes up empty.
+- The watch's Download APK link works from any context (it is signed, like the VR link), and the VR APK download falls back to the real release assets when the installed version is not a tagged release.
+- The wear app is now a shell that updates without reinstalling: a new APK goes on only when the wear shell itself changed, and routine updates arrive as server-side content.
+
+### Changed
+- Devices holds the watch and the VR headset under one Extra devices section, instead of a separate VR settings page.
+- Settings columns follow the window: two columns from a small laptop screen, three from 1700 px, four on ultrawide.
+- The avatar studio names the model that animates the clips beside the model that draws the pictures, and the image & video settings rows carry icons and hints that match what they do.
+- Memory listings are no longer silently cut off: the Muse memory file list, saved facts, and workspace file listing all return the full list the screen asks for.
+
 ## [1.2.23] - 2026-11-20
 ### Added
 - Desktop opens on a static glowing icon that says it is booting, instead of waiting on the runtime before any window appears.
