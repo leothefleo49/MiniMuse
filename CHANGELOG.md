@@ -4,6 +4,7 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ## [Unreleased]
 
+## [1.2.24] - 2026-11-21
 ### Added
 - Imported chats show the photos and files from the Muse export attached to the messages that carried them, like a message sent here: the export's manifest links each file to its turn, the file lands in the workspace, and the chat shows the thumbnail or chip.
 - Muse's scheduled jobs keep running here: the export's cron list (system/scheduled-jobs.md) becomes this app's own routines and reminders, including interval jobs such as "every 1h", and a job Muse turns off later is cancelled on the next sync. Muse's own maintenance jobs (heartbeat, archive auto-update) stay out. A new switch in Settings -> Import & export turns this on or off.

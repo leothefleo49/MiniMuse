@@ -17,6 +17,24 @@ from nanomuse import __version__
 from nanomuse.logger import logger
 
 BUILTIN_NOTES: dict[str, dict[str, Any]] = {
+    "1.2.24": {
+        "title": "Muse files in chats, tasks that keep running, smaller updates, and a watch that finds you",
+        "added": [
+            "Photos and files from a Muse export now appear attached to the messages that carried them, just like a message sent here",
+            "Muse's scheduled jobs keep running in MiniMuse, including hourly ones, with a switch under Settings -> Import & export",
+            "After each import, a transfer code makes the next export much smaller: paste it above the prompt and Muse sends only what changed",
+            "The Usage screen shows what each feature cost and how many credits each provider still has, with a Check now button",
+        ],
+        "improved": [
+            "The watch finds the server again from any Wi-Fi, not only the one it was paired on",
+            "The watch and VR headset live under one Extra devices section, and both APK download links work everywhere",
+            "Settings columns adapt to the window on widescreen, and the avatar studio names the model behind the clips",
+            "Memory listings are no longer cut off at 500 or 2000 files",
+        ],
+        "fixed": [
+            "The wear app is a shell: updates arrive without installing a new app, and a new APK goes on only when the shell itself changed",
+        ],
+    },
     "1.2.23": {
         "title": "Instant desktop boot, bigger avatar, memory, and chats that match",
         "added": [
